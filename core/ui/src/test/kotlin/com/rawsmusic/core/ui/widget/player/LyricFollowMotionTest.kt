@@ -1,24 +1,12 @@
 package com.rawsmusic.core.ui.widget.player
-
-import org.junit.Assert.assertTrue
+import org.junit.Assert.*
 import org.junit.Test
-
 class LyricFollowMotionTest {
-    @Test
-    fun shortIntervalsUseAResponsiveSettle() {
-        val short = lyricFollowMotion(250L)
-        val long = lyricFollowMotion(4_000L)
-
-        assertTrue(short.stiffness > long.stiffness)
-        assertTrue(short.dampingRatio < long.dampingRatio)
+    @Test fun quickLinesRetargetTheSameSpringInsteadOfSwitchingItsFrequency() {
+        assertEquals(lyricFollowMotion(250L), lyricFollowMotion(4000L))
+        assertEquals(100f, lyricFollowMotion(250L).stiffness, .001f)
     }
-
-    @Test
-    fun instrumentalGapsUseTheSoftestSettle() {
-        val gap = lyricFollowMotion(1_000L, isInterlude = true)
-        val normal = lyricFollowMotion(1_000L)
-
-        assertTrue(gap.stiffness < normal.stiffness)
-        assertTrue(gap.dampingRatio > normal.dampingRatio)
+    @Test fun interludesKeepTheVerifiedPositionSpring() {
+        assertEquals(lyricFollowMotion(1000L), lyricFollowMotion(1000L, true))
     }
 }

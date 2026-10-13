@@ -25,12 +25,8 @@ internal class AlphabetIndexOverlayRegistry {
 
     fun publish(value: AlphabetIndexOverlayEntry) {
         val current = entries
-        val existingIndex = current.indexOfFirst { it.owner === value.owner }
-        entries = if (existingIndex >= 0) {
-            current.toMutableList().also { it[existingIndex] = value }
-        } else {
-            current + value
-        }
+        val updated = upsertAlphabetIndexEntry(current, value) { a, b -> a.owner === b.owner }
+        if (updated !== current) entries = updated
     }
 
     fun remove(owner: Any) {

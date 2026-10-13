@@ -7,6 +7,35 @@ import org.junit.Test
 
 class BackupPreferenceSchemaTest {
     @Test
+    fun recentlyAddedUserChoicesAreNotLostOnBackup() {
+        mapOf(
+            "hdr_window_enabled" to BackupPreferenceSchema.ValueType.BOOLEAN,
+            "hdr_window_scenes" to BackupPreferenceSchema.ValueType.STRING_SET,
+            "hdr_window_headroom" to BackupPreferenceSchema.ValueType.FLOAT,
+            "lyrics_export_signature" to BackupPreferenceSchema.ValueType.STRING,
+            "ui_player_swipe_to_change_track_disabled" to BackupPreferenceSchema.ValueType.BOOLEAN,
+        ).forEach { (key, type) -> assertEquals(key, type, BackupPreferenceSchema.typeForBackup(key)) }
+    }
+
+    @Test
+    fun deviceResourcesAreNotInDefaultPortableBackup() {
+        listOf(
+            "scanner_music_folder_uris", "ui_scan_paths", "ui_root_scan_paths",
+            "ui_custom_font_path", "lyric_font_path", "fft_convolver_ir_uri",
+            "ui_video_cover_permanent_uri", "ui_video_cover_current_assignments",
+            "personalization_player_hires_badge_custom_path_v1",
+        ).forEach { assertNull(it, BackupPreferenceSchema.typeForBackup(it)) }
+    }
+
+    @Test
+    fun playerMoreFavoriteVisibilityIsPortableAsBoolean() {
+        assertEquals(
+            BackupPreferenceSchema.ValueType.BOOLEAN,
+            BackupPreferenceSchema.typeForBackup("ui_player_more_favorite_visible"),
+        )
+    }
+
+    @Test
     fun portableSettingsKeepUserConfiguration() {
         assertEquals(
             BackupPreferenceSchema.ValueType.BOOLEAN,

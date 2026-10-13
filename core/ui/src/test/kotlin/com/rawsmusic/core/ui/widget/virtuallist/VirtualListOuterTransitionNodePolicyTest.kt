@@ -47,4 +47,24 @@ class VirtualListOuterTransitionNodePolicyTest {
         )
         assertFalse(VirtualListOuterTransitionNodePolicy.shouldUpdateInternalScene(null))
     }
+
+    @Test
+    fun onlySharedHolderUsesDirectDualLayoutInterpolation() {
+        assertTrue(
+            VirtualListOuterTransitionNodePolicy.interpolatesDualLayoutDirectly(
+                VirtualListOuterTransitionKind.SHARED,
+            )
+        )
+        assertFalse(
+            VirtualListOuterTransitionNodePolicy.interpolatesDualLayoutDirectly(
+                VirtualListOuterTransitionKind.CURRENT_ONLY,
+            )
+        )
+        assertFalse(
+            VirtualListOuterTransitionNodePolicy.interpolatesDualLayoutDirectly(
+                VirtualListOuterTransitionKind.RETAINED_ONLY,
+            )
+        )
+        assertFalse(VirtualListOuterTransitionNodePolicy.interpolatesDualLayoutDirectly(null))
+    }
 }

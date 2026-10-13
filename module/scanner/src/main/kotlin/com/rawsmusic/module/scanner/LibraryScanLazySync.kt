@@ -18,6 +18,18 @@ class LibraryScanLazySync(
 ) {
     private val pendingEnriched = LinkedHashMap<String, AudioFile>()
     private var lastEnrichedFlushMs = 0L
+    private var unpublishedChanges = false
+    private val addedKeys = HashSet<String>()
+    private val updatedKeys = HashSet<String>()
+
+    private fun account(oldSongs: List<AudioFile>, changedSongs: List<AudioFile>) {
+        val oldKeys = oldSongs.mapTo(HashSet()) { it.lazySyncKey() }
+        for (song in changedSongs) {
+            val key = song.lazySyncKey()
+            if (key !in oldKeys) addedKeys += key
+            else if (key !in addedKeys) updatedKeys += key
+        }
+    }
 
     suspend fun syncQuickVisible(songs: List<AudioFile>): BatchResult {
         if (songs.isEmpty()) return BatchResult(phase = Phase.QUICK_VISIBLE, requested = 0, changed = 0)
@@ -29,9 +41,8 @@ class LibraryScanLazySync(
         )
 
         if (quickUpserts.isNotEmpty()) {
+            account(oldSongs, quickUpserts)
             repository.upsertSongsForScan(quickUpserts, refreshLibrary = true)
-        } else {
-            repository.refreshAfterScanSync()
         }
 
         return BatchResult(
@@ -63,11 +74,17 @@ class LibraryScanLazySync(
         pendingEnriched.clear()
         lastEnrichedFlushMs = System.currentTimeMillis()
 
-        repository.upsertSongsForScan(batch, refreshLibrary = forceRefresh)
+        val oldSongs = repository.getAllSongsForSync()
+        val changes = LibrarySyncPlanner.calculateDelta(oldSongs, batch).upserts
+        if (changes.isNotEmpty()) {
+            account(oldSongs, changes)
+            repository.upsertSongsForScan(changes, refreshLibrary = forceRefresh)
+            unpublishedChanges = unpublishedChanges || !forceRefresh
+        }
         return BatchResult(
             phase = Phase.ENRICHED_BATCH,
             requested = batch.size,
-            changed = batch.size
+            changed = changes.size
         )
     }
 
@@ -83,23 +100,26 @@ class LibraryScanLazySync(
 
         if (deleteMissing && delta.deletes.isNotEmpty()) {
             repository.deleteSongsForScan(delta.deletes, refreshLibrary = false)
+            unpublishedChanges = true
         }
         if (delta.upserts.isNotEmpty()) {
+            account(oldSongs, delta.upserts)
             repository.upsertSongsForScan(delta.upserts, refreshLibrary = false)
+            unpublishedChanges = true
         }
-        repository.refreshAfterScanSync()
-
-        val addedCount = delta.upserts.count { newSong ->
-            oldSongs.none { oldSong -> oldSong.lazySyncKey() == newSong.lazySyncKey() }
+        val hasChanges = unpublishedChanges || addedKeys.isNotEmpty() || updatedKeys.isNotEmpty()
+        if (unpublishedChanges) {
+            repository.refreshAfterScanSync()
+            unpublishedChanges = false
         }
-        val updatedCount = (delta.upserts.size - addedCount).coerceAtLeast(0)
 
         return FinalResult(
-            added = addedCount,
-            updated = updatedCount,
-            upserted = delta.upserts.size,
+            added = addedKeys.size,
+            updated = updatedKeys.size,
+            upserted = addedKeys.size + updatedKeys.size,
             deleted = if (deleteMissing) delta.deletes.size else 0,
-            unchanged = delta.unchanged.size
+            unchanged = delta.unchanged.size,
+            hasChanges = hasChanges
         )
     }
 
@@ -116,7 +136,8 @@ class LibraryScanLazySync(
         val updated: Int,
         val upserted: Int,
         val deleted: Int,
-        val unchanged: Int
+        val unchanged: Int,
+        val hasChanges: Boolean = false
     )
 
     companion object {

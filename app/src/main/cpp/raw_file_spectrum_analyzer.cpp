@@ -1,4 +1,5 @@
 #include "raw_file_spectrum_analyzer.h"
+#include "raw_file_quality_metrics.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,7 +12,9 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kMinDb = -120.0f;
 constexpr uint32_t kMagic = 0x52534131; // RSA1
-constexpr uint32_t kVersion = 2;
+constexpr uint32_t kVersion = 5;
+constexpr int32_t kRailThreshold = 0x7fff0000; // 16-bit PCM full-scale after S32 conversion.
+constexpr uint64_t kMinimumSustainedRailFrames = 8;
 
 template <typename T>
 void appendValue(std::vector<uint8_t>& output, const T& value) {
@@ -46,12 +49,14 @@ struct RawFileSpectrumAnalyzer {
     const int waterfallBins = 768;
     const int waterfallFrames;
     const float nyquist;
+    RawFileQualityMetrics quality;
+    std::vector<uint8_t> partialFrame;
+    size_t partialFrameBytes = 0;
 
     std::vector<float> window;
     float windowSum = 0.0f;
     std::vector<float> fifoLeft;
     std::vector<float> fifoRight;
-    size_t fifoRead = 0;
     std::vector<std::complex<float>> fftBuffer;
     std::vector<float> leftPower;
     std::vector<float> rightPower;
@@ -64,13 +69,25 @@ struct RawFileSpectrumAnalyzer {
     int frameCount = 0;
     float currentLeftDb = kMinDb;
     float currentRightDb = kMinDb;
-    float leftPeakDb = kMinDb;
-    float rightPeakDb = kMinDb;
-    float leftRmsPower = 0.0f;
-    float rightRmsPower = 0.0f;
+    uint64_t decodedFrameCount = 0;
+    uint64_t nearRailFrameCount = 0;
+    uint64_t sustainedRailFrameCount = 0;
+    uint64_t sustainedRailRunCount = 0;
+    uint64_t currentRailRun = 0;
+    uint64_t nonzeroSampleCount = 0;
+    uint64_t aligned16SampleCount = 0;
+    uint64_t aligned24SampleCount = 0;
+
+    void flushRailRun() {
+        if (currentRailRun >= kMinimumSustainedRailFrames) {
+            sustainedRailFrameCount += currentRailRun;
+            ++sustainedRailRunCount;
+        }
+        currentRailRun = 0;
+    }
 
     RawFileSpectrumAnalyzer(int sr, int channels, int64_t duration, int fft)
-        : sampleRate(std::max(sr, 8000)),
+        : sampleRate(sr),
           channelCount(std::max(channels, 1)),
           durationMs(std::max<int64_t>(duration, 1)),
           fftSize(std::max(1024, fft)),
@@ -78,7 +95,9 @@ struct RawFileSpectrumAnalyzer {
           hopSize(sampleRate > 192000 ? fftSize : fftSize / 2),
           waterfallFrames(std::max(180, std::min(1200, static_cast<int>(
               std::max<int64_t>(180, (durationMs + 499) / 500))))),
-          nyquist(static_cast<float>(std::max(sr, 8000)) * 0.5f),
+          nyquist(static_cast<float>(sr) * 0.5f),
+          quality(sr, channelCount),
+          partialFrame(static_cast<size_t>(channelCount) * 4),
           window(static_cast<size_t>(std::max(1024, fft))),
           fftBuffer(static_cast<size_t>(std::max(1024, fft))),
           leftPower(static_cast<size_t>(std::max(1024, fft) / 2 + 1)),
@@ -94,8 +113,8 @@ struct RawFileSpectrumAnalyzer {
                                         static_cast<float>(fftSize - 1));
             windowSum += window[static_cast<size_t>(i)];
         }
-        fifoLeft.reserve(static_cast<size_t>(fftSize * 2));
-        fifoRight.reserve(static_cast<size_t>(fftSize * 2));
+        fifoLeft.reserve(static_cast<size_t>(fftSize));
+        fifoRight.reserve(static_cast<size_t>(fftSize));
     }
 
     void fftOne(const std::vector<float>& samples, std::vector<float>& power) {
@@ -174,23 +193,13 @@ struct RawFileSpectrumAnalyzer {
     void processFrame(const std::vector<float>& left, const std::vector<float>& right) {
         const float leftPowerValue = samplePower(left);
         const float rightPowerValue = samplePower(right);
-        leftRmsPower += leftPowerValue;
-        rightRmsPower += rightPowerValue;
-        const float leftPeak = *std::max_element(left.begin(), left.end(),
-            [](float a, float b) { return std::abs(a) < std::abs(b); });
-        const float rightPeak = *std::max_element(right.begin(), right.end(),
-            [](float a, float b) { return std::abs(a) < std::abs(b); });
-        leftPeakDb = std::max(leftPeakDb, toDb(std::abs(leftPeak)));
-        rightPeakDb = std::max(rightPeakDb, toDb(std::abs(rightPeak)));
-
         fftOne(left, leftPower);
-        const std::vector<float> leftFramePower = leftPower;
         fftOne(right, rightPower);
         currentLeftDb = toDb(std::sqrt(leftPowerValue));
         currentRightDb = toDb(std::sqrt(rightPowerValue));
         for (int i = 0; i <= halfSize; ++i) {
             averagePower[static_cast<size_t>(i)] +=
-                (leftFramePower[static_cast<size_t>(i)] + rightPower[static_cast<size_t>(i)]) * 0.5f;
+                (leftPower[static_cast<size_t>(i)] + rightPower[static_cast<size_t>(i)]) * 0.5f;
         }
 
         const int64_t centerSample = processedSamples + fftSize / 2;
@@ -204,42 +213,88 @@ struct RawFileSpectrumAnalyzer {
         processedSamples += hopSize;
     }
 
-    void process(const uint8_t* data, int byteCount) {
-        if (!data || byteCount < 8) return;
-        const int bytesPerFrame = std::max(1, channelCount) * 4;
-        const int frameCountInChunk = byteCount / bytesPerFrame;
-        for (int frame = 0; frame < frameCountInChunk; ++frame) {
-            const uint8_t* source = data + static_cast<size_t>(frame) * bytesPerFrame;
-            int32_t leftRaw = 0;
-            int32_t rightRaw = 0;
-            std::memcpy(&leftRaw, source, sizeof(leftRaw));
-            if (channelCount > 1) {
-                std::memcpy(&rightRaw, source + 4, sizeof(rightRaw));
-            } else {
-                rightRaw = leftRaw;
+    void processRawFrame(const uint8_t* source) {
+        int32_t leftRaw = 0;
+        int32_t rightRaw = 0;
+        std::memcpy(&leftRaw, source, sizeof(leftRaw));
+        if (channelCount > 1) {
+            std::memcpy(&rightRaw, source + 4, sizeof(rightRaw));
+        } else {
+            rightRaw = leftRaw;
+        }
+        const auto atRail = [](int32_t sample) {
+            return sample >= kRailThreshold || sample <= -kRailThreshold;
+        };
+        const auto atHardRail = [](int32_t sample) {
+            return sample == INT32_MAX || sample == INT32_MIN;
+        };
+        const bool rail = atRail(leftRaw) || (channelCount > 1 && atRail(rightRaw));
+        bool hardRail = atHardRail(leftRaw) || (channelCount > 1 && atHardRail(rightRaw));
+        for (int channel = 2; channel < channelCount; ++channel) {
+            int32_t raw = 0;
+            std::memcpy(&raw, source + static_cast<size_t>(channel) * 4, sizeof(raw));
+            hardRail = hardRail || atHardRail(raw);
+        }
+        quality.addFrame(leftRaw, rightRaw, hardRail);
+        const auto countPrecision = [this](int32_t sample) {
+            if (sample == 0) return;
+            ++nonzeroSampleCount;
+            if ((static_cast<uint32_t>(sample) & 0xffffu) == 0u) ++aligned16SampleCount;
+            if ((static_cast<uint32_t>(sample) & 0xffu) == 0u) ++aligned24SampleCount;
+        };
+        countPrecision(leftRaw);
+        if (channelCount > 1) countPrecision(rightRaw);
+        ++decodedFrameCount;
+        if (rail) {
+            ++nearRailFrameCount;
+            ++currentRailRun;
+        } else {
+            flushRailRun();
+        }
+        fifoLeft.push_back(static_cast<float>(leftRaw) / 2147483648.0f);
+        fifoRight.push_back(static_cast<float>(rightRaw) / 2147483648.0f);
+        if (fifoLeft.size() == static_cast<size_t>(fftSize)) {
+            processFrame(fifoLeft, fifoRight);
+            const size_t remaining = static_cast<size_t>(fftSize - hopSize);
+            if (remaining != 0) {
+                std::memmove(fifoLeft.data(), fifoLeft.data() + hopSize, remaining * sizeof(float));
+                std::memmove(fifoRight.data(), fifoRight.data() + hopSize, remaining * sizeof(float));
             }
-            fifoLeft.push_back(static_cast<float>(leftRaw) / 2147483648.0f);
-            fifoRight.push_back(static_cast<float>(rightRaw) / 2147483648.0f);
-        }
-
-        while (fifoLeft.size() - fifoRead >= static_cast<size_t>(fftSize)) {
-            std::vector<float> left(fifoLeft.begin() + static_cast<long>(fifoRead),
-                                    fifoLeft.begin() + static_cast<long>(fifoRead + fftSize));
-            std::vector<float> right(fifoRight.begin() + static_cast<long>(fifoRead),
-                                     fifoRight.begin() + static_cast<long>(fifoRead + fftSize));
-            processFrame(left, right);
-            fifoRead += static_cast<size_t>(hopSize);
-        }
-        if (fifoRead > static_cast<size_t>(fftSize * 2)) {
-            fifoLeft.erase(fifoLeft.begin(), fifoLeft.begin() + static_cast<long>(fifoRead));
-            fifoRight.erase(fifoRight.begin(), fifoRight.begin() + static_cast<long>(fifoRead));
-            fifoRead = 0;
+            fifoLeft.resize(remaining);
+            fifoRight.resize(remaining);
         }
     }
 
-    std::vector<uint8_t> finish() const {
+    void process(const uint8_t* data, int byteCount) {
+        if (!data || byteCount <= 0 || quality.finished()) return;
+        const size_t bytesPerFrame = partialFrame.size();
+        size_t remaining = static_cast<size_t>(byteCount);
+        if (partialFrameBytes != 0) {
+            const size_t take = std::min(remaining, bytesPerFrame - partialFrameBytes);
+            std::memcpy(partialFrame.data() + partialFrameBytes, data, take);
+            partialFrameBytes += take;
+            data += take;
+            remaining -= take;
+            if (partialFrameBytes == bytesPerFrame) {
+                processRawFrame(partialFrame.data());
+                partialFrameBytes = 0;
+            }
+        }
+        while (remaining >= bytesPerFrame) {
+            processRawFrame(data);
+            data += bytesPerFrame;
+            remaining -= bytesPerFrame;
+        }
+        if (remaining != 0) {
+            std::memcpy(partialFrame.data(), data, remaining);
+            partialFrameBytes = remaining;
+        }
+    }
+
+    std::vector<uint8_t> finish() {
+        const auto& metrics = quality.finish();
         std::vector<uint8_t> output;
-        output.reserve(64 + static_cast<size_t>(halfSize) * 4 +
+        output.reserve(180 + static_cast<size_t>(1024) * 4 +
                        static_cast<size_t>(waterfallFrames) * (waterfallBins * 2 + 8));
         const uint32_t magic = kMagic;
         const uint32_t version = kVersion;
@@ -297,14 +352,35 @@ struct RawFileSpectrumAnalyzer {
         const float confidence = lastAbove > 0
             ? std::max(0.0f, std::min(1.0f, 1.0f - noiseDb / -120.0f))
             : 0.0f;
-        const float leftRmsDb = toDb(std::sqrt(leftRmsPower / count));
-        const float rightRmsDb = toDb(std::sqrt(rightRmsPower / count));
         appendValue(output, cutoffHz);
         appendValue(output, confidence);
-        appendValue(output, leftPeakDb);
-        appendValue(output, rightPeakDb);
-        appendValue(output, leftRmsDb);
-        appendValue(output, rightRmsDb);
+        appendValue(output, metrics.leftPeakDb);
+        appendValue(output, metrics.rightPeakDb);
+        appendValue(output, metrics.leftRmsDb);
+        appendValue(output, metrics.rightRmsDb);
+        appendValue(output, decodedFrameCount);
+        appendValue(output, nearRailFrameCount);
+        appendValue(output, sustainedRailFrameCount +
+            (currentRailRun >= kMinimumSustainedRailFrames ? currentRailRun : 0));
+        appendValue(output, sustainedRailRunCount +
+            (currentRailRun >= kMinimumSustainedRailFrames ? 1u : 0u));
+        appendValue(output, nonzeroSampleCount);
+        appendValue(output, aligned16SampleCount);
+        appendValue(output, aligned24SampleCount);
+        // Explicit serialization: uint64 counters intentionally start unaligned
+        // at byte 156. Never serialize a padded C++ struct as the JNI wire format.
+        appendValue(output, metrics.flags);                 // 120
+        appendValue(output, metrics.integratedLufs);        // 124
+        appendValue(output, metrics.loudnessRangeLu);       // 128
+        appendValue(output, metrics.truePeakDb);            // 132
+        appendValue(output, metrics.leftDcOffset);          // 136
+        appendValue(output, metrics.rightDcOffset);         // 140
+        appendValue(output, metrics.stereoCorrelation);     // 144
+        appendValue(output, metrics.midRmsDb);              // 148
+        appendValue(output, metrics.sideRmsDb);             // 152
+        appendValue(output, metrics.silentFrameCount);      // 156
+        appendValue(output, metrics.longestSilentFrameCount); // 164
+        appendValue(output, metrics.hardRailFrameCount);     // 172; arrays at 180
         for (float value : averageDb) appendValue(output, value);
         for (float value : leftLevels) appendValue(output, value);
         for (float value : rightLevels) appendValue(output, value);

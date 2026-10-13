@@ -13,6 +13,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.common.ui.AppNoticeIcon
+import com.rawsmusic.locale.localizedErrorMessage
 
 class PEQActivity : BaseSettingsActivity() {
 
@@ -51,10 +52,14 @@ class PEQActivity : BaseSettingsActivity() {
                     onBack = { finish() },
                     onExportToFile = { json ->
                         pendingExportJson = json
-                        exportLauncher.launch("PEQ_preset_${System.currentTimeMillis()}.peq.json")
+                        withSystemFileAccess {
+                            exportLauncher.launch("PEQ_preset_${System.currentTimeMillis()}.peq.json")
+                        }
                     },
                     onImportFromFile = {
-                        importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        withSystemFileAccess {
+                            importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        }
                     },
                     importedFileContent = importedFileContent,
                     onImportedFileContentConsumed = { importedFileContent = null }
@@ -72,7 +77,12 @@ class PEQActivity : BaseSettingsActivity() {
             )
         } catch (e: Exception) {
             Log.e("PEQActivity", "Failed to export", e)
-            AppNoticeBus.error(getString(R.string.ui_preset_save_failed, e.message.orEmpty()))
+            AppNoticeBus.error(
+                getString(
+                    R.string.ui_preset_save_failed,
+                    localizedErrorMessage(e, R.string.ui_unknown_error),
+                )
+            )
         }
     }
 
@@ -83,7 +93,12 @@ class PEQActivity : BaseSettingsActivity() {
             }
         } catch (e: Exception) {
             Log.e("PEQActivity", "Failed to import", e)
-            AppNoticeBus.error(getString(R.string.ui_preset_read_failed, e.message.orEmpty()))
+            AppNoticeBus.error(
+                getString(
+                    R.string.ui_preset_read_failed,
+                    localizedErrorMessage(e, R.string.ui_unknown_error),
+                )
+            )
             null
         }
     }

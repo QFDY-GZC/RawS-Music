@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel_floating_lyrics">플로팅 가사</string>
+    <string name="notification_channel_floating_lyrics_description">Meizu가 아닌 장치에서 가사를 플로팅 알림으로 표시합니다</string>
+    <string name="notification_channel_flyme_lyrics">Flyme 상태 표시줄 가사</string>
+    <string name="notification_channel_flyme_lyrics_description">Flyme 상태 표시줄로 가사를 전송합니다</string>
+</resources>

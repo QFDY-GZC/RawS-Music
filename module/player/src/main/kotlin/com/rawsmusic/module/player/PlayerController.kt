@@ -9,7 +9,6 @@ import kotlin.math.pow
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.utils.PowerTraceLogger
-import com.rawsmusic.core.common.utils.PlayerSwitchTrace
 import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
@@ -342,6 +341,7 @@ class PlayerController private constructor(context: Context) {
     val ffmpegPlayerRef: FfmpegAudioPlayer get() = ffmpegPlayer
     val autoTransitionPresentation: StateFlow<AutoTransitionPresentation>
         get() = ffmpegPlayer.autoTransitionPresentation
+    fun cancelCurrentAutomaticTransition(): Boolean = ffmpegPlayer.cancelCurrentAutomaticTransition()
     private val audioEffectsSessionCoordinator by lazy {
         PlayerAudioEffectsSessionCoordinator(
             tag = TAG,
@@ -375,6 +375,7 @@ class PlayerController private constructor(context: Context) {
             ensureTrebleBoostConnected()
             ensureSurround360Connected()
             ensurePanoramic360Connected()
+            ensureReverbConnected()
             ensureFftConvolverConnected()
             ensureSpeakerOutputElasticityConnected()
             restoreCrossfeedSettings()
@@ -464,6 +465,8 @@ class PlayerController private constructor(context: Context) {
         get() = dspControllerRegistry.panoramic360Controller
 
     fun ensurePanoramic360Connected() = dspControllerRegistry.ensurePanoramic360Connected()
+    val reverbController get()=dspControllerRegistry.reverbController
+    fun ensureReverbConnected()=dspControllerRegistry.ensureReverbConnected()
 
     val usbExclusiveManager = UsbExclusiveManager(context)
     private val sharedUsbAudioEngine = UsbAudioEngine
@@ -522,7 +525,8 @@ class PlayerController private constructor(context: Context) {
         usbBackgroundGuardCoordinator.sync(reason)
 
     private val _currentSong = MutableStateFlow<AudioFile?>(null)
-    @Volatile private var autoTransitionLyrics: LyricData? = null
+    private data class AutoTransitionLyricsSnapshot(val owner: AudioFile, val lyrics: LyricData?)
+    @Volatile private var autoTransitionLyrics: AutoTransitionLyricsSnapshot? = null
     val currentSong: StateFlow<AudioFile?> = _currentSong.asStateFlow()
     private val restoreSnapshotApplied = AtomicBoolean(false)
     private val restoreSnapshotLock = Any()
@@ -724,7 +728,7 @@ class PlayerController private constructor(context: Context) {
         priorityQueue = { queueControlCoordinator.priorityQueueSnapshot() },
         shouldPersistQueue = { restoreSnapshotApplied.get() },
     )
-    private val shuffleQueueController = ShuffleQueueController(statePersistence) {
+    private val shuffleQueueController = ShuffleQueueController {
         PlaybackStatsStore.getInstance(context).stats.value.associate { it.songId to it.lastPlayedAt }
     }
     private val playbackModeController = PlaybackModeController(
@@ -806,7 +810,13 @@ class PlayerController private constructor(context: Context) {
                     AutoTransitionPolicy.build(
                         current = current,
                         next = next,
-                        lyrics = autoTransitionLyrics,
+                        lyrics = autoTransitionLyrics?.takeIf { snapshot ->
+                            current != null && samePlaybackItem(snapshot.owner, current)
+                        }?.lyrics,
+                        // Repeat-one intentionally reopens the same media item in the pending
+                        // decoder. Let the normal PCM auto-transition recipe overlap the outgoing
+                        // tail with the new head instead of forcing a hard/gapless self handoff.
+                        allowSameItemCrossfade = playbackModeController.currentPlayMode == PlayMode.REPEAT_ONE,
                     )
                 } else {
                     AutoTransitionPolicy.Decision(
@@ -891,7 +901,12 @@ class PlayerController private constructor(context: Context) {
                 _position.value = 0L
                 _duration.value = 0L
             },
-            playerPositionMs = { ffmpegPlayer.positionMs },
+            playerPositionMs = {
+                ffmpegPlayer.currentDecoderPlaybackSpeedOrNull()?.let {
+                    com.rawsmusic.core.common.utils.LyricPlaybackTimeline.speed = it
+                }
+                ffmpegPlayer.positionMs
+            },
             seekToStart = { seekTo(0L, userInitiated = false) },
             savePosition = { savePosition() },
             saveState = { saveState() },
@@ -1041,7 +1056,7 @@ class PlayerController private constructor(context: Context) {
 
     @Volatile
     private var pendingUsbHardwareReleaseAfterStop: PendingUsbHardwareReleaseAfterStop? = null
-    private val musicSourcePlaybackBackend = PlayerControllerMusicSourcePlaybackBackend(this)
+    private val musicSourcePlaybackBackend = PlayerControllerMusicSourcePlaybackBackend(context, this)
 
     private fun installMusicSourcePlaybackBackend() {
         MusicSourcePlaybackController.installBackend(musicSourcePlaybackBackend)
@@ -1650,19 +1665,11 @@ class PlayerController private constructor(context: Context) {
 
         override fun onTrackStarted(newPath: String, positionMs: Long, durationMs: Long) {
             if (isReleased) return
-            PlayerSwitchTrace.mark(
-                "renderer_track_started_callback",
-                "pathHash=${newPath.hashCode().toString(16)} pos=$positionMs duration=$durationMs thread=${Thread.currentThread().name}",
-            )
             // TRACK_STARTED can arrive on the decoder/feeder boundary. Queue persistence, debug
             // trace reset, artwork identity and the follow-up gapless preparation are all safe
             // off-main; running them on the Main.immediate controller scope made the first visual
             // frame compete with file/native work.
             scope.launch(Dispatchers.Default) {
-                PlayerSwitchTrace.mark(
-                    "renderer_commit_worker_enter",
-                    "thread=${Thread.currentThread().name}",
-                )
                 transportMutex.withLock {
                     val deferred = pendingRendererUiCommit
                     val latestRequested = uiSelectionControlCoordinator.requestedSong()
@@ -1672,10 +1679,6 @@ class PlayerController private constructor(context: Context) {
                     // If a newer tap exists and this callback belongs to the retiring request, keep
                     // waiting for the newer renderer item without destroying its commit context.
                     if (latestRequested != null && !rendererSourceMatches(latestRequested.path, newPath)) {
-                        PlayerSwitchTrace.mark(
-                            "renderer_commit_ignored_retiring",
-                            "new=${newPath.hashCode().toString(16)} latest=${latestRequested.path.hashCode().toString(16)}",
-                        )
                         AppLogger.w(
                             TAG,
                             "TRACK_STARTED ignored retiring target path=$newPath " +
@@ -1745,10 +1748,6 @@ class PlayerController private constructor(context: Context) {
                     clearRequestedSongIfCommitted(song)
                     AppPreferences.Player.lastPosition = _position.value
                     smForceTransition(PlayState.PLAYING, "native_track_started")
-                    PlayerSwitchTrace.mark(
-                        "renderer_ui_commit",
-                        "oldIndex=$oldIndex newIndex=$newIndex songId=${song.id} title=${song.title} pos=${_position.value}",
-                    )
                     if (oldSong == null || !samePlaybackItem(oldSong, song)) {
                         AppLogger.markPlaybackReportStart(
                             title = song.title,
@@ -1759,7 +1758,9 @@ class PlayerController private constructor(context: Context) {
                         )
                         FFmpegBridge.resetDebugLog("native_track_started:${song.path}")
                         playbackStatsTracker.reset()
-                        autoTransitionLyrics = null
+                        if (autoTransitionLyrics?.let { samePlaybackItem(it.owner, song) } != true) {
+                            autoTransitionLyrics = null
+                        }
                         ffmpegPlayer.updateAutoTransitionRecipe(null)
                     }
 
@@ -1824,7 +1825,9 @@ class PlayerController private constructor(context: Context) {
                             )
                             FFmpegBridge.resetDebugLog("gapless_playback_report_start:${nextSong.path}")
                             playbackStatsTracker.reset()
-                            autoTransitionLyrics = null
+                            if (autoTransitionLyrics?.let { samePlaybackItem(it.owner, nextSong) } != true) {
+                                autoTransitionLyrics = null
+                            }
                             ffmpegPlayer.updateAutoTransitionRecipe(null)
                         } else {
                             // Manual same-profile USB switching commits queue/UI state before
@@ -1841,10 +1844,6 @@ class PlayerController private constructor(context: Context) {
                         if (!alreadyPublishedCurrent) {
                             _currentSong.value = nextSong
                         } else {
-                            PlayerSwitchTrace.mark(
-                                "gapless_current_song_duplicate_suppressed",
-                                "songId=${nextSong.id} index=$newIndex",
-                            )
                         }
                         queueControlCoordinator.onManualTargetCommitted(nextSong)
                         pendingRendererUiCommit
@@ -5533,7 +5532,7 @@ class PlayerController private constructor(context: Context) {
             AppLogger.d(TAG, "AutoTransition: ignore stale lyrics song=${song.path} current=${current.path}")
             return
         }
-        autoTransitionLyrics = lyricData
+        autoTransitionLyrics = AutoTransitionLyricsSnapshot(current, lyricData)
         if (_queue.value.songs.isNotEmpty()) {
             gaplessControlCoordinator.prepareNextSong()
         }
@@ -5626,6 +5625,10 @@ class PlayerController private constructor(context: Context) {
         index: Int = 0,
         deferPublicCommitToRenderer: Boolean = false,
     ) {
+        if (song.format.equals("SACD-ISO", true)) {
+            com.rawsmusic.core.common.sacd.SacdIsoSourceRegistry.register(song.path,
+                if (song.channelCount > 2) 1 else 0)
+        }
         pausedSelectionPendingStart = false
         if (!deferPublicCommitToRenderer) pendingRendererUiCommit = null
         Log.d(TAG, "play() called: title=${song.title}, path=${song.path}, isReleased=$isReleased")
@@ -5729,7 +5732,7 @@ class PlayerController private constructor(context: Context) {
                 try {
                     android.widget.Toast.makeText(
                         context,
-                        "连续播放失败，已停止",
+                        context.getString(R.string.player_notice_gapless_failed),
                         android.widget.Toast.LENGTH_SHORT,
                     ).show()
                 } catch (_: Exception) {
@@ -5744,12 +5747,16 @@ class PlayerController private constructor(context: Context) {
             } else if (pendingRendererUiCommit?.song?.let { samePlaybackItem(it, song) } != true) {
                 pendingRendererUiCommit = PendingRendererUiCommit(
                     song = song,
-                    queue = queue.toList(),
+                    queue = queue,
                     index = index,
                     prepareFollowingAfterCommit = true,
                 )
             }
-            autoTransitionLyrics = null
+            // Restarting a decoder does not change the lyric owner. A different file/CUE
+            // segment must never inherit lyrics, including deferred renderer commits.
+            if (autoTransitionLyrics?.let { samePlaybackItem(it.owner, song) } != true) {
+                autoTransitionLyrics = null
+            }
             ffmpegPlayer.updateAutoTransitionRecipe(null)
             if (!deferPublicCommitToRenderer) {
                 // Explicit/cold starts have no retiring renderer to remain authoritative. Manual
@@ -6500,10 +6507,10 @@ class PlayerController private constructor(context: Context) {
         reason: String,
         isStillLatestRequest: () -> Boolean = { true },
     ) {
-        PlayerSwitchTrace.mark(
-            "transport_locked_enter",
-            "reason=$reason targetId=${song.id} index=$index thread=${Thread.currentThread().name}",
-        )
+        if (song.format.equals("SACD-ISO", true)) {
+            com.rawsmusic.core.common.sacd.SacdIsoSourceRegistry.register(song.path,
+                if (song.channelCount > 2) 1 else 0)
+        }
         val oldPos = _position.value
         val preservePausedState =
             _playState.value == PlayState.PAUSED ||
@@ -6539,10 +6546,6 @@ class PlayerController private constructor(context: Context) {
             )
             val manualTransitionMs = manualDurations.overlapMs
             val manualSequentialFallbackMs = manualDurations.sequentialFallbackMs
-            PlayerSwitchTrace.mark(
-                "transport_transition_policy",
-                "reason=$reason preservePaused=$preservePausedState usb=${_usbExclusiveActive.value} overlapMs=$manualTransitionMs fallbackMs=$manualSequentialFallbackMs rendererOwned=$rendererOwnedCurrentAtRequest",
-            )
             if (!preservePausedState && _usbExclusiveActive.value && _playState.value == PlayState.PLAYING) {
                 val softNext = canUseUsbSoftNextFor(song)
                 val preSwitchFadeMs = if (softNext) {
@@ -6622,6 +6625,10 @@ class PlayerController private constructor(context: Context) {
                     )
                 }
             } else if (!preservePausedState && manualTransitionMs > 0) {
+                // Keep an already audible short handoff alive. Newer pending commands are
+                // conflated by PlaybackEventQueue while the renderer completes its envelope
+                // and decoder ownership commit; do not reset PCM/gains for every input tap.
+                if (!ffmpegPlayer.awaitAudibleManualHandoff(isStillLatestRequest)) return
                 // Normal output keeps manual switching non-blocking. Reference-style
                 // SHORT_FADE is a short two-slot crossfade, while CROSSFADE uses the same
                 // overlap renderer with the configured duration. Unsafe/incompatible pairs
@@ -6669,7 +6676,8 @@ class PlayerController private constructor(context: Context) {
                 // interrupt the event already executing.  Never let that obsolete request commit
                 // song/queue state or leave an active crossfade behind after the newer tap won.
                 if (!isStillLatestRequest()) {
-                    ffmpegPlayer.clearNextSong()
+                    // The superseded command must not tear down a renderer-owned audible
+                    // handoff. Its successor replaces any unstarted preparation on this lane.
                     AppLogger.w(
                         TAG,
                         "manual Android switch discarded after slow prepare: stale title=${song.title} " +
@@ -6681,10 +6689,6 @@ class PlayerController private constructor(context: Context) {
 
                 if (inlineStarted) {
                     playInternalAfterSwitch = false
-                    PlayerSwitchTrace.mark(
-                        "transport_crossfade_inline_active",
-                        "reason=$reason fadeMs=$manualTransitionMs deferUi=$deferUiCommitToRenderer",
-                    )
                     // Reference publishes the logical track/cursor as soon as next/previous is
                     // accepted. Only defer the UI when an already-running renderer owns the
                     // handoff; an idle/paused cold-start queue has no live timeline to wait for.
@@ -6718,12 +6722,8 @@ class PlayerController private constructor(context: Context) {
                             shouldContinue = isStillLatestRequest,
                         )
                     }
-                    PlayerSwitchTrace.mark(
-                        "transport_sequential_out_done",
-                        "reason=$reason fadedOut=$fadedOut outMs=$outgoingFadeMs",
-                    )
                     if (!isStillLatestRequest()) {
-                        ffmpegPlayer.clearNextSong()
+                        // The next serialized command owns replacement of pending preparation.
                         AppLogger.w(
                             TAG,
                             "manual Android switch discarded during outgoing fade: " +
@@ -6756,7 +6756,7 @@ class PlayerController private constructor(context: Context) {
             // USB-exclusive has its own feeder-acknowledged handoff semantics and is intentionally
             // left on that path; this guard is for shared Android output, including Android USB.
             if (!_usbExclusiveActive.value && !isStillLatestRequest()) {
-                ffmpegPlayer.clearNextSong()
+                // Preserve any overlap already heard; only the latest command may replace it.
                 AppLogger.w(TAG, "manual Android switch dropped before state commit: stale title=${song.title} reason=$reason")
                 return
             }
@@ -6767,13 +6767,9 @@ class PlayerController private constructor(context: Context) {
                 // both live two-slot handoffs and cold sequential reopen paths.
                 pendingRendererUiCommit = PendingRendererUiCommit(
                     song = song,
-                    queue = queue.toList(),
+                    queue = queue,
                     index = index,
                     prepareFollowingAfterCommit = playInternalAfterSwitch,
-                )
-                PlayerSwitchTrace.mark(
-                    "transport_defer_ui_commit",
-                    "reason=$reason targetId=${song.id} index=$index playInternal=$playInternalAfterSwitch",
                 )
             }
 
@@ -6787,10 +6783,6 @@ class PlayerController private constructor(context: Context) {
                 _currentSong.value = song
                 _position.value = 0L
                 _duration.value = song.duration
-                PlayerSwitchTrace.mark(
-                    "transport_immediate_ui_commit",
-                    "reason=$reason targetId=${song.id} index=$index",
-                )
                 queueControlCoordinator.onManualTargetCommitted(song)
                 persistSelectedSongForColdStart(song)
                 clearRequestedSongIfCommitted(song)
@@ -6817,10 +6809,6 @@ class PlayerController private constructor(context: Context) {
             }
 
             if (playInternalAfterSwitch) {
-                PlayerSwitchTrace.mark(
-                    "transport_play_internal_dispatch",
-                    "reason=$reason targetId=${song.id} deferUi=$deferUiCommitToRenderer",
-                )
                 playInternal(
                     song = song,
                     queue = queue,
@@ -6845,10 +6833,6 @@ class PlayerController private constructor(context: Context) {
         // the transport generation with explicit play requests so an obsolete switch stops its
         // fade and can never commit after the user's latest target.
         val requestToken = latestPlayRequestToken.incrementAndGet()
-        PlayerSwitchTrace.mark(
-            "transport_event_submit",
-            "reason=$reason token=$requestToken targetId=${song.id} index=$index primeUi=$primeUiSelection persistOutgoing=$persistOutgoingPositionInWorker",
-        )
         if (primeUiSelection) primeSongSelectionForUi(song)
         // The public controller scope is Main.immediate because UI-facing StateFlows are also
         // coordinated here. Launching manual transport on that scope from a button/gesture callback
@@ -6864,10 +6848,6 @@ class PlayerController private constructor(context: Context) {
                 index = index,
                 handler = manualEvent@{ queuedSong, queuedQueue, queuedIndex ->
                     if (requestToken != latestPlayRequestToken.get()) return@manualEvent
-                    PlayerSwitchTrace.mark(
-                        "transport_event_worker",
-                        "reason=$reason token=$requestToken targetId=${queuedSong.id} index=$queuedIndex thread=${Thread.currentThread().name}",
-                    )
                     // Artwork gestures must keep all persistence/queue/controller work off the
                     // pointer + ArtworkPager settle frame. The PlaybackEventQueue consumer is Default.
                     if (persistOutgoingPositionInWorker) savePosition()
@@ -6890,7 +6870,7 @@ class PlayerController private constructor(context: Context) {
     fun next(): AudioFile? = queueControlCoordinator.next()
 
     fun previous(): AudioFile? =
-        queueControlCoordinator.previous(restartCurrentAfterThreshold = true)
+        queueControlCoordinator.previous()
 
     /** Non-artwork navigation that always moves to the previous queue item. */
     fun previousTrackWithoutRestart(): AudioFile? =
@@ -7079,11 +7059,14 @@ class PlayerController private constructor(context: Context) {
         volumeControlCoordinator.applyReplayGain(
             song = song,
             settings = PlayerVolumeControlCoordinator.ReplayGainSettings(
-                normalizationEnabled = prefs.volumeNormalizationEnabled,
-                replayGainEnabled = prefs.replayGainEnabled,
-                replayGainMode = prefs.replayGainMode,
+                replayGainMode = prefs.effectiveReplayGainMode(),
             ),
         )
+    }
+
+    /** Re-apply the unified ReplayGain mode to the current track without restarting playback. */
+    fun refreshReplayGainSettings() {
+        _currentSong.value?.let(::applyReplayGain)
     }
 
     private fun applyUsbVolume(

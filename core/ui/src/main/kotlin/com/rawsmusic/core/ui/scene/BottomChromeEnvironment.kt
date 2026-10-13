@@ -62,6 +62,9 @@ data class BottomChromeEnvironment(
     val interSurfaceGap: Dp = 8.dp,
     val contentBreathingRoom: Dp = 8.dp,
     val regularAccessoryMaxWidth: Dp = 690.dp,
+    val wideInlineLayout: Boolean = false,
+    val regularChromeMaxWidth: Dp = 1200.dp,
+    val regularNavigationMaxWidth: Dp = 440.dp,
     val systemBottom: Dp = 0.dp,
 ) {
     val geometry: BottomChromeGeometry
@@ -72,7 +75,11 @@ data class BottomChromeEnvironment(
             val accessory = if (hasMiniPlayer) accessoryHeight else 0.dp
             // Keep the host container large enough for the complete Expanded -> Minimized morph.
             // Page safe-area accommodation is a separate contract and follows only stable endpoints.
-            val chromeHeight = navigationStack + gap + accessory + systemBottom
+            val chromeHeight = if (wideInlineLayout && hasMiniPlayer && hasNavigation) {
+                maxOf(navigationHeight, accessoryHeight) + systemBottom
+            } else {
+                navigationStack + gap + accessory + systemBottom
+            }
             val expandedContentBottom = chromeHeight + contentBreathingRoom
             val minimizedInlineHeight = if (
                 layoutClass == BottomChromeLayoutClass.Compact && hasNavigation
@@ -91,7 +98,11 @@ data class BottomChromeEnvironment(
                 chromeHeight = chromeHeight,
                 contentBottomInset = contentBottomInset,
                 navigationBottomInset = systemBottom,
-                miniPlayerBottomInset = navigationStack + gap + systemBottom,
+                miniPlayerBottomInset = if (wideInlineLayout && hasMiniPlayer && hasNavigation) {
+                    systemBottom
+                } else {
+                    navigationStack + gap + systemBottom
+                },
                 // One normalized transition owns both surfaces; these are visual mappings only.
                 navigationMinimizeTravel = 18.dp,
                 miniPlayerMinimizeTravel = if (hasNavigation) navigationHeight + gap else 0.dp,

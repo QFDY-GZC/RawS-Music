@@ -14,7 +14,6 @@ import kotlinx.coroutines.coroutineScope
 /** Aggregates enabled MusicFree plugins and the Hacylon-style LX built-in catalogs. */
 object MusicSourceSearchCoordinator {
     private const val SEARCH_PAGE_COUNT = 4
-    private const val MAX_RESULTS = 120
 
     suspend fun search(
         context: Context,
@@ -116,7 +115,7 @@ object MusicSourceSearchCoordinator {
                     .thenBy { it.title.length }
                     .thenBy(RawSourceMediaItem::title)
             )
-            .take(MAX_RESULTS)
+            .take(MUSIC_SOURCE_SEARCH_DISPLAY_LIMIT)
         AggregatedMusicSourceSearch(
             // One-item groups preserve the global relevance order while retaining the provider
             // label. The UI no longer renders group headers, so providers cannot form blocks.

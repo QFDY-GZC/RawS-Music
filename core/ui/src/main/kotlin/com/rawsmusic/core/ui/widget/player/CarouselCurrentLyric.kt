@@ -29,8 +29,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -38,15 +38,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.LyricFontManager
+import com.rawsmusic.core.ui.theme.rawFileFontFamily
 import io.github.proify.lyricon.lyric.model.Song
-import java.io.File
 import kotlin.math.roundToInt
 
 private data class CarouselLyricLine(
     val index: Int,
     val primary: String,
     val translation: String,
-    val primaryIsChinese: Boolean
+    val primaryIsChinese: Boolean,
+    val primaryIsJapanese: Boolean,
 )
 
 @Composable
@@ -86,6 +87,7 @@ internal fun HorizontalCarouselCurrentLyric(
             if (target != null) {
                 Text(
                     text = target.primary,
+                    style = TextStyle(localeList = lyricGlyphLocales(target.primary, japaneseDocument = target.primaryIsJapanese)),
                     color = Color.White.copy(alpha = 0.94f),
                     fontSize = font.sizeSp.sp,
                     fontWeight = FontWeight(font.weight),
@@ -131,6 +133,7 @@ internal fun VerticalDialCurrentLyric(
         DialLyricSide(
             lineIndex = line?.index ?: -1,
             text = leftText,
+            japaneseDocument = line?.primaryIsJapanese == true && line.primaryIsChinese,
             alignment = Alignment.CenterEnd,
             textAlign = TextAlign.End,
             font = font,
@@ -140,6 +143,7 @@ internal fun VerticalDialCurrentLyric(
         DialLyricSide(
             lineIndex = line?.index ?: -1,
             text = rightText,
+            japaneseDocument = line?.primaryIsJapanese == true && !line.primaryIsChinese,
             alignment = Alignment.CenterStart,
             textAlign = TextAlign.Start,
             font = font,
@@ -154,6 +158,7 @@ private data class DialLyricSideLine(val index: Int, val text: String)
 private fun DialLyricSide(
     lineIndex: Int,
     text: String,
+    japaneseDocument: Boolean,
     alignment: Alignment,
     textAlign: TextAlign,
     font: CarouselLyricFont,
@@ -187,6 +192,7 @@ private fun DialLyricSide(
         ) {
             Text(
                 text = target.text,
+                style = TextStyle(localeList = lyricGlyphLocales(target.text, japaneseDocument = japaneseDocument)),
                 color = Color.White.copy(alpha = if (target.text.isBlank()) 0f else 0.92f),
                 fontSize = (font.sizeSp - 2).coerceAtLeast(13).sp,
                 fontWeight = FontWeight(font.weight),
@@ -224,7 +230,9 @@ private fun rememberCarouselLyricLine(
             index = resolvedIndex,
             primary = primary,
             translation = if (displayTranslation) line.translation.cleanCarouselLyricText() else "",
-            primaryIsChinese = primary.containsChineseLyricText()
+            primaryIsChinese = primary.containsChineseLyricText(),
+            primaryIsJapanese = isJapaneseLyricDocument(lines) &&
+                (!line.text.isNullOrBlank() || !line.secondary.isNullOrBlank())
         )
     }
 }
@@ -243,7 +251,12 @@ private fun rememberCarouselLyricFont(): CarouselLyricFont {
     val scale = AppPreferences.LyricFont.fontScale.coerceIn(50, 200)
     val family = remember(revision, path, weight) {
         if (path.isBlank()) null
-        else runCatching { FontFamily(Font(File(path), FontWeight(weight))) }.getOrNull()
+        else runCatching {
+            rawFileFontFamily(
+                path = path,
+                allowOutOfRange = AppPreferences.LyricFont.experimentalFontWeightEnabled,
+            )
+        }.getOrNull()
     }
     return remember(revision, family, weight, scale) {
         CarouselLyricFont(

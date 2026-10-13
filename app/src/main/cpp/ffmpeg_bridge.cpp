@@ -19,6 +19,11 @@
 #include <unordered_map>
 #include <unistd.h>
 #include <sys/stat.h>
+#include "id3_mp4_compat.h"
+#include "raw_sacd_iso.h"
+#include "raw_sacd_avio.h"
+#include "raw_sacd_iso_jni.h"
+#include "raw_flac_tail_error_policy.h"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -27,6 +32,14 @@ extern "C" {
 #include <libavutil/dict.h>
 #include <libavutil/opt.h>
 #include <libswresample/swresample.h>
+}
+
+static int open_format_input(AVFormatContext** context, const char* path,
+        const AVInputFormat* format, AVDictionary** options) {
+    return raw_audio_format_open(context, path, format, options);
+}
+static void close_format_input(AVFormatContext** context) {
+    raw_audio_format_close(context);
 }
 
 // ==========================
@@ -376,7 +389,7 @@ static int convert_to_wav(const char *input_path, const char *output_path,
     int ret = -1;
     int audio_stream_idx = -1;
 
-    if (avformat_open_input(&fmt_ctx, input_path, nullptr, nullptr) < 0) {
+    if (open_format_input(&fmt_ctx, input_path, nullptr, nullptr) < 0) {
         LOGE("Could not open input: %s", input_path);
         return -1;
     }
@@ -605,7 +618,7 @@ cleanup:
     if (out_fp) fclose(out_fp);
     if (swr_ctx) swr_free(&swr_ctx);
     if (codec_ctx) avcodec_free_context(&codec_ctx);
-    if (fmt_ctx) avformat_close_input(&fmt_ctx);
+    if (fmt_ctx) close_format_input(&fmt_ctx);
     return ret;
 }
 
@@ -640,7 +653,7 @@ static int convert_to_raw_pcm(
     const int out_swr_bytes_per_sample = out_bits == 16 ? 2 : 4;
     const AVSampleFormat out_fmt = swr_output_format_for_bits(out_bits);
 
-    if (avformat_open_input(&fmt_ctx, input_path, nullptr, nullptr) < 0) {
+    if (open_format_input(&fmt_ctx, input_path, nullptr, nullptr) < 0) {
         LOGE("convert_to_raw_pcm: Could not open input: %s", input_path);
         return -1;
     }
@@ -867,7 +880,7 @@ cleanup_pcm:
     if (out_fp) fclose(out_fp);
     if (swr_ctx) swr_free(&swr_ctx);
     if (codec_ctx) avcodec_free_context(&codec_ctx);
-    if (fmt_ctx) avformat_close_input(&fmt_ctx);
+    if (fmt_ctx) close_format_input(&fmt_ctx);
     return ret;
 }
 
@@ -876,6 +889,7 @@ struct RawFdAvioIo {
     int fd;
     int64_t size;
     int64_t position;
+    int64_t base_offset;
     AVIOContext *avio;
 };
 
@@ -884,7 +898,7 @@ static int raw_fd_read_packet(void *opaque, uint8_t *buf, int buf_size) {
     if (!io || io->fd < 0 || !buf || buf_size <= 0) return AVERROR(EINVAL);
     ssize_t read_count;
     do {
-        read_count = pread(io->fd, buf, static_cast<size_t>(buf_size), io->position);
+        read_count = pread(io->fd, buf, static_cast<size_t>(buf_size), io->position + io->base_offset);
     } while (read_count < 0 && errno == EINTR);
     if (read_count < 0) return AVERROR(errno);
     if (read_count == 0) return AVERROR_EOF;
@@ -940,6 +954,17 @@ static int open_input_with_fd(
     io->fd = fd;
     io->size = raw_fd_resolve_size(fd, size_hint);
     io->position = 0;
+    io->base_offset = 0;
+    uint8_t containerHeader[12] = {};
+    if (io->size > 0 && pread(fd, containerHeader, sizeof(containerHeader), 0) == sizeof(containerHeader)) {
+        const int64_t prefix = rawmedia::leadingId3Extent(containerHeader, sizeof(containerHeader), io->size);
+        if (prefix > 0 && pread(fd, containerHeader, sizeof(containerHeader), prefix) == sizeof(containerHeader) &&
+            rawmedia::isMp4Ftyp(containerHeader, sizeof(containerHeader), io->size - prefix)) {
+            io->base_offset = prefix;
+            io->size -= prefix;
+            LOGI("MP4_COMPAT fd=%d virtual prefix skipped bytes=%lld", fd, (long long)prefix);
+        }
+    }
     io->avio = avio_alloc_context(
         buffer,
         64 * 1024,
@@ -957,7 +982,7 @@ static int open_input_with_fd(
     io->avio->seekable = AVIO_SEEKABLE_NORMAL;
     format->pb = io->avio;
     format->flags |= AVFMT_FLAG_CUSTOM_IO;
-    const int result = avformat_open_input(&format, nullptr, nullptr, nullptr);
+    const int result = open_format_input(&format, nullptr, nullptr, nullptr);
     if (result < 0) {
         if (format) avformat_free_context(format);
         if (io->avio->buffer) av_freep(&io->avio->buffer);
@@ -976,7 +1001,7 @@ static int open_input_with_fd(
 }
 
 static void close_input_with_fd(AVFormatContext **format_context, RawFdAvioIo **io_ptr) {
-    if (format_context && *format_context) avformat_close_input(format_context);
+    if (format_context && *format_context) close_format_input(format_context);
     if (!io_ptr || !*io_ptr) return;
     RawFdAvioIo *io = *io_ptr;
     if (io->avio) {
@@ -1014,7 +1039,7 @@ static int open_input_with_http_options(
              safeUrl.c_str(), online_header_line_count(headers_block),
              user_agent && user_agent[0] != '\0');
     }
-    const int result = avformat_open_input(format_context, path, nullptr, &options);
+    const int result = open_format_input(format_context, path, nullptr, &options);
     av_dict_free(&options);
     if (remote_input) {
         if (result < 0) {
@@ -1041,11 +1066,11 @@ static jlong probe_duration(
     AVFormatContext *fmt_ctx = nullptr;
     if (open_input_with_http_options(&fmt_ctx, path, headers_block, user_agent) < 0) return 0;
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
-        avformat_close_input(&fmt_ctx);
+        close_format_input(&fmt_ctx);
         return 0;
     }
     int64_t dur = fmt_ctx->duration;
-    avformat_close_input(&fmt_ctx);
+    close_format_input(&fmt_ctx);
     // AV_NOPTS_VALUE is INT64_MIN, dividing by 1000 gives huge negative
     if (dur == AV_NOPTS_VALUE || dur < 0) return 0;
     return dur / 1000;
@@ -1059,7 +1084,7 @@ static jint probe_sample_rate(
     AVFormatContext *fmt_ctx = nullptr;
     if (open_input_with_http_options(&fmt_ctx, path, headers_block, user_agent) < 0) return 0;
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
-        avformat_close_input(&fmt_ctx);
+        close_format_input(&fmt_ctx);
         return 0;
     }
     int sr = 0;
@@ -1069,7 +1094,7 @@ static jint probe_sample_rate(
             break;
         }
     }
-    avformat_close_input(&fmt_ctx);
+    close_format_input(&fmt_ctx);
     return sr;
 }
 
@@ -1085,7 +1110,7 @@ static jint probe_bits_per_sample(
     }
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
         LOGE("probe_bits_per_sample: failed to find stream info");
-        avformat_close_input(&fmt_ctx);
+        close_format_input(&fmt_ctx);
         return 0;
     }
     int bits = 0;
@@ -1103,7 +1128,7 @@ static jint probe_bits_per_sample(
     } else {
         LOGE("probe_bits_per_sample: no audio stream found in %s", path);
     }
-    avformat_close_input(&fmt_ctx);
+    close_format_input(&fmt_ctx);
     return bits;
 }
 
@@ -1115,7 +1140,7 @@ static jint probe_channel_count(
     AVFormatContext *fmt_ctx = nullptr;
     if (open_input_with_http_options(&fmt_ctx, path, headers_block, user_agent) < 0) return 0;
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
-        avformat_close_input(&fmt_ctx);
+        close_format_input(&fmt_ctx);
         return 0;
     }
     int channels = 0;
@@ -1124,7 +1149,7 @@ static jint probe_channel_count(
         AVCodecParameters *codecpar = fmt_ctx->streams[audio_stream_idx]->codecpar;
         channels = detect_channel_count(codecpar);
     }
-    avformat_close_input(&fmt_ctx);
+    close_format_input(&fmt_ctx);
     return channels;
 }
 
@@ -1260,11 +1285,11 @@ static int extract_cover(
     AVFormatContext *fmt_ctx = nullptr;
     if (open_input_with_http_options(&fmt_ctx, input_path, headers_block, user_agent) < 0) return -1;
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
-        avformat_close_input(&fmt_ctx);
+        close_format_input(&fmt_ctx);
         return -1;
     }
     const int result = extract_cover_from_format(fmt_ctx, output_path);
-    avformat_close_input(&fmt_ctx);
+    close_format_input(&fmt_ctx);
     return result;
 }
 
@@ -1292,7 +1317,7 @@ std::vector<float> rawsmusic_scan_waveform_precise_seek(
 );
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeConvertToWav(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeConvertToWavLive(
     JNIEnv *env, jobject, jstring input, jstring output, jint sample_rate,
     jint bits_per_sample, jint channels) {
     const char *inp = env->GetStringUTFChars(input, nullptr);
@@ -1304,7 +1329,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeConvertToWav(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeConvertToRawPcm(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeConvertToRawPcmLive(
     JNIEnv *env, jobject, jstring input, jstring output, jint sample_rate, jint bits_per_sample, jint channels) {
     const char *inp = env->GetStringUTFChars(input, nullptr);
     const char *out = env->GetStringUTFChars(output, nullptr);
@@ -1315,7 +1340,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeConvertToRawPcm(
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeDuration(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeDurationLive(
     JNIEnv *env, jobject, jstring path) {
     const char *p = env->GetStringUTFChars(path, nullptr);
     jlong dur = probe_duration(p);
@@ -1324,7 +1349,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeDuration(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeSampleRate(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeSampleRateLive(
     JNIEnv *env, jobject, jstring path) {
     const char *p = env->GetStringUTFChars(path, nullptr);
     jint sr = probe_sample_rate(p);
@@ -1333,7 +1358,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeSampleRate(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeBitsPerSample(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeBitsPerSampleLive(
     JNIEnv *env, jobject, jstring path) {
     const char *p = env->GetStringUTFChars(path, nullptr);
     jint bits = probe_bits_per_sample(p);
@@ -1342,7 +1367,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeBitsPerSample(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCount(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCountLive(
     JNIEnv *env, jobject, jstring path) {
     const char *p = env->GetStringUTFChars(path, nullptr);
     jint ch = probe_channel_count(p);
@@ -1351,7 +1376,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCount(
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeDurationWithOptions(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeDurationWithOptionsLive(
     JNIEnv *env, jobject, jstring path, jstring headersBlock, jstring userAgent) {
     const char *p = env->GetStringUTFChars(path, nullptr);
     const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
@@ -1364,7 +1389,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeDurationWithOption
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeSampleRateWithOptions(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeSampleRateWithOptionsLive(
     JNIEnv *env, jobject, jstring path, jstring headersBlock, jstring userAgent) {
     const char *p = env->GetStringUTFChars(path, nullptr);
     const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
@@ -1377,7 +1402,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeSampleRateWithOpti
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeBitsPerSampleWithOptions(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeBitsPerSampleWithOptionsLive(
     JNIEnv *env, jobject, jstring path, jstring headersBlock, jstring userAgent) {
     const char *p = env->GetStringUTFChars(path, nullptr);
     const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
@@ -1390,7 +1415,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeBitsPerSampleWithO
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCountWithOptions(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCountWithOptionsLive(
     JNIEnv *env, jobject, jstring path, jstring headersBlock, jstring userAgent) {
     const char *p = env->GetStringUTFChars(path, nullptr);
     const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
@@ -1403,31 +1428,31 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCountWithOp
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeDurationFd(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeDurationFdLive(
     JNIEnv *, jobject, jint fd, jlong size) {
     return probe_duration_fd(fd, static_cast<int64_t>(size));
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeSampleRateFd(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeSampleRateFdLive(
     JNIEnv *, jobject, jint fd, jlong size) {
     return probe_sample_rate_fd(fd, static_cast<int64_t>(size));
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeBitsPerSampleFd(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeBitsPerSampleFdLive(
     JNIEnv *, jobject, jint fd, jlong size) {
     return probe_bits_per_sample_fd(fd, static_cast<int64_t>(size));
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCountFd(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeProbeChannelCountFdLive(
     JNIEnv *, jobject, jint fd, jlong size) {
     return probe_channel_count_fd(fd, static_cast<int64_t>(size));
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeExtractCover(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeExtractCoverLive(
     JNIEnv *env,
     jobject,
     jstring input,
@@ -1447,7 +1472,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeExtractCover(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeExtractCoverFd(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeExtractCoverFdLive(
     JNIEnv *env,
     jobject,
     jint fd,
@@ -1460,7 +1485,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeExtractCoverFd(
 }
 
 extern "C" JNIEXPORT jfloatArray JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeScanWaveform(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeScanWaveformLive(
     JNIEnv *env, jobject, jstring path, jlong startMs, jlong endMs, jint sampleCount) {
     const char *p = env->GetStringUTFChars(path, nullptr);
     std::vector<float> result = rawsmusic_scan_waveform_precise_seek(p, (int64_t)startMs, (int64_t)endMs, (int)sampleCount);
@@ -1753,6 +1778,9 @@ struct StreamDecoder {
     bool eof_reached;
     bool flushed_decoder;
     bool flushed_swr;
+    int decode_error;
+    int64_t last_decoded_source_end_ms;
+    unsigned tail_damage_errors;
 };
 
 static float sanitize_playback_speed(float speed) {
@@ -1789,7 +1817,10 @@ static bool prepare_flac_repair_input(StreamDecoder *sd, const char *path) {
     if (!sd || !path) return false;
     int64_t skip_start = 0;
     int64_t skip_end = 0;
-    if (!detect_flac_orphan_metadata_range(path, &skip_start, &skip_end)) return false;
+    const int64_t mp4Prefix = rawmedia::mp4InputPrefix(path);
+    if (mp4Prefix > 0) {
+        skip_end = mp4Prefix;
+    } else if (!detect_flac_orphan_metadata_range(path, &skip_start, &skip_end)) return false;
 
     FILE *file = fopen(path, "rb");
     if (!file) return false;
@@ -1843,7 +1874,7 @@ static bool prepare_flac_repair_input(StreamDecoder *sd, const char *path) {
     sd->flac_repair_avio = avio;
     sd->flac_repair_io = io;
     LOGI(
-        "FLAC_COMPAT virtual input enabled path=%s skip=[%lld,%lld) bytes=%lld",
+        "CONTAINER_COMPAT virtual input enabled path=%s skip=[%lld,%lld) bytes=%lld",
         path,
         (long long)skip_start,
         (long long)skip_end,
@@ -2023,10 +2054,10 @@ static StreamDecoder* stream_decoder_open(
              sd->playback_speed,
              online_header_line_count(headers_block), user_agent && user_agent[0] != '\0');
     }
-    const bool repairedFlacInput = !fdInput && !remoteInput && prepare_flac_repair_input(sd, path);
+    const bool repairedContainerInput = !fdInput && !remoteInput && prepare_flac_repair_input(sd, path);
     const int openResult = fdInput
         ? open_input_with_fd(&sd->fmt_ctx, raw_fd, raw_size, &sd->raw_fd_io)
-        : avformat_open_input(&sd->fmt_ctx, path, nullptr, &openOptions);
+        : open_format_input(&sd->fmt_ctx, path, nullptr, &openOptions);
     av_dict_free(&openOptions);
     if (openResult < 0) {
         char errorText[AV_ERROR_MAX_STRING_SIZE] = {0};
@@ -2038,13 +2069,13 @@ static StreamDecoder* stream_decoder_open(
                  safeUrl.c_str(), openResult, errorText);
         }
         if (sd->raw_fd_io) close_input_with_fd(&sd->fmt_ctx, &sd->raw_fd_io);
-        else if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
+        else if (sd->fmt_ctx) close_format_input(&sd->fmt_ctx);
         release_flac_repair_io(sd);
         free(sd);
         return nullptr;
     }
-    if (repairedFlacInput) {
-        LOGI("FLAC_COMPAT virtual input opened path=%s format=%s streams=%u",
+    if (repairedContainerInput) {
+        LOGI("CONTAINER_COMPAT virtual input opened path=%s format=%s streams=%u",
              path,
              (sd->fmt_ctx && sd->fmt_ctx->iformat && sd->fmt_ctx->iformat->name)
                  ? sd->fmt_ctx->iformat->name : "-",
@@ -2358,7 +2389,7 @@ fail:
     if (sd->swr_ctx) swr_free(&sd->swr_ctx);
     if (sd->codec_ctx) avcodec_free_context(&sd->codec_ctx);
     if (sd->raw_fd_io) close_input_with_fd(&sd->fmt_ctx, &sd->raw_fd_io);
-    else if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
+    else if (sd->fmt_ctx) close_format_input(&sd->fmt_ctx);
     release_flac_repair_io(sd);
     free(sd);
     return nullptr;
@@ -2423,9 +2454,20 @@ static int convertRawDsdPacketToPcm(StreamDecoder *sd, const AVPacket *pkt) {
  */
 static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_bytes) {
     if (!sd || !out_buf || out_max_bytes <= 0) return -2;
-    if (sd->eof_reached && sd->residual_buf_pos >= sd->residual_buf_size) return -1;
+    if (sd->eof_reached && sd->residual_buf_pos >= sd->residual_buf_size) return sd->decode_error ? -2 : -1;
 
     int bytes_written = 0;
+    const int64_t sourceDurationMs = static_cast<int64_t>(llround(
+        static_cast<long double>(sd->duration_us) * sd->playback_speed / 1000));
+    auto skipTailDamage = [&](int error) {
+        if (!canSkipFlacTailDamage(sd->codec_ctx && sd->codec_ctx->codec_id == AV_CODEC_ID_FLAC,
+                error == AVERROR_INVALIDDATA, sourceDurationMs, sd->last_decoded_source_end_ms,
+                sd->tail_damage_errors)) return false;
+        ++sd->tail_damage_errors;
+        LOGI("stream_decoder_read: skipped FLAC tail damage error=%d endMs=%lld durationMs=%lld count=%u",
+            error, (long long)sd->last_decoded_source_end_ms, (long long)sourceDurationMs, sd->tail_damage_errors);
+        return true;
+    };
 
     // Step 1: Copy residual data first
     streamCopyResidual(sd, out_buf, out_max_bytes, &bytes_written);
@@ -2556,12 +2598,14 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
                         if (send_ret == -100) {
                             LOGE("stream_decoder_read: SIGABRT caught during flush, aborting");
                             sd->eof_reached = true;
+                            sd->decode_error = send_ret;
                             break;
                         }
                         sd->flushed_decoder = true;
                         continue;
                     }
                     LOGE("stream_decoder_read: av_read_frame failed: %d", ret);
+                    sd->decode_error = ret;
                     sd->eof_reached = true;
                     break;
                 }
@@ -2574,10 +2618,13 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
                 if (ret == -100) {
                     LOGE("stream_decoder_read: SIGABRT caught in avcodec_send_packet, aborting");
                     sd->eof_reached = true;
+                    sd->decode_error = ret;
                     break;
                 }
                 if (ret < 0) {
                     LOGE("stream_decoder_read: avcodec_send_packet failed: %d", ret);
+                    if (skipTailDamage(ret)) continue;
+                    sd->decode_error = ret;
                     sd->eof_reached = true;
                     break;
                 }
@@ -2592,12 +2639,25 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
             break;
         } else if (ret < 0) {
             LOGE("stream_decoder_read: avcodec_receive_frame failed: %d", ret);
+            if (skipTailDamage(ret)) { av_frame_unref(sd->frame); continue; }
+            sd->decode_error = ret;
             sd->eof_reached = true;
             break;
         }
 
         // Got a decoded frame, resample it
         const int input_samples = sd->frame->nb_samples;
+        if (sd->frame->best_effort_timestamp != AV_NOPTS_VALUE && sd->src_sample_rate > 0) {
+            const int64_t frameEndMs = av_rescale_q(sd->frame->best_effort_timestamp,
+                sd->fmt_ctx->streams[sd->audio_stream_idx]->time_base, AVRational{1, 1000}) +
+                static_cast<int64_t>(input_samples) * 1000 / sd->src_sample_rate;
+            if (sd->codec_ctx->codec_id == AV_CODEC_ID_FLAC && sd->tail_damage_errors > 0 &&
+                    frameEndMs <= sd->last_decoded_source_end_ms) {
+                av_frame_unref(sd->frame);
+                continue; // Corrupt tails can resynchronize to duplicate older frames.
+            }
+            sd->last_decoded_source_end_ms = std::max(sd->last_decoded_source_end_ms, frameEndMs);
+        }
         const int effective_input_rate = effective_decoder_input_rate(
             sd->src_sample_rate, sd->playback_speed);
         int out_samples = swr_convert(sd->swr_ctx, &sd->residual_buf, sd->residual_buf_capacity / sd->out_bytes_per_sample / sd->out_channels,
@@ -2621,6 +2681,13 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
             sd->speed_trace_frames++;
         }
         av_frame_unref(sd->frame);
+
+        if (out_samples < 0) {
+            sd->decode_error = out_samples;
+            sd->eof_reached = true;
+            LOGE("stream_decoder_read: swr_convert failed: %d", out_samples);
+            break;
+        }
 
         if (out_samples > 0) {
             // 24bit/32bit 都直接用 S32LE (4B/sample)，无需格式转换
@@ -2672,7 +2739,7 @@ static int stream_decoder_read(StreamDecoder *sd, uint8_t *out_buf, int out_max_
         sd->flushed_swr = true;
     }
 
-    return bytes_written > 0 ? bytes_written : -1;
+    return bytes_written > 0 ? bytes_written : (sd->decode_error ? -2 : -1);
 }
 
 /**
@@ -2690,6 +2757,8 @@ static bool stream_decoder_seek(StreamDecoder *sd, int64_t position_us) {
     sd->eof_reached = false;
     sd->flushed_decoder = false;
     sd->flushed_swr = false;
+    sd->decode_error = 0;
+    sd->tail_damage_errors = 0;
     if (sd->raw_dsd_to_pcm) {
         sd->dsd_pcm_phase = 0;
         sd->dsd_pcm_history_pos = 0;
@@ -2709,6 +2778,7 @@ static bool stream_decoder_seek(StreamDecoder *sd, int64_t position_us) {
         ? static_cast<int64_t>(llround(
             static_cast<long double>(position_us) * sd->playback_speed))
         : position_us;
+    sd->last_decoded_source_end_ms = source_position_us / 1000;
     int ret = avformat_seek_file(sd->fmt_ctx, -1, INT64_MIN, source_position_us, INT64_MAX, 0);
     if (ret < 0) {
         LOGE("stream_decoder_seek: avformat_seek_file failed: %d", ret);
@@ -2730,7 +2800,7 @@ static void stream_decoder_close(StreamDecoder *sd) {
     if (sd->swr_ctx) swr_free(&sd->swr_ctx);
     if (sd->codec_ctx) avcodec_free_context(&sd->codec_ctx);
     if (sd->raw_fd_io) close_input_with_fd(&sd->fmt_ctx, &sd->raw_fd_io);
-    else if (sd->fmt_ctx) avformat_close_input(&sd->fmt_ctx);
+    else if (sd->fmt_ctx) close_format_input(&sd->fmt_ctx);
     release_flac_repair_io(sd);
     free(sd);
 }
@@ -2738,7 +2808,7 @@ static void stream_decoder_close(StreamDecoder *sd) {
 // JNI bindings for streaming decoder
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoder(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoderLive(
     JNIEnv *env,
     jobject,
     jstring path,
@@ -2748,6 +2818,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoder(
     jstring headersBlock,
     jstring userAgent,
     jfloat playbackSpeed) {
+    raw_sacd_install_java_charset(env);
     const char *p = env->GetStringUTFChars(path, nullptr);
     const char *headers = headersBlock ? env->GetStringUTFChars(headersBlock, nullptr) : nullptr;
     const char *agent = userAgent ? env->GetStringUTFChars(userAgent, nullptr) : nullptr;
@@ -2766,7 +2837,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoder(
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoderFd(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoderFdLive(
     JNIEnv *,
     jobject,
     jint fd,
@@ -2789,7 +2860,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeOpenDecoderFd(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeDecodeChunk(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeDecodeChunkLive(
     JNIEnv *env, jobject, jlong handle, jbyteArray buffer, jint offset, jint maxBytes) {
     auto session = acquireStreamDecoderSession(handle);
     if (!session) return -2;
@@ -2810,7 +2881,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeDecodeChunk(
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeSeekDecoder(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeSeekDecoderLive(
     JNIEnv *, jobject, jlong handle, jlong positionMs) {
     auto session = acquireStreamDecoderSession(handle);
     if (!session) return JNI_FALSE;
@@ -2820,7 +2891,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeSeekDecoder(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderSampleRate(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderSampleRateLive(
     JNIEnv *, jobject, jlong handle) {
     auto session = acquireStreamDecoderSession(handle);
     if (!session) return 0;
@@ -2829,7 +2900,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderSampleRate(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderChannels(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderChannelsLive(
     JNIEnv *, jobject, jlong handle) {
     auto session = acquireStreamDecoderSession(handle);
     if (!session) return 0;
@@ -2838,7 +2909,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderChannels(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderBitsPerSample(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderBitsPerSampleLive(
     JNIEnv *, jobject, jlong handle) {
     auto session = acquireStreamDecoderSession(handle);
     if (!session) return 0;
@@ -2847,7 +2918,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderBitsPerSample
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderDuration(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderDurationLive(
     JNIEnv *, jobject, jlong handle) {
     auto session = acquireStreamDecoderSession(handle);
     if (!session) return 0;
@@ -2856,7 +2927,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetDecoderDuration(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeCloseDecoder(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeCloseDecoderLive(
     JNIEnv *, jobject, jlong handle) {
     auto session = detachStreamDecoderSession(handle);
     if (!session) return;
@@ -3055,7 +3126,7 @@ static jobject build_media_info_map(JNIEnv *env, AVFormatContext *fmt_ctx) {
 }
 
 extern "C" JNIEXPORT jobject JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfo(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfoLive(
     JNIEnv *env,
     jobject,
     jstring path,
@@ -3073,7 +3144,7 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfo(
         return nullptr;
     }
     if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
-        avformat_close_input(&fmt_ctx);
+        close_format_input(&fmt_ctx);
         if (agent) env->ReleaseStringUTFChars(userAgent, agent);
         if (headers) env->ReleaseStringUTFChars(headersBlock, headers);
         env->ReleaseStringUTFChars(path, p);
@@ -3211,12 +3282,12 @@ Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfo(
         }
     }
 
-    avformat_close_input(&fmt_ctx);
+    close_format_input(&fmt_ctx);
     return map;
 }
 
 extern "C" JNIEXPORT jobject JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfoFd(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeGetMediaInfoFdLive(
     JNIEnv *env,
     jobject,
     jint fd,
@@ -3538,7 +3609,7 @@ static int writeMetadataGeneric(const char *inputPath, const char *tmpPath,
     int ret = 0;
 
     // Open input
-    ret = avformat_open_input(&ifmt_ctx, inputPath, nullptr, nullptr);
+    ret = open_format_input(&ifmt_ctx, inputPath, nullptr, nullptr);
     if (ret < 0) {
         LOGE("writeMetaGeneric: avformat_open_input failed: %d", ret);
         return -30;
@@ -3547,7 +3618,7 @@ static int writeMetadataGeneric(const char *inputPath, const char *tmpPath,
     ret = avformat_find_stream_info(ifmt_ctx, nullptr);
     if (ret < 0) {
         LOGE("writeMetaGeneric: avformat_find_stream_info failed: %d", ret);
-        avformat_close_input(&ifmt_ctx);
+        close_format_input(&ifmt_ctx);
         return -31;
     }
 
@@ -3557,7 +3628,7 @@ static int writeMetadataGeneric(const char *inputPath, const char *tmpPath,
     if (ret < 0 || !ofmt_ctx) {
         LOGE("writeMetaGeneric: avformat_alloc_output_context2 failed: %d muxer=%s",
              ret, muxerName ? muxerName : "auto");
-        avformat_close_input(&ifmt_ctx);
+        close_format_input(&ifmt_ctx);
         return -32;
     }
 
@@ -3667,7 +3738,7 @@ cleanup:
         }
         avformat_free_context(ofmt_ctx);
     }
-    avformat_close_input(&ifmt_ctx);
+    close_format_input(&ifmt_ctx);
     return ret;
 }
 
@@ -3678,7 +3749,7 @@ cleanup:
  * Returns 0 on success, negative on error.
  */
 extern "C" JNIEXPORT jint JNICALL
-Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeWriteMetadata(
+Java_com_rawsmusic_core_common_ffmpeg_FFmpegBridge_nativeWriteMetadataLive(
     JNIEnv *env, jobject, jstring jpath, jobject metadataMap, jstring jcacheDir) {
 
     const char *inputPath = env->GetStringUTFChars(jpath, nullptr);

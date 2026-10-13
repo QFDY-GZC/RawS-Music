@@ -41,7 +41,6 @@ object AudioOutputManager {
 
     /** 采样率的显示名称 */
     val SAMPLE_RATE_LABELS = mapOf(
-        0 to "自动",
         44100 to "44.1 kHz",
         48000 to "48 kHz",
         88200 to "88.2 kHz",
@@ -56,7 +55,6 @@ object AudioOutputManager {
 
     /** 比特深度的显示名称 */
     val BIT_DEPTH_LABELS = mapOf(
-        BIT_DEPTH_AUTO to "自动",
         BIT_DEPTH_16 to "16 bit",
         BIT_DEPTH_24 to "24 bit",
         BIT_DEPTH_32 to "32 bit",
@@ -203,7 +201,7 @@ object AudioOutputManager {
             return false
         }
         val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-        val deviceNames = devices.map { getDeviceTypeName(it.type) }
+        val deviceNames = devices.map { getDeviceTypeName(context, it.type) }
         Log.d(TAG, "Output devices (${"${devices.size}"}): $deviceNames")
 
         val hasBtOutput = devices.any { isBluetoothOutput(it.type) }
@@ -709,12 +707,12 @@ object AudioOutputManager {
     /**
      * 获取输出模式的描述
      */
-    fun getOutputModeDescription(mode: AudioOutputMode): String {
+    fun getOutputModeDescription(context: Context, mode: AudioOutputMode): String {
         return when (mode) {
-            AudioOutputMode.OPENSL_ES -> "传统输出，兼容性最佳"
-            AudioOutputMode.AAUDIO -> "低延迟输出，推荐 (Android 8.1+)"
-            AudioOutputMode.DIRECT -> "绕过系统混音，高采样率直出"
-            AudioOutputMode.AUDIO_TRACK -> "系统混音，高兼容，PCM ≤ 48kHz / 24bit / Stereo"
+            AudioOutputMode.OPENSL_ES -> context.getString(R.string.audio_output_desc_opensl)
+            AudioOutputMode.AAUDIO -> context.getString(R.string.audio_output_desc_aaudio)
+            AudioOutputMode.DIRECT -> context.getString(R.string.audio_output_desc_direct)
+            AudioOutputMode.AUDIO_TRACK -> context.getString(R.string.audio_output_desc_audiotrack)
         }
     }
 
@@ -734,9 +732,10 @@ object AudioOutputManager {
      * 获取当前输出设备名称
      */
     fun getCurrentOutputDeviceName(context: Context): String {
-        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return "Unknown"
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            ?: return context.getString(R.string.audio_device_unknown)
         val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-        if (devices.isEmpty()) return "None"
+        if (devices.isEmpty()) return context.getString(R.string.audio_device_none)
 
         // 优先级：USB > 有线耳机 > 蓝牙 > 扬声器
         val priorityOrder = listOf(
@@ -757,10 +756,10 @@ object AudioOutputManager {
         for (type in priorityOrder) {
             val device = devices.find { it.type == type }
             if (device != null) {
-                return getDeviceTypeName(device.type)
+                return getDeviceTypeName(context, device.type)
             }
         }
-        return getDeviceTypeName(devices[0].type)
+        return getDeviceTypeName(context, devices[0].type)
     }
 
     /**
@@ -782,6 +781,9 @@ object AudioOutputManager {
             AudioDeviceInfo.TYPE_LINE_ANALOG,
             AudioDeviceInfo.TYPE_LINE_DIGITAL,
             AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+            26, // TYPE_BLE_HEADSET
+            27, // TYPE_BLE_SPEAKER
+            23, // TYPE_HEARING_AID
             AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
         )
         for (type in preferredTypes) {
@@ -790,20 +792,20 @@ object AudioOutputManager {
         return devices.firstOrNull()
     }
 
-    private fun getDeviceTypeName(type: Int): String = when (type) {
-        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "扬声器"
-        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "听筒"
-        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "有线耳机"
-        AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "有线耳机"
-        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "蓝牙 A2DP"
-        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "蓝牙 SCO"
-        AudioDeviceInfo.TYPE_USB_DEVICE -> "USB 音频"
-        AudioDeviceInfo.TYPE_USB_HEADSET -> "USB 耳机"
-        AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB 配件"
-        AudioDeviceInfo.TYPE_LINE_ANALOG -> "模拟线路"
-        AudioDeviceInfo.TYPE_LINE_DIGITAL -> "数字线路"
-        AudioDeviceInfo.TYPE_HEARING_AID -> "助听器"
-        else -> "设备($type)"
+    private fun getDeviceTypeName(context: Context, type: Int): String = when (type) {
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> context.getString(R.string.audio_device_speaker)
+        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> context.getString(R.string.audio_device_earpiece)
+        AudioDeviceInfo.TYPE_WIRED_HEADSET -> context.getString(R.string.audio_device_wired_headset)
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> context.getString(R.string.audio_device_wired_headphones)
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> context.getString(R.string.audio_device_bluetooth_a2dp)
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> context.getString(R.string.audio_device_bluetooth_sco)
+        AudioDeviceInfo.TYPE_USB_DEVICE -> context.getString(R.string.audio_device_usb_audio)
+        AudioDeviceInfo.TYPE_USB_HEADSET -> context.getString(R.string.audio_device_usb_headset)
+        AudioDeviceInfo.TYPE_USB_ACCESSORY -> context.getString(R.string.audio_device_usb_accessory)
+        AudioDeviceInfo.TYPE_LINE_ANALOG -> context.getString(R.string.audio_device_line_analog)
+        AudioDeviceInfo.TYPE_LINE_DIGITAL -> context.getString(R.string.audio_device_line_digital)
+        AudioDeviceInfo.TYPE_HEARING_AID -> context.getString(R.string.audio_device_hearing_aid)
+        else -> context.getString(R.string.audio_device_generic, type)
     }
 
     // ========== 蓝牙 SCO 通话信道管理 ==========
@@ -924,20 +926,20 @@ object AudioOutputManager {
     /**
      * 获取蓝牙 SCO 模式标签
      */
-    fun getScoModeLabel(mode: Int): String = when (mode) {
-        0 -> "关闭"
-        1 -> "自动检测"
-        2 -> "强制开启"
-        else -> "未知"
+    fun getScoModeLabel(context: Context, mode: Int): String = when (mode) {
+        0 -> context.getString(R.string.audio_sco_off)
+        1 -> context.getString(R.string.audio_sco_auto)
+        2 -> context.getString(R.string.audio_sco_force)
+        else -> context.getString(R.string.audio_device_unknown)
     }
 
     /**
      * 获取蓝牙 SCO 模式描述
      */
-    fun getScoModeDescription(mode: Int): String = when (mode) {
-        0 -> "不使用蓝牙通话信道"
-        1 -> "仅在设备不支持蓝牙音乐时自动切换"
-        2 -> "始终通过蓝牙通话信道输出"
+    fun getScoModeDescription(context: Context, mode: Int): String = when (mode) {
+        0 -> context.getString(R.string.audio_sco_desc_off)
+        1 -> context.getString(R.string.audio_sco_desc_auto)
+        2 -> context.getString(R.string.audio_sco_desc_force)
         else -> ""
     }
 }

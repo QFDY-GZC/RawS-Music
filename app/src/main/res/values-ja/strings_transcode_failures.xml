@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="transcode_failure_invalid_request">変換リクエストが無効です。</string>
+    <string name="transcode_failure_unsupported_source">この入力音声形式またはパラメータには対応していません。</string>
+    <string name="transcode_failure_unsupported_target">選択した出力形式またはパラメータには対応していません。</string>
+    <string name="transcode_failure_output_exists">出力ファイルはすでに存在します。</string>
+    <string name="transcode_failure_insufficient_space">変換に必要な空き容量が不足しています。</string>
+    <string name="transcode_failure_encode_failed">音声のエンコードに失敗しました。</string>
+    <string name="transcode_failure_metadata_migration">指定どおりにメタデータを保持できませんでした。</string>
+    <string name="transcode_failure_verification">変換後のファイル検証に失敗しました。</string>
+    <string name="transcode_failure_commit">変換結果を最終保存先に確定できませんでした。</string>
+    <string name="transcode_failure_process_interrupted">変換は完了前に中断されました。</string>
+    <string name="transcode_failure_internal">内部エラーにより変換に失敗しました。</string>
+    <string name="transcode_failure_with_native_code">%1$s（native=%2$d）</string>
+</resources>

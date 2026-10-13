@@ -22,8 +22,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import android.net.Uri
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Composable
@@ -70,6 +68,10 @@ import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.DropdownEntry
+import top.yukonga.miuix.kmp.basic.DropdownItem
+import top.yukonga.miuix.kmp.window.WindowCascadingListPopup
+import com.rawsmusic.core.ui.widget.ActivityOverlayBackOwner
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.Search
@@ -194,32 +196,36 @@ internal fun SongStatsPage(
                             modifier = Modifier.size(23.dp)
                         )
                     }
-                    DropdownMenu(
-                        expanded = sortMenuVisible,
-                        onDismissRequest = { sortMenuVisible = false }
-                    ) {
-                        Text(
-                            text = stringResource(R.string.library_analysis_sort),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = scheme.onSurfaceVariantSummary,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                        )
-                        LibraryAnalysisSort.entries.forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(analysisSortLabel(option)) },
-                                onClick = {
-                                    if (sortField == option) {
-                                        sortDescending = !sortDescending
-                                    } else {
-                                        sortField = option
-                                        sortDescending = false
-                                    }
-                                    sortMenuVisible = false
-                                }
+                    val descendingLabel = stringResource(R.string.sort_descending)
+                    val sortLabels = LibraryAnalysisSort.entries.map { analysisSortLabel(it) }
+                    val sortEntries = remember(sortField, sortDescending, sortLabels, descendingLabel) {
+                        listOf(
+                            DropdownEntry(
+                                items = LibraryAnalysisSort.entries.mapIndexed { index, option ->
+                                    DropdownItem(
+                                        text = sortLabels[index],
+                                        selected = sortField == option,
+                                        summary = descendingLabel.takeIf { sortField == option && sortDescending },
+                                        onClick = {
+                                            // Same contract as before: re-selecting the active field flips direction.
+                                            if (sortField == option) {
+                                                sortDescending = !sortDescending
+                                            } else {
+                                                sortField = option
+                                                sortDescending = false
+                                            }
+                                        },
+                                    )
+                                },
                             )
-                        }
+                        )
                     }
+                    ActivityOverlayBackOwner(active = sortMenuVisible)
+                    WindowCascadingListPopup(
+                        show = sortMenuVisible,
+                        entries = sortEntries,
+                        onDismissRequest = { sortMenuVisible = false },
+                    )
                 }
             } else {
                 Box {
@@ -231,43 +237,55 @@ internal fun SongStatsPage(
                             modifier = Modifier.size(23.dp)
                         )
                     }
-                    DropdownMenu(
-                        expanded = filterMenuVisible,
-                        onDismissRequest = { filterMenuVisible = false }
+                    val dimensionTitle = stringResource(R.string.library_analysis_dimension)
+                    val metricTitle = stringResource(R.string.library_analysis_metric)
+                    val dimensionLabels = LibraryAnalysisDimension.entries.map { analysisDimensionLabel(it) }
+                    val metricLabels = LibraryAnalysisMetric.entries.map { analysisMetricLabel(it) }
+                    // MIUIX secondary menu: the primary list names the two filter axes; each opens its
+                    // own option list, and the primary row summarizes the currently applied value.
+                    val filterEntries = remember(
+                        dimension,
+                        metric,
+                        dimensionTitle,
+                        metricTitle,
+                        dimensionLabels,
+                        metricLabels,
                     ) {
-                        Text(
-                            text = stringResource(R.string.library_analysis_dimension),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = scheme.onSurfaceVariantSummary,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                        )
-                        LibraryAnalysisDimension.entries.forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(analysisDimensionLabel(option)) },
-                                onClick = {
-                                    dimension = option
-                                    filterMenuVisible = false
-                                }
+                        listOf(
+                            DropdownEntry(
+                                items = listOf(
+                                    DropdownItem(
+                                        text = dimensionTitle,
+                                        summary = dimensionLabels[dimension.ordinal],
+                                        children = LibraryAnalysisDimension.entries.mapIndexed { index, option ->
+                                            DropdownItem(
+                                                text = dimensionLabels[index],
+                                                selected = dimension == option,
+                                                onClick = { dimension = option },
+                                            )
+                                        },
+                                    ),
+                                    DropdownItem(
+                                        text = metricTitle,
+                                        summary = metricLabels[metric.ordinal],
+                                        children = LibraryAnalysisMetric.entries.mapIndexed { index, option ->
+                                            DropdownItem(
+                                                text = metricLabels[index],
+                                                selected = metric == option,
+                                                onClick = { metric = option },
+                                            )
+                                        },
+                                    ),
+                                ),
                             )
-                        }
-                        Text(
-                            text = stringResource(R.string.library_analysis_metric),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = scheme.onSurfaceVariantSummary,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                         )
-                        LibraryAnalysisMetric.entries.forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(analysisMetricLabel(option)) },
-                                onClick = {
-                                    metric = option
-                                    filterMenuVisible = false
-                                }
-                            )
-                        }
                     }
+                    ActivityOverlayBackOwner(active = filterMenuVisible)
+                    WindowCascadingListPopup(
+                        show = filterMenuVisible,
+                        entries = filterEntries,
+                        onDismissRequest = { filterMenuVisible = false },
+                    )
                 }
             }
         },
@@ -372,6 +390,7 @@ private fun LibraryAnalysisDashboard(
                     )
                     LibraryAnalysisCylinderCard(
                         title = analysisDimensionLabel(dimension),
+                        dimension = dimension,
                         buckets = buckets,
                         total = totalCount,
                         totalSizeBytes = totalSizeBytes,
@@ -421,6 +440,7 @@ private fun LibraryAnalysisDetail(
 @Composable
 private fun LibraryAnalysisCylinderCard(
     title: String,
+    dimension: LibraryAnalysisDimension,
     buckets: List<LibraryAnalysisBucket>,
     total: Int,
     totalSizeBytes: Long,
@@ -461,7 +481,7 @@ private fun LibraryAnalysisCylinderCard(
                 )
             }
         } else {
-            val palette = remember(title) { analysisPalette(title) }
+            val palette = remember(dimension) { analysisPalette(dimension) }
             val weights = remember(buckets, metric) {
                 buckets.map {
                     if (metric == LibraryAnalysisMetric.SIZE) it.sizeBytes.toDouble()
@@ -1009,20 +1029,20 @@ private fun analysisSortLabel(sort: LibraryAnalysisSort): String = when (sort) {
     LibraryAnalysisSort.DURATION -> stringResource(R.string.library_analysis_sort_duration)
 }
 
-private fun analysisPalette(title: String): List<Color> = when {
-    title.contains("质量") || title.contains("Quality", true) -> listOf(
+private fun analysisPalette(dimension: LibraryAnalysisDimension): List<Color> = when (dimension) {
+    LibraryAnalysisDimension.QUALITY -> listOf(
         Color(0xFF6A5ACD), Color(0xFF1AA6A6), Color(0xFFE0A458), Color(0xFFCA6670),
         Color(0xFF7C8798), Color(0xFF8DBA61), Color(0xFF9673B7),
     )
-    title.contains("采样") || title.contains("Sample", true) -> listOf(
+    LibraryAnalysisDimension.SAMPLE_RATE -> listOf(
         Color(0xFF3B82F6), Color(0xFF14B8A6), Color(0xFFF59E0B), Color(0xFF8B5CF6),
         Color(0xFFEC6B7A), Color(0xFF64748B), Color(0xFF72A37B),
     )
-    title.contains("位深") || title.contains("Bit", true) -> listOf(
+    LibraryAnalysisDimension.BIT_DEPTH -> listOf(
         Color(0xFFE2A93B), Color(0xFF20A9B0), Color(0xFF4E72D8), Color(0xFF9A6BC0),
         Color(0xFFE27B67), Color(0xFF6BAA63), Color(0xFF758294),
     )
-    else -> listOf(
+    LibraryAnalysisDimension.FORMAT -> listOf(
         Color(0xFFE2A93B), Color(0xFF20A9B0), Color(0xFF4E72D8), Color(0xFF9A6BC0),
         Color(0xFFE27B67), Color(0xFF6BAA63), Color(0xFF758294),
     )

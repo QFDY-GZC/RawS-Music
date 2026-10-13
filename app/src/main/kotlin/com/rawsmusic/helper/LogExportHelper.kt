@@ -12,6 +12,7 @@ import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.utils.UsbIncidentArchive
+import com.rawsmusic.locale.localizedErrorMessage
 import java.io.File
 
 class LogExportHelper(
@@ -64,7 +65,10 @@ class LogExportHelper(
             } catch (e: Exception) {
                 mainHandler.post {
                     AppNoticeBus.error(
-                        context.getString(com.rawsmusic.R.string.logs_export_failed, e.message.orEmpty())
+                        context.getString(
+                            com.rawsmusic.R.string.logs_export_failed,
+                            context.localizedErrorMessage(e, com.rawsmusic.R.string.ui_unknown_error),
+                        )
                     )
                 }
             }
@@ -84,7 +88,10 @@ class LogExportHelper(
                         AppNoticeBus.error(
                             context.getString(
                                 com.rawsmusic.R.string.logs_export_failed,
-                                error.message.orEmpty(),
+                                context.localizedErrorMessage(
+                                    error,
+                                    com.rawsmusic.R.string.ui_unknown_error,
+                                ),
                             )
                         )
                     }
@@ -94,7 +101,10 @@ class LogExportHelper(
                     AppNoticeBus.error(
                         context.getString(
                             com.rawsmusic.R.string.logs_export_failed,
-                            error.message.orEmpty(),
+                            context.localizedErrorMessage(
+                                error,
+                                com.rawsmusic.R.string.ui_unknown_error,
+                            ),
                         )
                     )
                 }
@@ -129,7 +139,10 @@ class LogExportHelper(
             shareFile(export, context.getString(com.rawsmusic.R.string.settings_xiaomi_super_island_export_log))
         } catch (error: Exception) {
             AppNoticeBus.error(
-                context.getString(com.rawsmusic.R.string.logs_export_failed, error.message.orEmpty())
+                context.getString(
+                    com.rawsmusic.R.string.logs_export_failed,
+                    context.localizedErrorMessage(error, com.rawsmusic.R.string.ui_unknown_error),
+                )
             )
         }
     }

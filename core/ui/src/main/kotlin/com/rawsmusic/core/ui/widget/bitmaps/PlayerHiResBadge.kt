@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -23,11 +22,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.module.data.prefs.PlayerHiResBadgeCorner
+import com.rawsmusic.module.data.prefs.PlayerHiResBadgeSourceInfo
+import com.rawsmusic.module.data.prefs.resolvePlayerHiResBadgeDisplaySize
 import top.yukonga.miuix.kmp.basic.Text
 import kotlin.math.max
 
 /** Decode an imported badge at a deliberately small ceiling; the badge is a watermark, not artwork. */
-internal fun decodePlayerHiResBadgeBitmap(path: String, maxSidePx: Int = 256): Bitmap? {
+internal fun decodePlayerHiResBadgeBitmap(path: String, maxSidePx: Int = 512): Bitmap? {
     if (path.isBlank()) return null
     return runCatching {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -61,6 +62,7 @@ internal fun PlayerHiResBadgeCorner.composeAlignment(): Alignment = when (this) 
 internal fun PlayerHiResBadgeOverlay(
     corner: PlayerHiResBadgeCorner,
     customBitmap: Bitmap?,
+    sizeScale: Float,
     contentInset: Dp,
     contentScaleFactor: Float,
     modifier: Modifier = Modifier,
@@ -79,24 +81,37 @@ internal fun PlayerHiResBadgeOverlay(
             .align(alignment)
             .padding(12.dp)
         if (customBitmap != null && !customBitmap.isRecycled) {
+            val size = resolvePlayerHiResBadgeDisplaySize(
+                customSource = PlayerHiResBadgeSourceInfo(customBitmap.width, customBitmap.height),
+                sizeScale = sizeScale,
+            )
             Image(
                 bitmap = customBitmap.asImageBitmap(),
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
-                modifier = badgeModifier.size(54.dp),
+                modifier = badgeModifier
+                    .width(size.widthDp.dp)
+                    .height(size.heightDp.dp),
             )
         } else {
+            val size = resolvePlayerHiResBadgeDisplaySize(
+                customSource = null,
+                sizeScale = sizeScale,
+            )
             Box(
                 modifier = badgeModifier
-                    .width(58.dp)
-                    .height(28.dp)
-                    .background(Color.Black.copy(alpha = 0.66f), RoundedCornerShape(7.dp)),
+                    .width(size.widthDp.dp)
+                    .height(size.heightDp.dp)
+                    .background(
+                        Color.Black.copy(alpha = 0.66f),
+                        RoundedCornerShape((7f * sizeScale).coerceAtLeast(3.5f).dp),
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = "HI-RES",
                     color = Color.White,
-                    fontSize = 10.sp,
+                    fontSize = (10f * sizeScale).coerceAtLeast(5f).sp,
                     fontWeight = FontWeight.Bold,
                 )
             }

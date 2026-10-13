@@ -3,8 +3,6 @@ package com.rawsmusic.module.player.dsp
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import com.rawsmusic.module.data.prefs.AppPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,7 +26,6 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
         private const val CURVE_POINTS = 200 // 频率响应曲线采样点数
         private const val DEFAULT_SAMPLE_RATE = 48000
         private const val PERSIST_DEBOUNCE_MS = 350L
-        private val gson = Gson()
     }
 
     private val persistHandler = Handler(Looper.getMainLooper())
@@ -565,8 +562,7 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
             val json = AppPreferences.PEQ.filtersJson
 
             val loadedFilters = if (json.isNotBlank()) {
-                val type = object : TypeToken<List<PEQFilter>>() {}.type
-                gson.fromJson<List<PEQFilter>>(json, type).orEmpty()
+                PeqFilterJsonCodec.decode(json)
             } else {
                 emptyList()
             }
@@ -610,7 +606,7 @@ class ParametricEQController(private var nativeEngine: NativeDSPEngine) {
             AppPreferences.PEQ.isEnabled = _isEnabled.value
             AppPreferences.PEQ.preamp = _preamp.value
             AppPreferences.PEQ.bandCount = _bandCount.value
-            AppPreferences.PEQ.filtersJson = gson.toJson(_filters.value)
+            AppPreferences.PEQ.filtersJson = PeqFilterJsonCodec.encode(_filters.value)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to persist PEQ state", e)
         }

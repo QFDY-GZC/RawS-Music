@@ -3,6 +3,7 @@ package com.rawsmusic
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.PlayerController
+import com.rawsmusic.module.player.control.PcmWaveformConsumerBinding
 import com.rawsmusic.module.player.dsp.NativeStereoSpectrumAnalyzer
 import com.rawsmusic.module.player.dsp.RealtimeSpectrumPipeline
 
@@ -18,6 +19,14 @@ internal class MainActivityVisualizerCoordinator(
 ) {
     private fun emptySpectrum() = FloatArray(NativeStereoSpectrumAnalyzer.OUTPUT_SIZE)
     private var boundController: PlayerController? = null
+    private val waveformCallback: (ByteArray, Int, Int, Int, Int, Int) -> Unit = waveform@{
+            buffer, read, channels, sampleRate, validBitsPerSample, sampleEncoding ->
+        if (!isActivityForeground() || !isUiRequested()) return@waveform
+        pipeline.submit(buffer, read, channels, sampleRate, sampleEncoding, validBitsPerSample)
+    }
+    private var consumerBinding: PcmWaveformConsumerBinding<
+        (ByteArray, Int, Int, Int, Int, Int) -> Unit
+    >? = null
 
     fun bind(controller: PlayerController) {
         val previous = boundController
@@ -28,25 +37,15 @@ internal class MainActivityVisualizerCoordinator(
             updateRuntime("same_controller_rebind")
             return
         }
-        previous?.ffmpegPlayerRef?.setWaveformConsumerActive(false)
-        previous?.onPcmWaveformFrame = null
+        consumerBinding?.release()
         boundController = controller
-        controller.onPcmWaveformFrame = waveform@{
-                buffer, read, channels, sampleRate, validBitsPerSample, sampleEncoding ->
-            // Realtime spectrum consumers are not limited to the optional visualizer overlay.
-            // Music Spine uses the same internal PCM analysis even when that overlay is disabled.
-            if (!isActivityForeground() || !isUiRequested()) {
-                return@waveform
-            }
-            pipeline.submit(
-                buffer = buffer,
-                read = read,
-                channels = channels,
-                sampleRate = sampleRate,
-                sampleEncoding = sampleEncoding,
-                validBitsPerSample = validBitsPerSample,
-            )
-        }
+        consumerBinding = PcmWaveformConsumerBinding(
+            callback = waveformCallback,
+            currentCallback = { controller.onPcmWaveformFrame },
+            setCallback = { controller.onPcmWaveformFrame = it },
+            setCaptureActive = { controller.ffmpegPlayerRef.setWaveformConsumerActive(it) },
+            restorePreviousCallback = false,
+        )
         updateRuntime("controller_bind")
     }
 
@@ -69,7 +68,7 @@ internal class MainActivityVisualizerCoordinator(
 
     fun updateRuntime(reason: String) {
         val active = isActivityForeground() && isUiRequested()
-        boundController?.ffmpegPlayerRef?.setWaveformConsumerActive(active)
+        consumerBinding?.update(active)
         pipeline.setPlaying(isPlaying())
         pipeline.setActive(active)
         if (!active) {
@@ -79,7 +78,7 @@ internal class MainActivityVisualizerCoordinator(
     }
 
     fun stopAndReset() {
-        boundController?.ffmpegPlayerRef?.setWaveformConsumerActive(false)
+        consumerBinding?.update(false)
         pipeline.setActive(false)
         setSpectrum(emptySpectrum())
     }

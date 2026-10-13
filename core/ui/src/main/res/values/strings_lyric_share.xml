@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="lyric_share_video_title">生成歌词视频</string>
+    <string name="lyric_share_video_summary">选取连续的歌词片段，导出带流光背景与歌词动效的视频</string>
+    <string name="lyric_share_poster_title">分享歌词海报</string>
+    <string name="lyric_share_poster_summary">选取歌词生成一张分享图片</string>
+    <string name="lyric_share_select_hint">依次点击起始行和结束行，选择一段连续的歌词</string>
+    <string name="lyric_share_poster_select_hint">自由勾选最多 6 句歌词；也可以不选歌词，仅分享封面</string>
+    <string name="lyric_share_poster_selected">已选 %1$d / %2$d 句</string>
+    <string name="lyric_share_select_all">全选</string>
+    <string name="lyric_share_selected">已选 %1$d 行 · %2$s</string>
+    <string name="lyric_share_no_lyrics">这首歌没有歌词，请选择时间区间</string>
+    <string name="lyric_share_range">%1$s – %2$s</string>
+    <string name="lyric_share_aspect">画幅</string>
+    <string name="lyric_share_resolution">分辨率</string>
+    <string name="lyric_share_frame_rate">帧率</string>
+    <string name="lyric_share_codec">编码</string>
+    <string name="lyric_share_unsupported">当前设备不支持这个分辨率、帧率与编码的组合</string>
+    <string name="lyric_share_export">开始导出</string>
+    <string name="lyric_share_exporting">正在导出… %1$d%%</string>
+    <string name="lyric_share_exporting_hint">导出期间请保持在此界面</string>
+    <string name="lyric_share_cancel">取消</string>
+    <string name="lyric_share_share">分享</string>
+    <string name="lyric_share_save">保存到相册</string>
+    <string name="lyric_share_done">完成</string>
+    <string name="lyric_share_saved">已保存到 %1$s</string>
+    <string name="lyric_share_failed">导出失败：%1$s</string>
+    <string name="lyric_share_generate_poster">生成海报</string>
+    <string name="lyric_share_generating_poster">正在生成海报…</string>
+    <string name="lyric_share_regenerate">重新选择</string>
+</resources>

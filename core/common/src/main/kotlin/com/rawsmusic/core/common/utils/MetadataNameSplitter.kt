@@ -5,8 +5,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Splits multi-value metadata without breaking names explicitly protected by
- * the user. Protection is applied before separator matching, just like the
- * library model used by Halcyon.
+ * the user. Protected names are resolved before separator matching.
  */
 data class MetadataNameSplitConfig(
     val artistSeparators: List<String> = emptyList(),

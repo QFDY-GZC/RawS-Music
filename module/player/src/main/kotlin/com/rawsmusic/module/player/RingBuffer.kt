@@ -162,6 +162,7 @@ class RingBuffer(private val capacity: Int) {
             writePos = 0
             count = 0
             closed = false
+            eof = false
             notFull.signalAll()
             notEmpty.signalAll()
         }
@@ -217,10 +218,10 @@ class RingBuffer(private val capacity: Int) {
     }
 
     /**
-     * Whether the buffer is closed and empty (EOF reached).
+     * Whether the producer finished or closed and all buffered PCM has been consumed.
      */
     fun isEof(): Boolean {
-        lock.withLock { return closed && count == 0 }
+        lock.withLock { return (eof || closed) && count == 0 }
     }
 
     fun isClosed(): Boolean = closed

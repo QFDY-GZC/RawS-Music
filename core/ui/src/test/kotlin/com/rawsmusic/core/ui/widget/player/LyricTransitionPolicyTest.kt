@@ -20,8 +20,8 @@ class LyricTransitionPolicyTest {
     }
 
     @Test
-    fun manualBackwardSeekDoesNotRunForwardPull() {
-        assertFalse(
+    fun manualBackwardSeekUsesTheSameLineAnimationPath() {
+        assertTrue(
             shouldPullFollowingLyrics(
                 previousIndex = 14,
                 newIndex = 10,
@@ -34,7 +34,7 @@ class LyricTransitionPolicyTest {
     }
 
     @Test
-    fun naturalPlaybackKeepsAdjacentForwardGuard() {
+    fun naturalPlaybackMayCarryAcrossSeveralLines() {
         assertTrue(
             shouldPullFollowingLyrics(
                 previousIndex = 20,
@@ -45,7 +45,7 @@ class LyricTransitionPolicyTest {
                 hasActiveInterlude = false
             )
         )
-        assertFalse(
+        assertTrue(
             shouldPullFollowingLyrics(
                 previousIndex = 20,
                 newIndex = 25,

@@ -1,0 +1,7 @@
+<resources>
+    <string name="ui_playlist_remove_title">Remove song from playlists</string>
+    <string name="ui_playlist_remove_selected_summary">Choose playlists to remove from · %1$d selected</string>
+    <string name="ui_playlist_remove_selected">Remove (%1$d)</string>
+    <string name="ui_playlist_remove_success">Song removed from %1$d playlists</string>
+    <string name="ui_playlist_remove_failed">Some removals failed. Please check the selected playlists and try again.</string>
+</resources>

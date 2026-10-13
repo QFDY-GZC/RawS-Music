@@ -10,6 +10,9 @@ interface AudioLibraryRepository {
      * 不应该在同步前做一次 CJK 排序。
      */
     suspend fun getAllSongsForSync(): List<AudioFile> = getAllSongs()
+    suspend fun getScanBaseline(): ScanBaseline = ScanBaseline(getAllSongsForSync())
+    suspend fun updateScanMetadataStatus(outcomes: List<MetadataScanOutcome>) = Unit
+    suspend fun commitScanDirectories(snapshots: Map<String, Long>) = Unit
     suspend fun upsertSongs(songs: List<AudioFile>)
     suspend fun deleteSongs(songs: List<AudioFile>)
 

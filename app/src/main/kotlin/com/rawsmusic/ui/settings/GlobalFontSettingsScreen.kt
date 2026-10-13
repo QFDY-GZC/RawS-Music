@@ -19,8 +19,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -28,7 +28,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.R
+import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
+import com.rawsmusic.core.ui.theme.FontScaleLayoutReporter
+import com.rawsmusic.core.ui.theme.rawGlobalFontFamily
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.FontManager
 import com.rawsmusic.module.data.prefs.LyricFontManager
@@ -45,7 +48,26 @@ fun GlobalFontSettingsScreen(
     onApply: () -> Unit,
     onImportFont: () -> Unit,
 ) {
+    SettingsPage(
+        title = stringResource(R.string.settings_font_settings_title),
+        onBack = onBack,
+    ) {
+        GlobalFontSettingsContent(
+            onApply = onApply,
+            onImportFont = onImportFont,
+        )
+    }
+}
+
+@Composable
+internal fun GlobalFontSettingsContent(
+    onApply: () -> Unit,
+    onImportFont: () -> Unit,
+) {
     var fontWeight by remember { mutableStateOf(AppPreferences.UI.fontWeight) }
+    var experimentalWeight by remember {
+        mutableStateOf(AppPreferences.UI.experimentalFontWeightEnabled)
+    }
     var fontSizeScale by remember { mutableStateOf(AppPreferences.UI.fontSizeScale) }
     var fontItalic by remember { mutableStateOf(AppPreferences.UI.fontItalic) }
     var letterSpacing by remember { mutableStateOf(AppPreferences.UI.fontLetterSpacingEm) }
@@ -55,6 +77,10 @@ fun GlobalFontSettingsScreen(
     var showFontCatalog by remember { mutableStateOf(false) }
     val fontRevision by LyricFontManager.revision.collectAsState()
     val context = LocalContext.current
+    val fontDensity = LocalDensity.current
+    val previewLayoutReporter = remember {
+        FontScaleLayoutReporter("settings_preview") { AppLogger.i("FontScale", it) }
+    }
 
     fun applyFontSettings() {
         FontManager.rebuildTypeface(context)
@@ -70,19 +96,19 @@ fun GlobalFontSettingsScreen(
         importedFonts = withContext(Dispatchers.IO) { FontManager.getImportedFonts(context) }
         selectedFontPath = AppPreferences.UI.customFontPath
     }
-
-    val previewFontFamily = remember(selectedFontPath, fontWeight, fontRevision) {
-        if (selectedFontPath.isBlank()) FontFamily.Default
-        else runCatching {
-            // Keep the concrete source face at Normal. Relabelling the same file as the
-            // requested slider weight makes Compose treat it as an exact match, so 400/800
-            // resolve to the same glyph outlines and the weight control appears ineffective.
-            FontFamily(Font(File(selectedFontPath), FontWeight.Normal))
-        }.getOrDefault(FontFamily.Default)
+    val previewFontFamily = remember(selectedFontPath, fontWeight, experimentalWeight, fontRevision) {
+        runCatching {
+            rawGlobalFontFamily(
+                path = selectedFontPath,
+                globalWeight = fontWeight,
+                allowOutOfRange = experimentalWeight,
+            )
+        }
+            .getOrDefault(FontFamily.Default)
     }
     val previewFontStyle = if (fontItalic) FontStyle.Italic else FontStyle.Normal
 
-    SettingsPage(title = stringResource(R.string.settings_global_font_title), onBack = onBack) {
+    Column {
         SettingsCard {
             SectionHeader(stringResource(R.string.settings_font_preview))
             Box(
@@ -95,19 +121,32 @@ fun GlobalFontSettingsScreen(
                 Column {
                     Text(
                         stringResource(R.string.settings_global_font_preview_title),
-                        fontSize = (22 * fontSizeScale / 100f).sp,
+                        // GlobalFontScope already applies the selected percentage through
+                        // LocalDensity; keeping the preview in base SP prevents double scaling.
+                        fontSize = 22.sp,
                         fontFamily = previewFontFamily,
-                        fontWeight = FontWeight(fontWeight),
+                        fontWeight = FontWeight.Normal,
                         fontStyle = previewFontStyle,
                         letterSpacing = letterSpacing.em,
                         color = MiuixTheme.colorScheme.onBackground,
+                        onTextLayout = { layout ->
+                            previewLayoutReporter.report(
+                                fontSizeScale,
+                                selectedFontPath.takeIf(String::isNotBlank)?.let { File(it).name }
+                                    ?: "system_default",
+                                fontDensity.fontScale,
+                                with(fontDensity) { 22.sp.toPx() },
+                                layout.size.width,
+                                layout.size.height,
+                            )
+                        },
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
                         stringResource(R.string.settings_global_font_preview_alphabet),
-                        fontSize = (14 * fontSizeScale / 100f).sp,
+                        fontSize = 14.sp,
                         fontFamily = previewFontFamily,
-                        fontWeight = FontWeight(fontWeight),
+                        fontWeight = FontWeight.Normal,
                         fontStyle = previewFontStyle,
                         letterSpacing = letterSpacing.em,
                         color = MiuixTheme.colorScheme.onBackground.copy(alpha = 0.7f),
@@ -115,9 +154,9 @@ fun GlobalFontSettingsScreen(
                     Spacer(Modifier.height(2.dp))
                     Text(
                         stringResource(R.string.settings_global_font_preview_mixed),
-                        fontSize = (14 * fontSizeScale / 100f).sp,
+                        fontSize = 14.sp,
                         fontFamily = previewFontFamily,
-                        fontWeight = FontWeight(fontWeight),
+                        fontWeight = FontWeight.Normal,
                         fontStyle = previewFontStyle,
                         letterSpacing = letterSpacing.em,
                         color = MiuixTheme.colorScheme.onBackground.copy(alpha = 0.7f),
@@ -142,31 +181,21 @@ fun GlobalFontSettingsScreen(
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
-            SectionHeader(stringResource(R.string.settings_font_weight))
-            val weightLabel = when {
-                fontWeight < 200 -> "Thin"
-                fontWeight < 300 -> "ExtraLight"
-                fontWeight < 350 -> "Light"
-                fontWeight < 400 -> "Regular"
-                fontWeight < 500 -> "Medium"
-                fontWeight < 600 -> "Demibold"
-                fontWeight < 700 -> "Semibold"
-                fontWeight < 800 -> "Bold"
-                else -> "Black"
-            }
-            SliderPreference(
-                title = stringResource(R.string.settings_font_weight),
-                summary = null,
-                valueText = stringResource(R.string.settings_font_weight_value, weightLabel, fontWeight),
-                value = fontWeight.toFloat(),
-                onValueChange = {
-                    fontWeight = it.toInt()
-                    AppPreferences.UI.fontWeight = fontWeight
+            FontWeightControl(
+                fontPath = selectedFontPath,
+                weight = fontWeight,
+                experimentalEnabled = experimentalWeight,
+                revision = fontRevision,
+                onWeightChange = { value ->
+                    fontWeight = value
+                    AppPreferences.UI.fontWeight = value
                     applyFontSettings()
                 },
-                valueRange = 100f..900f,
-                steps = 15,
-                hapticEffect = SliderDefaults.SliderHapticEffect.Step,
+                onExperimentalChange = { enabled ->
+                    experimentalWeight = enabled
+                    AppPreferences.UI.experimentalFontWeightEnabled = enabled
+                    applyFontSettings()
+                },
             )
         }
 
@@ -182,6 +211,11 @@ fun GlobalFontSettingsScreen(
                 onValueChange = {
                     fontSizeScale = it.toInt()
                     AppPreferences.UI.fontSizeScale = fontSizeScale
+                    AppLogger.i(
+                        "FontScale",
+                        "settings_write requested=${fontSizeScale}% persisted=${AppPreferences.UI.fontSizeScale}% " +
+                            "font=${selectedFontPath.takeIf(String::isNotBlank)?.let { File(it).name } ?: "system_default"}",
+                    )
                     applyFontSettings()
                 },
                 valueRange = 70f..160f,
@@ -234,6 +268,8 @@ fun GlobalFontSettingsScreen(
             onDismiss = { showFontCatalog = false },
             onSelect = { font ->
                 selectedFontPath = font?.path.orEmpty()
+                experimentalWeight = false
+                AppPreferences.UI.experimentalFontWeightEnabled = false
                 FontManager.selectFont(context, font)
                 applyFontSettings()
             },

@@ -16,6 +16,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -88,6 +89,7 @@ fun AppMainLayout(
     navState: NavigationState,
     navCallbacks: NavCallbacks,
     navData: NavData,
+    automaticCrossfadeTargetPath: String? = null,
     externalPageRenderer: ExternalPageRenderer? = null,
     onNavigateToPlayer: () -> Unit = {},
     onSettingsClick: (() -> Unit)? = null,
@@ -103,6 +105,8 @@ fun AppMainLayout(
     onBottomNavigationGestureBoundsChanged: (Rect?) -> Unit = {},
     playerSceneProgressState: State<Float>? = null,
     suppressMiniPlayerArtwork: Boolean = false,
+    renderNoticeHost: Boolean = true,
+    onNoticeBackdropReady: (com.kyant.backdrop.Backdrop, androidx.compose.ui.unit.Dp) -> Unit = { _, _ -> },
 ) {
     NavigationPersistenceEffect(navState)
 
@@ -124,7 +128,7 @@ fun AppMainLayout(
         }
     }
 
-    val bottomNavigationEnabled by PersonalizationPreferences.bottomNavigationEnabled.collectAsState()
+    val configuredBottomNavigationEnabled by PersonalizationPreferences.bottomNavigationEnabled.collectAsState()
     val bottomBarStyle by PersonalizationPreferences.bottomBarStyle.collectAsState()
     val bottomBarMaterial by PersonalizationPreferences.bottomBarMaterial.collectAsState()
     val bottomChromeScrollBehavior by PersonalizationPreferences.bottomChromeScrollBehavior.collectAsState()
@@ -132,6 +136,12 @@ fun AppMainLayout(
     val miniPlayerStyle by PersonalizationPreferences.miniPlayerStyle.collectAsState()
     val density = LocalDensity.current
     val windowInfo = LocalWindowInfo.current
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
+    val railReplacesBottomNavigation =
+        androidx.compose.ui.platform.LocalConfiguration.current.smallestScreenWidthDp >= 600 &&
+            windowLayoutProfile.windowWidth > windowLayoutProfile.windowHeight &&
+            windowLayoutProfile.supportsPersistentLibraryRail
+    val bottomNavigationEnabled = configuredBottomNavigationEnabled && !railReplacesBottomNavigation
     val playerLibraryTransform = remember(
         playerSceneProgressState,
         windowInfo.containerSize.width,
@@ -290,9 +300,10 @@ fun AppMainLayout(
         }
     }
     var playerLibraryPixelsVisible by remember { mutableStateOf(true) }
+    val currentUiForeground by rememberUpdatedState(navData.uiForeground)
     val rawFlowMotionActive by remember {
         derivedStateOf {
-            navData.uiForeground &&
+            currentUiForeground &&
                 playerLibraryPixelsVisible &&
                 (rawFlowLayerActive || navState.currentScene == NavScene.HOME || rawFlowReturningToFlowScene)
         }
@@ -303,8 +314,15 @@ fun AppMainLayout(
             bottomChromeScrollBehavior == BottomChromeScrollBehavior.DEFAULT
         )
     }
-    var miniPlayerGestureBounds by remember { mutableStateOf<Rect?>(null) }
-    var bottomNavigationGestureBounds by remember { mutableStateOf<Rect?>(null) }
+    val miniPlayerGestureGeometry = remember {
+        com.rawsmusic.core.ui.widget.bottombar.BottomChromeGestureGeometry()
+    }
+    val bottomNavigationGestureGeometry = remember {
+        com.rawsmusic.core.ui.widget.bottombar.BottomChromeGestureGeometry()
+    }
+    val miniPlayerGestureBoundsProvider = remember(miniPlayerGestureGeometry) {
+        { miniPlayerGestureGeometry.bounds }
+    }
     LaunchedEffect(bottomChromeScrollState, density) {
         // UIKit onScrollDown exposes one tab/accessory environment transition. Keep input
         // sensitivity separate from the single physical chrome travel, but never give the
@@ -362,8 +380,8 @@ fun AppMainLayout(
 
     fun updateBottomChromeGeometry() {
         val chromeTop = listOfNotNull(
-            miniPlayerGestureBounds?.top,
-            bottomNavigationGestureBounds?.top,
+            miniPlayerGestureGeometry.bounds?.top,
+            bottomNavigationGestureGeometry.bounds?.top,
         ).minOrNull()
         // AnimatedVisibility clears the bounds while chrome is leaving. Keep the
         // last valid anchor so floating actions follow the transition instead of
@@ -402,11 +420,7 @@ fun AppMainLayout(
     // touch/scroll geometry.
     val bottomChromeSystemBottom =
         rawStableNavigationBottomPadding() + bottomNavigationStyle.bottomLiftDp.dp
-    val bottomChromeLayoutClass = if (with(density) { windowInfo.containerSize.width.toDp() } >= 600.dp) {
-        BottomChromeLayoutClass.Regular
-    } else {
-        BottomChromeLayoutClass.Compact
-    }
+    val bottomChromeLayoutClass = windowLayoutProfile.bottomChromeLayoutClass
     val bottomChromeEnvironment = BottomChromeEnvironment(
         // Keep the physical chrome mounted while selection owns the bottom edge. retained-view implementation fades
         // the already-attached mini player/navigation out under SelectionMenu instead of removing
@@ -420,19 +434,25 @@ fun AppMainLayout(
         accessoryHeight = miniPlayerStyle.expandedHeightDp.dp,
         compactAccessoryHeight = miniPlayerStyle.compactHeightDp.dp,
         navigationHeight = bottomNavigationStyle.heightDp.dp,
+        wideInlineLayout = windowLayoutProfile.supportsPersistentLibraryRail,
+        regularChromeMaxWidth = windowLayoutProfile.contentMaxWidth,
+        regularAccessoryMaxWidth = if (railReplacesBottomNavigation) {
+            windowLayoutProfile.contentMaxWidth
+        } else 690.dp,
         systemBottom = bottomChromeSystemBottom,
     )
+    androidx.compose.runtime.SideEffect { onNoticeBackdropReady(backdrop, bottomChromeEnvironment.insets.contentBottom) }
 
     LaunchedEffect(hasSong, bottomChromeInteractionEnabled) {
         if (!hasSong || !bottomChromeInteractionEnabled) {
-            miniPlayerGestureBounds = null
+            miniPlayerGestureGeometry.bounds = null
             updateBottomChromeGeometry()
             onMiniPlayerGestureBoundsChanged(null)
         }
     }
     LaunchedEffect(bottomNavigationEnabled, bottomChromeInteractionEnabled) {
         if (!bottomNavigationEnabled || !bottomChromeInteractionEnabled) {
-            bottomNavigationGestureBounds = null
+            bottomNavigationGestureGeometry.bounds = null
             updateBottomChromeGeometry()
             onBottomNavigationGestureBoundsChanged(null)
         }
@@ -487,7 +507,10 @@ fun AppMainLayout(
                                 transitionFrame = sceneTransitionFrame,
                                 rawFlowMode = rawFlowModeState.value,
                                 homeCarouselSongs = homeCarouselSongs,
-                                currentSong = navData.currentSong,
+                                currentSong = resolveSceneBackgroundSong(
+                                    retainedSong = navData.currentSong,
+                                    liveSong = navData.miniPlayerSong,
+                                ),
                                 homeCarouselState = homeCarouselState,
                                 homeCarouselBackdropTransitionActive =
                                     homeCarouselBackdropTransitionActive,
@@ -553,7 +576,7 @@ fun AppMainLayout(
                                 homeFullCoverCenterReflectionArtworkKey = homeCenterReflectionArtworkKey,
                                 onHomeCarouselCurrentArtworkLongPress = onCurrentArtworkLongPress,
                                 onHomeCarouselCurrentArtworkBoundsChanged = onCurrentArtworkBoundsChanged,
-                                sceneGestureExclusionBounds = miniPlayerGestureBounds,
+                                sceneGestureExclusionBoundsProvider = miniPlayerGestureBoundsProvider,
                                 // The full player sheet and SceneTransitionHost are stacked siblings.
                                 // While the sheet owns the screen, only PlayerSceneController may
                                 // interpret horizontal back/track gestures; otherwise one edge swipe
@@ -585,6 +608,7 @@ fun AppMainLayout(
                                         playerAlphabetIndexAlphaProvider,
                                 ) {
                                     RawAlphabetIndex(
+                                        sceneId = entry.sceneId,
                                         data = entry.data,
                                         modifier = entry.modifier,
                                         enabled = entry.enabled,
@@ -649,10 +673,6 @@ fun AppMainLayout(
                                     }
                                 }
 
-                                fun selectBottomTab(index: Int) {
-                                    tabScenes.getOrNull(index)?.let(::selectBottomScene)
-                                }
-
                                 GlassBottomChrome(
                                     environment = bottomChromeEnvironment,
                                     scrollState = bottomChromeScrollState,
@@ -674,6 +694,7 @@ fun AppMainLayout(
                                     playbackDurationMs = navData.playbackDurationMs,
                                     coverPath = miniCoverPath,
                                     currentSong = miniPlayerSong,
+                                    automaticCrossfadeTargetPath = automaticCrossfadeTargetPath,
                                     previousSong = navData.miniPlayerPreviousSong,
                                     nextSong = navData.miniPlayerNextSong,
                                     queueCurrentIndex = navData.queueCurrentIndex,
@@ -681,7 +702,7 @@ fun AppMainLayout(
                                     accentColor = miniPlayerAccent,
                                     tabScenes = if (bottomNavigationEnabled) tabScenes else emptyList(),
                                     selectedTabIndex = selectedTabIndex,
-                                    onTabSelected = ::selectBottomTab,
+                                    onTabSelected = ::selectBottomScene,
                                     onSearchSelected = { selectBottomScene(NavScene.SEARCH) },
                                     isSearchSelected = navState.currentScene.bottomNavigationRoot() == NavScene.SEARCH,
                                     onOpenPlayer = navCallbacks.onNavigateToPlayer,
@@ -697,12 +718,12 @@ fun AppMainLayout(
                                     onCoverBoundsChanged = navCallbacks.onMiniPlayerCoverBoundsChanged,
                                     onCoverTargetChanged = navCallbacks.onMiniPlayerCoverTargetChanged,
                                     onMiniPlayerBoundsChanged = { bounds ->
-                                        miniPlayerGestureBounds = bounds
+                                        miniPlayerGestureGeometry.bounds = bounds
                                         updateBottomChromeGeometry()
                                         onMiniPlayerGestureBoundsChanged(bounds)
                                     },
                                     onNavigationBoundsChanged = { bounds ->
-                                        bottomNavigationGestureBounds = bounds
+                                        bottomNavigationGestureGeometry.bounds = bounds
                                         updateBottomChromeGeometry()
                                         onBottomNavigationGestureBoundsChanged(bounds)
                                     },
@@ -728,7 +749,7 @@ fun AppMainLayout(
                                 onDismissRequest = { showMiniPlayerQueueDialog = false },
                             )
                             }
-                            AppNoticeHost(
+                            if (renderNoticeHost) AppNoticeHost(
                                 backdrop = backdrop,
                                 modifier = Modifier.fillMaxSize(),
                             )
@@ -738,6 +759,20 @@ fun AppMainLayout(
                 }
             }
         }
+        // Retained scene host stays alive beneath PLAYER. Dialog uses its own window and can be
+        // triggered by either MiniPlayer or the normal/immersive PLAYER without duplicate hosts.
+        com.rawsmusic.core.ui.widget.player.SongContributorsDialogHost(
+            librarySongs = navData.songs,
+            onAlbumClick = { key ->
+                navCallbacks.onCreditsDetailClick(NavScene.ALBUM_DETAIL, key)
+            },
+            onArtistClick = { name ->
+                navCallbacks.onCreditsDetailClick(NavScene.ARTIST_DETAIL, name)
+            },
+            onComposerClick = { name ->
+                navCallbacks.onCreditsDetailClick(NavScene.COMPOSER_DETAIL, name)
+            },
+        )
     }
 
 private const val MAIN_RAW_FLOW_FRAME_INTERVAL_MS = 16L
@@ -754,6 +789,7 @@ private fun NavScene.supportsRawFlowBackground(): Boolean {
         NavScene.ALBUM_DETAIL,
         NavScene.ARTISTS,
         NavScene.ARTIST_DETAIL,
+        NavScene.ARTIST_ALL_SONGS,
         NavScene.ARTIST_BIOGRAPHY,
         NavScene.PLAYLISTS,
         NavScene.PLAYLIST_LIST,
@@ -778,6 +814,7 @@ private fun NavScene.isSettingsScene(): Boolean {
     return when (this) {
         NavScene.SETTINGS,
         NavScene.APPEARANCE,
+        NavScene.HDR_SETTINGS,
         NavScene.ALBUM_ART_SETTINGS,
         NavScene.GLOBAL_FONT_SETTINGS,
         NavScene.LYRIC_FONT_SETTINGS,

@@ -45,6 +45,11 @@ internal object Id3EmbeddedLyricReader {
     )
 
     fun read(filePath: String): Result? {
+        if (com.rawsmusic.core.common.sacd.SacdIsoMetadata.isCandidate(filePath)) {
+            return com.rawsmusic.core.common.sacd.SacdIsoMetadata.withSource(filePath) { file ->
+                file?.let { read(it.absolutePath) }
+            }
+        }
         val file = File(filePath)
         if (!file.isFile || !file.canRead()) return null
         if (!file.extension.equals("mp3", ignoreCase = true) &&

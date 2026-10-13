@@ -40,6 +40,12 @@ interface FolderFileDao {
     @Query("SELECT * FROM folder_files WHERE tag_status != 0")
     suspend fun getAllTagged(): List<FolderFileEntity>
 
+    @Query("SELECT * FROM folder_files WHERE tag_status = 0")
+    suspend fun getPendingScanRows(): List<FolderFileEntity>
+
+    @Query("UPDATE folder_files SET tag_status = :status WHERE file_path = :path AND cue_offset_ms = :offset AND cue_track_index = :track")
+    suspend fun updateScanTagStatus(path: String, offset: Long, track: Int, status: Int)
+
     @Query("""
         SELECT * FROM folder_files
         WHERE title_tag LIKE '%' || :query || '%'

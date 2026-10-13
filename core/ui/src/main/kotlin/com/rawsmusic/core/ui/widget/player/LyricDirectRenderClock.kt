@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.node.DrawModifierNode
@@ -34,14 +35,40 @@ internal class LyricDirectRenderClock : Choreographer.FrameCallback {
     private var playing: Boolean = false
     private var initialized: Boolean = false
     private var lastFrameNs: Long = 0L
+    private var playbackSpeed: Float = 1f
 
     private val listeners = LinkedHashSet<LyricDirectFrameListener>()
     private var choreographer: Choreographer? = null
     private var callbackPosted = false
 
+    /**
+     * Offline export (lyric video) timeline: the render position is exactly the supplied source
+     * position for every frame and no Choreographer callback is ever posted. The exporter steps
+     * positionMs by 1/fps itself, so wall-clock extrapolation would make frames non-deterministic.
+     */
+    var fixedTimeline: Boolean = false
+
     fun updateSource(positionMs: Long, isPlaying: Boolean, durationMs: Long) {
         val source = positionMs.coerceAtLeast(0L).toFloat()
         this.durationMs = durationMs
+        if (fixedTimeline) {
+            sourcePositionMs = source
+            renderedPositionMs = source
+            playing = false
+            initialized = true
+            lastFrameNs = 0L
+            cancelFrameCallback()
+            dispatchCurrentFrame()
+            return
+        }
+        val rate = com.rawsmusic.core.common.utils.LyricPlaybackTimeline.speed
+        if (rate != playbackSpeed) {
+            playbackSpeed = rate
+            sourcePositionMs = source
+            renderedPositionMs = source
+            lastFrameNs = 0L
+            dispatchCurrentFrame()
+        }
 
         if (!initialized) {
             sourcePositionMs = source
@@ -84,7 +111,8 @@ internal class LyricDirectRenderClock : Choreographer.FrameCallback {
             renderedPositionMs = update.positionMs
             sourcePositionMs = source
             if (update.hardReanchored) {
-                lastFrameNs = 0L
+                // Playback is already running. Resetting the frame timestamp here discards the
+                // next display interval on every phase correction (especially visible at 2x/3x).
                 dispatchCurrentFrame()
             }
         }
@@ -131,6 +159,7 @@ internal class LyricDirectRenderClock : Choreographer.FrameCallback {
         renderedPositionMs = LyricRenderClockPolicy.advance(
             renderedPositionMs = renderedPositionMs,
             frameDeltaMs = dt,
+            playbackSpeed = playbackSpeed,
         )
         return clamp(renderedPositionMs)
     }
@@ -142,7 +171,7 @@ internal class LyricDirectRenderClock : Choreographer.FrameCallback {
     }
 
     private fun ensureFrameCallback() {
-        if (!playing || listeners.isEmpty() || callbackPosted) return
+        if (fixedTimeline || !playing || listeners.isEmpty() || callbackPosted) return
         val scheduler = choreographer ?: Choreographer.getInstance().also { choreographer = it }
         callbackPosted = true
         scheduler.postFrameCallback(this)
@@ -162,6 +191,12 @@ internal class LyricDirectRenderClock : Choreographer.FrameCallback {
     }
 }
 
+/**
+ * True only inside the offline lyric-video exporter. The surrounding composition is driven by a
+ * manual frame clock, so the lyric render clock must follow the supplied position exactly.
+ */
+internal val LocalLyricExportTimeline = staticCompositionLocalOf { false }
+
 @Composable
 internal fun rememberLyricDirectRenderClock(
     positionMs: Long,
@@ -169,8 +204,10 @@ internal fun rememberLyricDirectRenderClock(
     durationMs: Long,
 ): LyricDirectRenderClock {
     val frameAnimationActive = LocalUiFrameAnimationActive.current
+    val fixedTimeline = LocalLyricExportTimeline.current
     val clock = remember { LyricDirectRenderClock() }
     SideEffect {
+        clock.fixedTimeline = fixedTimeline
         clock.updateSource(
             positionMs = positionMs,
             isPlaying = isPlaying && frameAnimationActive,

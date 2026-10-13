@@ -10,6 +10,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.layout.widthIn
+import com.rawsmusic.core.ui.scene.LocalRawWindowLayoutProfile
 import top.yukonga.miuix.kmp.layout.DialogDefaults
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 
@@ -69,6 +71,7 @@ fun RawMiuixOverlayDialog(
     renderInRootScaffold: Boolean = true,
     content: @Composable () -> Unit
 ) {
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
     val runtimeToken = remember { Any() }
     val latestDismiss by rememberUpdatedState(onDismissRequest)
     val latestContent by rememberUpdatedState(content)
@@ -86,7 +89,9 @@ fun RawMiuixOverlayDialog(
 
     OverlayDialog(
         show = show,
-        modifier = modifier.predictiveDialogMotion(predictiveProgress),
+        modifier = modifier
+            .widthIn(max = windowLayoutProfile.dialogMaxWidth)
+            .predictiveDialogMotion(predictiveProgress),
         title = title,
         summary = summary,
         backgroundColor = backgroundColor,

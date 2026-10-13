@@ -14,6 +14,7 @@ fun NavScene.bottomNavigationRoot(): NavScene = when (this) {
 
     NavScene.ARTISTS,
     NavScene.ARTIST_DETAIL,
+    NavScene.ARTIST_ALL_SONGS,
     NavScene.ARTIST_BIOGRAPHY -> NavScene.ARTISTS
 
     NavScene.PLAYLISTS,
@@ -39,6 +40,7 @@ fun NavScene.bottomNavigationRoot(): NavScene = when (this) {
     NavScene.SETTINGS,
     NavScene.APPEARANCE,
     NavScene.PERSONALIZATION_SETTINGS,
+    NavScene.HDR_SETTINGS,
     NavScene.AUDIO_SETTINGS,
     NavScene.ALBUM_ART_SETTINGS,
     NavScene.GLOBAL_FONT_SETTINGS,

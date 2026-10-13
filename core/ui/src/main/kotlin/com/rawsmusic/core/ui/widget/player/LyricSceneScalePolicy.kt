@@ -5,6 +5,9 @@ package com.rawsmusic.core.ui.widget.player
  * active size through the scene/holder transform. There is no second generic 0.92 scale factor.
  */
 internal object LyricSceneScalePolicy {
+    /** Scale about the text edge, so scaling the holder cannot also scale its page margin. */
+    fun contentPivot(alignment: Float, insetFraction: Float): Float =
+        insetFraction + alignment * (1f - 2f * insetFraction)
     fun inactiveHolderScale(regularTextScale: Float, activeTextScale: Float): Float {
         if (!regularTextScale.isFinite() || !activeTextScale.isFinite() || activeTextScale <= 0f) return 1f
         return (regularTextScale / activeTextScale).coerceIn(0.01f, 1f)

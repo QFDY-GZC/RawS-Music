@@ -1,5 +1,7 @@
 package com.rawsmusic.core.ui.widget.virtuallist
 
+import android.view.animation.AnimationUtils
+import android.view.ViewConfiguration
 import com.rawsmusic.core.ui.scene.NavScene
 
 import android.graphics.Paint
@@ -22,7 +24,6 @@ import androidx.compose.ui.composed
 import androidx.compose.foundation.gestures.FlingBehavior
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.ScrollScope
-import androidx.compose.foundation.gestures.ScrollableDefaults
 import androidx.compose.foundation.gestures.rememberScrollableState
 import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Box
@@ -42,6 +43,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
@@ -75,7 +77,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import kotlinx.coroutines.isActive
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.perf.TransitionPerfEvent
@@ -196,6 +201,9 @@ fun ComposeVirtualList(
     persistentHeaderHeight: Dp = 0.dp,
     persistentHeaderVisibilityHeight: Dp = persistentHeaderHeight,
     persistentHeaderSceneItemVisibilityHeight: Dp = persistentHeaderVisibilityHeight,
+    persistentHeaderSceneItemLeft: Dp = 0.dp,
+    persistentHeaderSceneItemTop: Dp = 0.dp,
+    persistentHeaderSceneItemWidth: Dp? = null,
     persistentHeaderSceneItemId: String = "",
     virtualListEdgeEnabled: Boolean = false,
     persistentHeaderContent: @Composable (headerVisible: Boolean, sceneItemVisible: Boolean) -> Unit = { _, _ -> },
@@ -240,6 +248,7 @@ fun ComposeVirtualList(
     }
     val songs = songInputs.resolve(outerOwnsInputs, songs)
     val sectionHeaders = sectionInputs.resolve(outerOwnsInputs, sectionHeaders)
+    state.revealRequestOwner.bind(revealIndexRequest)
     val resolvedPresentationTopClipInset =
         presentationTopClipInset ?: LocalVirtualListPresentationTopClipInset.current
     if (providerRegistry != null && providerScene != null && !bodyRender) {
@@ -247,7 +256,10 @@ fun ComposeVirtualList(
         // composition made every HOME -> category visit look like a brand-new reference player provider object,
         // which in turn allocated a new resident holder bank and invalidated endpoint prewarm.
         val published = providerRegistry.getOrCreate(providerScene)
-        published.providerNavigationActive = LocalVirtualListProviderNavigationFrame.current.active
+        published.publishNavigationContext(
+            LocalVirtualListProviderNavigationFrame.current,
+            LocalSharedTransitionSpec.current,
+        )
         val structuralPublicationChanged =
             published.providerIdentity != providerIdentity ||
                 published.songs !== songs ||
@@ -257,6 +269,9 @@ fun ComposeVirtualList(
                 published.persistentHeaderHeight != persistentHeaderHeight ||
                 published.persistentHeaderVisibilityHeight != persistentHeaderVisibilityHeight ||
                 published.persistentHeaderSceneItemVisibilityHeight != persistentHeaderSceneItemVisibilityHeight ||
+                published.persistentHeaderSceneItemLeft != persistentHeaderSceneItemLeft ||
+                published.persistentHeaderSceneItemTop != persistentHeaderSceneItemTop ||
+                published.persistentHeaderSceneItemWidth != persistentHeaderSceneItemWidth ||
                 published.contentBottomPadding != contentBottomPadding ||
                 published.sectionHeaders !== sectionHeaders ||
                 published.sectionHeaderHeight != sectionHeaderHeight ||
@@ -297,6 +312,9 @@ fun ComposeVirtualList(
         published.persistentHeaderHeight = persistentHeaderHeight
         published.persistentHeaderVisibilityHeight = persistentHeaderVisibilityHeight
         published.persistentHeaderSceneItemVisibilityHeight = persistentHeaderSceneItemVisibilityHeight
+        published.persistentHeaderSceneItemLeft = persistentHeaderSceneItemLeft
+        published.persistentHeaderSceneItemTop = persistentHeaderSceneItemTop
+        published.persistentHeaderSceneItemWidth = persistentHeaderSceneItemWidth
         published.persistentHeaderSceneItemId = persistentHeaderSceneItemId
         published.virtualListEdgeEnabled = virtualListEdgeEnabled
         published.contentBottomPadding = contentBottomPadding
@@ -499,7 +517,7 @@ fun ComposeVirtualList(
                 computeVirtualListMetrics(
                     widthPx = widthPx,
                     density = density.density,
-                    scaledDensity = density.density * density.fontScale,
+                    fontDensity = density,
                     mode = state.renderMode,
                     params = state.currentParams
                 )
@@ -507,18 +525,7 @@ fun ComposeVirtualList(
         }
 
         val customItemHeightsPx = remember(songs, customProvider, metrics.cellHeightPx, density.density) {
-            val provider = customProvider ?: return@remember null
-            var hasCustom = false
-            IntArray(songs.size) { index ->
-                val song = songs[index]
-                val custom = if (provider.handles(song, index)) provider.itemHeight(song, index) else null
-                if (custom != null) {
-                    hasCustom = true
-                    with(density) { custom.roundToPx() }.coerceAtLeast(1)
-                } else {
-                    metrics.cellHeightPx.coerceAtLeast(1)
-                }
-            }.takeIf { hasCustom }
+            virtualListItemHeightsPx(songs, customProvider, metrics.cellHeightPx, density)
         }
         val heightPx = with(density) { maxHeight.roundToPx() }
         val requestedBottomPaddingPx = with(density) {
@@ -528,8 +535,11 @@ fun ComposeVirtualList(
         // target must keep the exact geometry they have when settled; changing LIST_SMALL padding at
         // gesture start/end was enough to remap the complete visible holder population.
         val breathingRoomPx = with(density) { 8.dp.roundToPx() }
+        // Scrolling chrome changes visual occlusion, not the list's content geometry. Reading
+        // its live top here remeasures both retained scenes every morph frame and changes the
+        // scroll extent in LIST_SMALL. Use the anchor latched for this layout environment.
         val chromeTopInRootPx = bottomChromeScrollState
-            ?.topInRootPx
+            ?.restingTopInRootPx
             ?.takeIf { it > 0f }
         val actualBottomChromeOverlapPx = if (chromeTopInRootPx != null) {
             ((listRootBounds?.bottom ?: chromeTopInRootPx) - chromeTopInRootPx)
@@ -572,9 +582,19 @@ fun ComposeVirtualList(
         // Collection/details use VirtualList's own vertical edge owner. reference player 1026's
         // The edge-layout policy uses a 44dp max overshoot with a 30dp holder-shift extent; this is not
         // ArtworkPager/maxStretchOvershoot and is independent from hero height or body fill level.
-        val detailVirtualListEdgeEnabled = virtualListEdgeEnabled &&
-            persistentHeaderHeightPx > 0 && songs.isNotEmpty()
+        // Edge deformation belongs to the VirtualList/scene_header itself, not to whether the
+        // current adapter publication already contains ordinary rows. During a retained provider
+        // handoff the header can be authoritative one frame before body data is rebound. Gating the
+        // edge owner on songs.isNotEmpty() detached the current scroll invalidator in that frame and
+        // made a re-entered/cold detail header permanently miss subsequent stretch ticks.
+        val detailVirtualListEdgeEnabled = virtualListEdgeEnabled && persistentHeaderHeightPx > 0
         val virtualListMaxOvershootPx = with(density) { VIRTUAL_LIST_MAX_OVERSHOOT_DP.dp.toPx() }
+        val virtualListHeaderMaxStretchPx = with(density) {
+            VIRTUAL_LIST_HEADER_MAX_STRETCH_DP.dp.toPx()
+        }
+        val promotedHeaderEdgeOvershootProvider = remember(state) {
+            { state.virtualListEdgeOvershootPx }
+        }
         LaunchedEffect(detailVirtualListEdgeEnabled) {
             if (!detailVirtualListEdgeEnabled && state.isVirtualListEdgeActive) {
                 state.clearVirtualListEdge()
@@ -634,7 +654,7 @@ fun ComposeVirtualList(
             widthPx = widthPx,
             heightPx = heightPx,
             density = density.density,
-            fontScale = density.fontScale,
+            fontDensity = density,
             contentTopPaddingPx = contentTopPaddingPx,
             sourceBottomPaddingPx = transitionSession?.let { bottomPaddingForMode(it.sourceMode) } ?: bottomPaddingPx,
             targetBottomPaddingPx = transitionSession?.let { bottomPaddingForMode(it.targetMode) } ?: bottomPaddingPx,
@@ -717,8 +737,24 @@ fun ComposeVirtualList(
         } else {
             null
         }
-        val rememberedScrollY = seededInitialScrollY
-            ?: state.viewportScrollY.roundToInt().coerceAtLeast(0)
+        // Reveal is a one-shot scroll transaction, not a persistent geometry constraint. Resolve
+        // it before publishing the first holder population; cover-target callbacks may arrive later.
+        val revealIndexToApply = state.revealRequestOwner.pendingIndex
+        val seededRevealScrollY = if (
+            !state.isTransitioning && revealIndexToApply in songs.indices &&
+            heightPx > 0 && widthPx > 0 && geometry.rowStridePx > 0
+        ) {
+            if (state.isIndexVisible(revealIndexToApply)) {
+                state.viewportScrollY.roundToInt().coerceIn(0, maxScrollY.roundToInt())
+            } else {
+                scrollYForIndex(revealIndexToApply, songs.size, geometry, heightPx)
+                    .coerceIn(0, maxScrollY.roundToInt())
+            }
+        } else null
+        val rememberedScrollY = seededInitialScrollY ?: state.revealRequestOwner.scrollForLayout(
+            retainedScrollPx = state.viewportScrollY.roundToInt().coerceAtLeast(0),
+            requestedScrollPx = seededRevealScrollY,
+        )
         val geometryTemporarilyUnready = state.shouldPreserveRetainedScrollForZeroGeometry(
             rawScrollY = rememberedScrollY,
             maxScrollY = maxScrollY.roundToInt(),
@@ -749,6 +785,9 @@ fun ComposeVirtualList(
                 // publishes its settled LayoutRes. No visible index-0 correction frame exists.
                 state.viewportScrollY = initialSettledRawScrollY.toFloat()
                 state.consumeInitialScrollToIndexRequest(initialScrollIndex)
+            } else if (seededRevealScrollY != null) {
+                state.viewportScrollY = initialSettledRawScrollY.toFloat()
+                state.revealRequestOwner.markScrollApplied(revealIndexToApply)
             } else if (initialScrollIndex < 0) {
                 state.markInitialViewportBound()
             }
@@ -808,6 +847,7 @@ fun ComposeVirtualList(
         }
         LaunchedEffect(
             revealIndexRequest,
+            state.isTransitioning,
             songs.size,
             geometry,
             state.renderMode,
@@ -817,35 +857,19 @@ fun ComposeVirtualList(
             listRootBounds,
             density.density
         ) {
-            if (!state.isTransitioning && revealIndexRequest in songs.indices) {
+            if (!state.isTransitioning && revealIndexRequest in songs.indices &&
+                state.revealRequestOwner.targetReportPending && listRootBounds != null
+            ) {
                 val currentScrollY = state.viewportScrollY
                     .roundToInt()
                     .coerceIn(0, maxScrollY.roundToInt())
-                val preserveVisiblePosition = state.isIndexVisible(revealIndexRequest)
-                val targetScrollY = if (preserveVisiblePosition) {
-                    currentScrollY
-                } else {
-                    scrollYForIndex(
-                        index = revealIndexRequest,
-                        itemCount = songs.size,
-                        geometry = geometry,
-                        viewportHeightPx = heightPx
-                    ).coerceIn(0, maxScrollY.roundToInt())
-                }
-                if (!preserveVisiblePosition) {
-                    state.viewportScrollY = targetScrollY.toFloat()
-                }
-                // Keep the settled renderer and the logical viewport on the same frame. When the
-                // playing row is already visible, retain the exact viewport instead of centering it
-                // again during the player return transition.
-                updateSettledBaseScroll(targetScrollY)
                 val revealSong = songs.getOrNull(revealIndexRequest)
                 val target = exactCoverTargetForIndex(
                     index = revealIndexRequest,
                     geometry = geometry,
                     mode = state.renderMode,
                     params = state.currentParams,
-                    scrollYPx = targetScrollY,
+                    scrollYPx = currentScrollY,
                     density = density.density,
                     rootBounds = listRootBounds,
                     songId = revealSong?.id ?: -1L,
@@ -853,9 +877,8 @@ fun ComposeVirtualList(
                     artworkRadiusType = revealSong?.virtualListArtworkRadiusType()
                         ?: VirtualListArtworkRadiusType.TRACK,
                 )
+                state.revealRequestOwner.markTargetReported(revealIndexRequest)
                 onRevealCoverTargetResolved(target)
-            } else if (revealIndexRequest >= 0) {
-                onRevealCoverTargetResolved(null)
             }
         }
         // 字母索引滚动请求（serial 模式，同 index 可重复触发）
@@ -872,6 +895,15 @@ fun ComposeVirtualList(
             val targetIndex = state.scrollToIndexRequestIndex
 
             if (serial <= 0) return@LaunchedEffect
+
+            state.scrollToPixelRequest?.let { requested ->
+                if (state.isTransitioning) return@LaunchedEffect
+                val target = requested.coerceIn(0f, maxScrollY)
+                state.viewportScrollY = target
+                updateSettledBaseScroll(target.toInt())
+                state.consumeScrollToIndexRequest(serial)
+                return@LaunchedEffect
+            }
 
             if (targetIndex !in songs.indices) {
                 state.consumeScrollToIndexRequest(serial)
@@ -894,11 +926,6 @@ fun ComposeVirtualList(
 
             state.consumeScrollToIndexRequest(serial)
         }
-        val underfilledPersistentHeaderLane = usesUnderfilledPersistentHeaderLane(
-            naturalMaxScrollPx = naturalMaxScrollY,
-            persistentHeaderHeightPx = persistentHeaderHeightPx,
-            itemCount = songs.size,
-        )
         val scrollableState = rememberScrollableState { delta ->
             if (state.isTransitioning || state.isPinching || state.isBoundaryElasticActive) {
                 delta
@@ -912,6 +939,7 @@ fun ComposeVirtualList(
                     val edgeConsumed = state.consumeVirtualListEdgeDelta(
                         deltaPx = remaining,
                         maxOvershootPx = virtualListMaxOvershootPx,
+                        headerMaxStretchPx = virtualListHeaderMaxStretchPx,
                     )
                     consumed += edgeConsumed
                     remaining -= edgeConsumed
@@ -937,13 +965,20 @@ fun ComposeVirtualList(
                 // reference player applies the same VirtualList edge owner to every collection detail, not
                 // only to under-filled bodies. Logical geometry stops at 0/maxScrollY; any remaining
                 // same-axis delta becomes signed overshoot and remains list-owned until UP/CANCEL.
-                if (detailVirtualListEdgeEnabled && kotlin.math.abs(remaining) >= 0.001f) {
+                // During the velocity-driven fling, return the remainder unconsumed: the fling
+                // behavior itself converts edge contact into the linear E7.С() edge runner.
+                if (
+                    detailVirtualListEdgeEnabled &&
+                    !state.virtualListFlingOwnsEdge &&
+                    kotlin.math.abs(remaining) >= 0.001f
+                ) {
                     val atTop = newValue <= 0.5f && remaining > 0f
                     val atBottom = newValue >= maxScrollY - 0.5f && remaining < 0f
                     if (atTop || atBottom) {
                         consumed += state.consumeVirtualListEdgeDelta(
                             deltaPx = remaining,
                             maxOvershootPx = virtualListMaxOvershootPx,
+                            headerMaxStretchPx = virtualListHeaderMaxStretchPx,
                         )
                     }
                 }
@@ -975,51 +1010,91 @@ fun ComposeVirtualList(
                 }
             }
         }
-        val defaultFlingBehavior = ScrollableDefaults.flingBehavior()
+        val flingContext = LocalContext.current
+        // E7.f: ViewConfiguration.getScaledMinimumFlingVelocity(). mo1258() starts no runner below it.
+        val minimumFlingVelocity = remember(flingContext) {
+            ViewConfiguration.get(flingContext).scaledMinimumFlingVelocity.toFloat()
+        }
         val virtualListFlingBehavior = remember(
-            defaultFlingBehavior,
             maxScrollY,
-            persistentHeaderHeightPx,
-            songs.size,
-            metrics.columns,
-            underfilledPersistentHeaderLane,
             detailVirtualListEdgeEnabled,
             virtualListMaxOvershootPx,
+            virtualListHeaderMaxStretchPx,
+            minimumFlingVelocity,
         ) {
             object : FlingBehavior {
                 override suspend fun ScrollScope.performFling(initialVelocity: Float): Float {
                     if (detailVirtualListEdgeEnabled && state.isVirtualListEdgeActive) {
+                        // mo1258(): an UP while the edge is displaced goes straight to the rebound.
                         state.animateVirtualListEdgeBack()
                         return 0f
                     }
-                    val scrollScope = this
-                    val remainingVelocity = with(defaultFlingBehavior) {
-                        scrollScope.performFling(initialVelocity)
-                    }
-                    if (detailVirtualListEdgeEnabled && state.isVirtualListEdgeActive) {
-                        // Fling may reach a real edge after it starts; the edge-scroll policy settles that same signed
-                        // VirtualList overshoot rather than handing residual velocity to another owner.
-                        state.animateVirtualListEdgeBack()
-                        return 0f
-                    }
-                    return if (
-                        shouldConsumeTerminalPersistentHeaderFling(
-                            initialVelocityPxPerSecond = initialVelocity,
-                            currentScrollPx = state.viewportScrollY,
-                            maxScrollPx = maxScrollY,
-                            persistentHeaderHeightPx = persistentHeaderHeightPx,
-                            itemCount = songs.size,
-                            columns = metrics.columns,
-                        )
-                    ) {
-                        // Reference corrects an under-filled terminal layout inside the list engine
-                        // before the residual gesture reaches an outer/stretch owner. Returning no
-                        // velocity here is the Compose equivalent: the one-row anchor stays put
-                        // instead of springing down after the user's upward swipe.
-                        0f
+                    // mo1258(): below scaledMinimumFlingVelocity, or with no room in the fling
+                    // direction (flags 4/64), no runner starts and no edge bounce is produced.
+                    if (abs(initialVelocity) < minimumFlingVelocity) return 0f
+                    val canScrollInFlingDirection = if (initialVelocity > 0f) {
+                        state.viewportScrollY > 0.5f
                     } else {
-                        remainingVelocity
+                        state.viewportScrollY < maxScrollY - 0.5f
                     }
+                    if (!canScrollInFlingDirection) return 0f
+
+                    state.virtualListFlingOwnsEdge = true
+                    try {
+                        // C7 case 0: runner `a` = p1.B(v, 9000, 0.75), stepped once per animation frame.
+                        val fling = ScrollVelocityRunner.fling()
+                        fling.start(
+                            velocityPxPerSecond = initialVelocity,
+                            deceleration = SCROLL_FLING_DECELERATION,
+                            minDurationS = SCROLL_FLING_MIN_DURATION_S,
+                            nowMs = AnimationUtils.currentAnimationTimeMillis(),
+                        )
+                        while (!fling.finished) {
+                            withFrameNanos { }
+                            val step = fling.step(AnimationUtils.currentAnimationTimeMillis())
+                            if (step == 0f) continue
+                            val consumed = scrollBy(step)
+                            val beyondEdge = step - consumed
+                            if (abs(beyondEdge) < 0.01f) continue
+                            if (!detailVirtualListEdgeEnabled) return 0f
+                            // The layout moved the part beyond the edge into the signed edge (clamped to P).
+                            state.applyVirtualListFlingEdgeDelta(
+                                deltaPx = beyondEdge,
+                                maxOvershootPx = virtualListMaxOvershootPx,
+                                headerMaxStretchPx = virtualListHeaderMaxStretchPx,
+                            )
+                            // cW.B() != 0 -> E7.С(a.X, edge, flags): runner `b` = p1.B(v, 1e6, 0) with the
+                            // linear curve, carrying the current fling velocity into the edge.
+                            if (fling.velocity != 0f) {
+                                val edgeRunner = ScrollVelocityRunner.linear()
+                                edgeRunner.start(
+                                    velocityPxPerSecond = fling.velocity,
+                                    deceleration = SCROLL_FLING_EDGE_DECELERATION,
+                                    minDurationS = 0f,
+                                    nowMs = AnimationUtils.currentAnimationTimeMillis(),
+                                )
+                                while (!edgeRunner.finished) {
+                                    withFrameNanos { }
+                                    state.applyVirtualListFlingEdgeDelta(
+                                        deltaPx = edgeRunner.step(AnimationUtils.currentAnimationTimeMillis()),
+                                        maxOvershootPx = virtualListMaxOvershootPx,
+                                        headerMaxStretchPx = virtualListHeaderMaxStretchPx,
+                                    )
+                                }
+                            }
+                            break
+                        }
+                    } finally {
+                        state.virtualListFlingOwnsEdge = false
+                    }
+                    // C7 on runner end: edge > 0 -> Р(false), edge < 0 -> H(false); both use the
+                    // 0.103/0.389/0.307/0.966 curve with max(0.5s, distance/1500).
+                    if (detailVirtualListEdgeEnabled && state.isVirtualListEdgeActive) {
+                        state.animateVirtualListEdgeBack()
+                    }
+                    // The list owns the complete fling (including an under-filled terminal header
+                    // lane); no residual velocity is handed to an outer owner.
+                    return 0f
                 }
             }
         }
@@ -1166,11 +1241,11 @@ fun ComposeVirtualList(
         Box(
             modifier = providerPopulationRootModifier
         ) {
-            if (
-                LocalVirtualListPresentationHostExternal.current &&
+            val externalPresentationHost = LocalVirtualListPresentationHostExternal.current
+            val useAndroidPresentationHost =
                 ReferenceLibraryPresentationHostBackend == VirtualListPresentationHostBackend.ANDROID_VIEW &&
-                hostPhysicalRuntime != null
-            ) {
+                    (!externalPresentationHost || hostPhysicalRuntime != null)
+            if (useAndroidPresentationHost) {
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { context ->
@@ -1179,6 +1254,8 @@ fun ComposeVirtualList(
                                 nextRuntime = outerTransitionNodeRuntime,
                                 nextExternalTransform = physicalPresentationExternalTransform,
                                 nextPresentationVisibleProvider = physicalPresentationVisibleProvider,
+                                nextPromotedHeaderEdgeOvershootProvider = promotedHeaderEdgeOvershootProvider,
+                                nextPromotedHeaderEdgeInvalidationOwner = state.viewportScrollOwner,
                                 nextParentCompositionContext = physicalHolderCompositionContext,
                             )
                         }
@@ -1188,6 +1265,8 @@ fun ComposeVirtualList(
                             nextRuntime = outerTransitionNodeRuntime,
                             nextExternalTransform = physicalPresentationExternalTransform,
                             nextPresentationVisibleProvider = physicalPresentationVisibleProvider,
+                            nextPromotedHeaderEdgeOvershootProvider = promotedHeaderEdgeOvershootProvider,
+                            nextPromotedHeaderEdgeInvalidationOwner = state.viewportScrollOwner,
                             nextParentCompositionContext = physicalHolderCompositionContext,
                         )
                     },
@@ -1197,9 +1276,11 @@ fun ComposeVirtualList(
             // One permanent visual owner for settled + GenericPivot holder RenderNodes. Publisher
             // nodes below only bind LayoutRes/input state; this host remains in the same viewport
             // slot so transition start/end cannot expose the background for one frame.
-            if (!LocalVirtualListPresentationHostExternal.current) {
-                // Standalone/non-library VirtualLists still own a local presentation node. HOME/root
-                // library pages publish into the one host fixed at ReferenceLibraryVirtualListHost.
+            if (!externalPresentationHost && !useAndroidPresentationHost) {
+                // Only the legacy Compose-node backend owns a local draw-only presentation host.
+                // ANDROID_VIEW requires a concrete RawVirtualListPresentationView even for a
+                // standalone list: physical holder Views are also the authoritative click/long-
+                // click owner. A draw-only standalone host renders rows but cannot dispatch input.
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -1380,11 +1461,17 @@ fun ComposeVirtualList(
                         },
                         currentTransform = providerCurrentTransform,
                         retainedTransform = providerRetainedTransform,
-                        onPopulationPublished = onOuterPopulationPublished,
+                        contentBindAllowed = localProviderNavigationActive &&
+                            !localProviderNavigationFrame.readyForMotion,
+                        retainedHeaderElementId = outerRetainedProvider?.persistentHeaderSceneItemId
+                            ?.takeIf { localProviderNavigationActive },
+                        onPopulationPublished = {
+                            onOuterPopulationPublished?.invoke()
+                            if (localProviderNavigationActive) {
+                                localProviderNavigationFrame.onPopulationPublished?.invoke()
+                            }
+                        },
                     )
-                    val populationPublished = localProviderNavigationFrame.onPopulationPublished
-                        .takeIf { localProviderNavigationActive }
-                    if (populationPublished != null) SideEffect(populationPublished)
                 }
             }
 
@@ -1478,6 +1565,12 @@ fun ComposeVirtualList(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
+                        // The physical shared artwork is rendered by the persistent Android
+                        // VirtualList host. Keep title, metadata and header buttons in the same
+                        // migrated holder above AA pixels; Raw's header chrome is Compose-backed,
+                        // so give it an explicit higher scene layer or the promoted artwork covers
+                        // the moving chrome until the shared owner retires, producing a hard pop.
+                        .zIndex(if (providerNavigationActive) 50f else 0f)
                         .referenceProviderPopulationTransform(
                             if (outerDualPhysicalRenderActive) providerCurrentTransform else null
                         )
@@ -1489,6 +1582,9 @@ fun ComposeVirtualList(
                         persistentHeaderHeight = persistentHeaderHeight,
                         persistentHeaderVisibilityHeightPx = persistentHeaderVisibilityHeightPx,
                         persistentHeaderSceneItemVisibilityHeightPx = persistentHeaderSceneItemVisibilityHeightPx,
+                        persistentHeaderSceneItemLeft = persistentHeaderSceneItemLeft,
+                        persistentHeaderSceneItemTop = persistentHeaderSceneItemTop,
+                        persistentHeaderSceneItemWidth = persistentHeaderSceneItemWidth,
                         widthPx = widthPx,
                         heightPx = heightPx,
                         sharedCoverSceneId = sharedCoverSceneId,
@@ -1526,18 +1622,33 @@ internal fun ComposeReferenceLibraryProviderBody(
     onOuterPopulationPublished: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
-    val state = provider.state ?: return
     // The provider object is intentionally retained across scene lifetime. Structural revision
     // invalidates prepared physical populations; behavior revision only refreshes the fixed body
     // with new callbacks/playing/content state and is deliberately excluded from prewarm identity.
+    // Read both before the state guard: a registered-but-not-yet-published provider must still
+    // subscribe this body, otherwise its later publication never recomposes the empty list.
     provider.revision
     provider.behaviorRevision
+    val state = provider.state ?: return
+    val providerNavigation = provider.providerNavigationFrame
+    val localNavigationOwnsBody = usesLocalProviderNavigation(
+        localActive = providerNavigation.active,
+        hasRetainedProvider = providerNavigation.retainedProvider != null,
+        outerActive = LocalReferenceLibraryLayoutFrame.current.active,
+    )
+    val bodySharedSpec = if (localNavigationOwnsBody) {
+        provider.providerSharedTransitionSpec
+    } else {
+        LocalSharedTransitionSpec.current
+    }
     CompositionLocalProvider(
         LocalReferenceLibraryBodyRender provides true,
         LocalReferenceLibraryProviderScene provides provider.scene,
         LocalReferenceLibraryProviderPublicationOnly provides false,
         LocalReferenceRetainedVirtualListProvider provides retainedProvider,
         LocalVirtualListCustomProvider provides provider.customProvider,
+        LocalVirtualListProviderNavigationFrame provides providerNavigation,
+        LocalSharedTransitionSpec provides bodySharedSpec,
     ) {
         ComposeVirtualList(
             songs = provider.songs,
@@ -1553,6 +1664,9 @@ internal fun ComposeReferenceLibraryProviderBody(
             persistentHeaderHeight = provider.persistentHeaderHeight,
             persistentHeaderVisibilityHeight = provider.persistentHeaderVisibilityHeight,
             persistentHeaderSceneItemVisibilityHeight = provider.persistentHeaderSceneItemVisibilityHeight,
+            persistentHeaderSceneItemLeft = provider.persistentHeaderSceneItemLeft,
+            persistentHeaderSceneItemTop = provider.persistentHeaderSceneItemTop,
+            persistentHeaderSceneItemWidth = provider.persistentHeaderSceneItemWidth,
             persistentHeaderSceneItemId = provider.persistentHeaderSceneItemId,
             virtualListEdgeEnabled = provider.virtualListEdgeEnabled,
             persistentHeaderContent = provider.persistentHeaderContent,
@@ -1579,21 +1693,45 @@ internal fun ComposeReferenceLibraryProviderBody(
 
 
 /** Apply the shared HOME/category affine once per provider population instead of once per holder. */
+@Composable
 private fun Modifier.referenceProviderPopulationTransform(
     transform: RetainedSceneItemTransform?,
 ): Modifier = if (transform == null) {
     this
 } else {
+    val latestTransform = rememberUpdatedState(transform)
+    val sampledScale = remember(transform) {
+        mutableFloatStateOf(transform.scaleProvider().let { if (transform.rectangleMapped) it else it.coerceIn(0.5f, 1.5f) })
+    }
+    val sampledAlpha = remember(transform) {
+        mutableFloatStateOf(transform.alphaProvider().coerceIn(0f, 1f))
+    }
+    val sampledX = remember(transform) { mutableFloatStateOf(transform.translationXProvider()) }
+    val sampledY = remember(transform) { mutableFloatStateOf(transform.translationYProvider()) }
+    LaunchedEffect(transform) {
+        // scaleProvider/alphaProvider are render-time functions rather than snapshot State. A plain
+        // graphicsLayer read only evaluates once when the layer block is installed, so Compose
+        // provider populations (not Android View holders) otherwise freeze at their first
+        // GenericPivot value. Sample the same clock once per vsync into layer-only State.
+        while (isActive) {
+            val current = latestTransform.value
+            sampledScale.floatValue = current.scaleProvider().let { if (current.rectangleMapped) it else it.coerceIn(0.5f, 1.5f) }
+            sampledAlpha.floatValue = current.alphaProvider().coerceIn(0f, 1f)
+            sampledX.floatValue = current.translationXProvider()
+            sampledY.floatValue = current.translationYProvider()
+            withFrameNanos { }
+        }
+    }
     graphicsLayer {
-        val scale = transform.scaleProvider().coerceIn(0.5f, 1.5f)
-        alpha = transform.alphaProvider().coerceIn(0f, 1f)
+        val scale = sampledScale.floatValue
+        alpha = sampledAlpha.floatValue
         scaleX = scale
         scaleY = scale
         // Top-left origin plus P*(1-s) is the exact affine for the page-space pivot supplied by
         // GenericPivot.
         transformOrigin = TransformOrigin(0f, 0f)
-        translationX = transform.pivotX * (1f - scale)
-        translationY = transform.pivotY * (1f - scale)
+        translationX = transform.pivotX * (1f - scale) + sampledX.floatValue
+        translationY = transform.pivotY * (1f - scale) + sampledY.floatValue
         compositingStrategy = CompositingStrategy.ModulateAlpha
     }
 }
@@ -1631,24 +1769,13 @@ private fun ComposeReferenceRetainedProviderPopulation(
         computeVirtualListMetrics(
             widthPx = widthPx,
             density = density.density,
-            scaledDensity = density.density * density.fontScale,
+            fontDensity = density,
             mode = retainedState.renderMode,
             params = retainedState.currentParams,
         )
     }
     val itemHeightsPx = remember(provider.songs, customProvider, metrics.cellHeightPx, density.density) {
-        val custom = customProvider ?: return@remember null
-        var hasCustom = false
-        IntArray(provider.songs.size) { index ->
-            val song = provider.songs[index]
-            val height = if (custom.handles(song, index)) custom.itemHeight(song, index) else null
-            if (height != null) {
-                hasCustom = true
-                with(density) { height.roundToPx() }.coerceAtLeast(1)
-            } else {
-                metrics.cellHeightPx.coerceAtLeast(1)
-            }
-        }.takeIf { hasCustom }
+        virtualListItemHeightsPx(provider.songs, customProvider, metrics.cellHeightPx, density)
     }
     val bottomPaddingPx = with(density) {
         (provider.contentBottomPadding ?: bottomInsets.contentBottom).roundToPx()
@@ -1759,6 +1886,9 @@ private fun ComposeReferenceRetainedProviderPopulation(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    // RETAINED detail/header is the visible ItemToHeader chrome owner during a
+                    // forward collection transition. Keep it above the Android promoted AA host.
+                    .zIndex(50f)
                     .referenceProviderPopulationTransform(transform),
             ) {
                 ComposeVirtualListPersistentHeader(
@@ -1768,6 +1898,9 @@ private fun ComposeReferenceRetainedProviderPopulation(
                     persistentHeaderHeight = provider.persistentHeaderHeight,
                     persistentHeaderVisibilityHeightPx = persistentHeaderVisibilityHeightPx,
                     persistentHeaderSceneItemVisibilityHeightPx = persistentHeaderSceneItemVisibilityHeightPx,
+                    persistentHeaderSceneItemLeft = provider.persistentHeaderSceneItemLeft,
+                    persistentHeaderSceneItemTop = provider.persistentHeaderSceneItemTop,
+                    persistentHeaderSceneItemWidth = provider.persistentHeaderSceneItemWidth,
                     widthPx = widthPx,
                     heightPx = heightPx,
                     sharedCoverSceneId = provider.sharedCoverSceneId,
@@ -1818,6 +1951,9 @@ internal fun ComposeReferencePreparedPersistentHeader(
                 persistentHeaderHeight = provider.persistentHeaderHeight,
                 persistentHeaderVisibilityHeightPx = persistentHeaderVisibilityHeightPx,
                 persistentHeaderSceneItemVisibilityHeightPx = persistentHeaderSceneItemVisibilityHeightPx,
+                persistentHeaderSceneItemLeft = provider.persistentHeaderSceneItemLeft,
+                persistentHeaderSceneItemTop = provider.persistentHeaderSceneItemTop,
+                persistentHeaderSceneItemWidth = provider.persistentHeaderSceneItemWidth,
                 widthPx = widthPx,
                 heightPx = heightPx,
                 sharedCoverSceneId = provider.sharedCoverSceneId,
@@ -1869,22 +2005,13 @@ internal fun ComposeReferencePreparedCustomPopulation(
             computeVirtualListMetrics(
                 widthPx = widthPx,
                 density = density.density,
-                scaledDensity = density.density * density.fontScale,
+                fontDensity = density,
                 mode = state.renderMode,
                 params = state.currentParams,
             )
         }
         val itemHeightsPx = remember(provider.songs, customProvider, metrics.cellHeightPx, density.density) {
-            IntArray(provider.songs.size) { index ->
-                val song = provider.songs[index]
-                val customHeight = if (customProvider.handles(song, index)) {
-                    customProvider.itemHeight(song, index)
-                } else {
-                    null
-                }
-                customHeight?.let { with(density) { it.roundToPx() }.coerceAtLeast(1) }
-                    ?: metrics.cellHeightPx.coerceAtLeast(1)
-            }
+            virtualListItemHeightsPx(provider.songs, customProvider, metrics.cellHeightPx, density)
         }
         val bottomPaddingPx = with(density) {
             (provider.contentBottomPadding ?: bottomInsets.contentBottom).roundToPx()
@@ -2042,25 +2169,13 @@ internal fun ComposeReferencePreparedOrdinaryPopulation(
             computeVirtualListMetrics(
                 widthPx = widthPx,
                 density = density.density,
-                scaledDensity = density.density * density.fontScale,
+                fontDensity = density,
                 mode = state.renderMode,
                 params = state.currentParams,
             )
         }
         val itemHeightsPx = remember(provider.songs, customProvider, metrics.cellHeightPx, density.density) {
-            customProvider?.let { custom ->
-                IntArray(provider.songs.size) { index ->
-                    val song = provider.songs[index]
-                    val customHeight = if (custom.handles(song, index)) {
-                        custom.itemHeight(song, index)
-                    } else {
-                        null
-                    }
-                    customHeight
-                        ?.let { with(density) { it.roundToPx() }.coerceAtLeast(1) }
-                        ?: metrics.cellHeightPx.coerceAtLeast(1)
-                }
-            }
+            virtualListItemHeightsPx(provider.songs, customProvider, metrics.cellHeightPx, density)
         }
         val bottomPaddingPx = with(density) {
             (provider.contentBottomPadding ?: bottomInsets.contentBottom).roundToPx()
@@ -2149,7 +2264,7 @@ internal fun ComposeReferencePreparedOrdinaryPopulation(
             state.currentParams,
             geometry,
             rawScroll,
-            density.density,
+            density,
         ) {
             buildList {
                 for (index in warmIndices) {
@@ -2171,6 +2286,7 @@ internal fun ComposeReferencePreparedOrdinaryPopulation(
                         state.currentParams,
                         density.density,
                         song.virtualListArtworkRadiusType(),
+                        fontDensity = density,
                     )
                     val artworkVisible = index in visibleRange
                     val isPlaying = if (provider.playingSongId > 0L) {
@@ -2212,6 +2328,7 @@ internal fun ComposeReferencePreparedOrdinaryPopulation(
         val warmFrame = VirtualListSettledNodeFrame(
             items = nodeItems,
             density = density.density,
+            fontDensity = density,
             textDensity = density.density * density.fontScale,
             dark = ThemeManager.isDarkMode(context),
             configuredTypeface = FontManager.typeface,
@@ -2477,6 +2594,7 @@ private fun ComposeVirtualListOuterDualPhysicalPopulation(
                 contentLayout.params,
                 density.density,
                 resolved.song.virtualListArtworkRadiusType(),
+                fontDensity = density,
             )
             val artworkVisible = current?.artworkVisible == true || retained?.artworkVisible == true
             val holderItem = VirtualListSettledNodeItem(
@@ -2526,6 +2644,7 @@ private fun ComposeVirtualListOuterDualPhysicalPopulation(
                         layout.params,
                         density.density,
                         resolved.song.virtualListArtworkRadiusType(),
+                        fontDensity = density,
                     )
                 },
                 retainedRects = retained?.let { layout ->
@@ -2535,6 +2654,7 @@ private fun ComposeVirtualListOuterDualPhysicalPopulation(
                         layout.params,
                         density.density,
                         resolved.song.virtualListArtworkRadiusType(),
+                        fontDensity = density,
                     )
                 },
             )
@@ -2550,6 +2670,7 @@ private fun ComposeVirtualListOuterDualPhysicalPopulation(
         val holderFrame = VirtualListSettledNodeFrame(
             items = nodeItems.map { it.holderItem },
             density = density.density,
+            fontDensity = density,
             textDensity = density.density * density.fontScale,
             dark = ThemeManager.isDarkMode(context),
             configuredTypeface = FontManager.typeface,
@@ -2654,6 +2775,9 @@ private fun ComposeVirtualListPersistentHeader(
     persistentHeaderHeight: Dp,
     persistentHeaderVisibilityHeightPx: Int,
     persistentHeaderSceneItemVisibilityHeightPx: Int,
+    persistentHeaderSceneItemLeft: Dp,
+    persistentHeaderSceneItemTop: Dp,
+    persistentHeaderSceneItemWidth: Dp?,
     widthPx: Int,
     heightPx: Int,
     sharedCoverSceneId: String,
@@ -2662,6 +2786,11 @@ private fun ComposeVirtualListPersistentHeader(
 ) {
     val density = LocalDensity.current
     val persistentHeaderHeightPx = with(density) { persistentHeaderHeight.roundToPx() }
+    val persistentHeaderSceneItemLeftPx = with(density) { persistentHeaderSceneItemLeft.roundToPx() }
+    val persistentHeaderSceneItemTopPx = with(density) { persistentHeaderSceneItemTop.roundToPx() }
+    val persistentHeaderSceneItemWidthPx = persistentHeaderSceneItemWidth?.let { width ->
+        with(density) { width.roundToPx() }
+    } ?: widthPx
     // Exact motion is projected only into this small header subtree. The surrounding VirtualList does
     // not observe per-pixel scroll state. Transition ownership continues to use its frozen model.
     val exactHeaderScrollState = rememberVirtualListExactScrollPx(
@@ -2680,8 +2809,9 @@ private fun ComposeVirtualListPersistentHeader(
     val headerTopPx = staticTopPaddingPx - headerScrollYPx
     val headerVisible = headerTopPx < heightPx &&
         headerTopPx + persistentHeaderVisibilityHeightPx > 0
-    val sceneItemVisible = headerTopPx < heightPx &&
-        headerTopPx + persistentHeaderSceneItemVisibilityHeightPx > 0
+    val sceneItemTopPx = headerTopPx + persistentHeaderSceneItemTopPx
+    val sceneItemVisible = sceneItemTopPx < heightPx &&
+        sceneItemTopPx + persistentHeaderSceneItemVisibilityHeightPx > 0
     val sharedRegistry = LocalSharedCoverRegistry.current
     val physicalHeaderOwner = remember(sharedCoverSceneId, persistentHeaderSceneItemId) { Any() }
     DisposableEffect(sharedRegistry, sharedCoverSceneId, persistentHeaderSceneItemId, physicalHeaderOwner) {
@@ -2699,10 +2829,10 @@ private fun ComposeVirtualListPersistentHeader(
         sharedCoverSceneId.isNotBlank() && persistentHeaderSceneItemId.startsWith("cover:")
     ) {
         Rect(
-            left = 0f,
-            top = headerTopPx.toFloat(),
-            right = widthPx.toFloat(),
-            bottom = (headerTopPx + persistentHeaderSceneItemVisibilityHeightPx).toFloat(),
+            left = persistentHeaderSceneItemLeftPx.toFloat(),
+            top = sceneItemTopPx.toFloat(),
+            right = (persistentHeaderSceneItemLeftPx + persistentHeaderSceneItemWidthPx).toFloat(),
+            bottom = (sceneItemTopPx + persistentHeaderSceneItemVisibilityHeightPx).toFloat(),
         )
     } else {
         null
@@ -2743,10 +2873,10 @@ private fun ComposeVirtualListPersistentHeader(
                     // spaces. Reusing the local LayoutRes as boundsInWindow made HeaderToItem
                     // subtract the host offset twice and produced a terminal jump/flash.
                     boundsInWindow = Rect(
-                        left = position.x,
-                        top = position.y,
-                        right = position.x + widthPx,
-                        bottom = position.y + persistentHeaderSceneItemVisibilityHeightPx,
+                        left = position.x + persistentHeaderSceneItemLeftPx,
+                        top = position.y + persistentHeaderSceneItemTopPx,
+                        right = position.x + persistentHeaderSceneItemLeftPx + persistentHeaderSceneItemWidthPx,
+                        bottom = position.y + persistentHeaderSceneItemTopPx + persistentHeaderSceneItemVisibilityHeightPx,
                     ),
                     coverKey = "",
                     radiusDp = COLLECTION_HEADER_RADIUS_DP,
@@ -2768,37 +2898,19 @@ private fun ComposeVirtualListPersistentHeader(
             )
             .then(physicalHeaderRegistrationModifier)
             .graphicsLayer {
-                // Scene GenericPivot is already owned by the persistent VirtualList root.  Keep only
-                // the header's independent list/grid scale plus VirtualList's holder-local vertical
-                // edge deformation. scene_header is a normal attached LayoutRes in Reference, so
-                // its match-parent artwork view stretches naturally with this holder.
+                // The collection header is a dedicated holder; regular row layout never sends
+                // that holder through v(holder, scaleY, offsetY); r.i() resets its LayoutRes to
+                // scale=1 and the engine bounds. Keep only Raw's independent list/grid boundary
+                // scale here. VirtualList edge deformation belongs to ordinary visible rows only.
                 val localScale = if (state.isTransitioning) {
                     state.transitionScaleFactor
                 } else {
                     state.boundaryElasticScale
                 }.coerceIn(0.9105f, 1.0895f)
-                val edgeOvershoot = state.virtualListEdgeOvershootPx
-                val maxOvershoot = VIRTUAL_LIST_MAX_OVERSHOOT_DP * density.density
-                val edgeFraction = virtualListHolderEdgeFraction(
-                    holderTopPx = headerTopPx.toFloat(),
-                    holderBottomPx = (headerTopPx + persistentHeaderHeightPx).toFloat(),
-                    viewportHeightPx = heightPx,
-                )
-                val edgeScaleY = virtualListHolderScaleY(
-                    edgeOvershoot,
-                    maxOvershoot,
-                    edgeFraction,
-                )
-                val edgeTranslationY = virtualListHolderTranslationY(
-                    overshootPx = edgeOvershoot,
-                    maxOvershootPx = maxOvershoot,
-                    holderShiftPx = VIRTUAL_LIST_HOLDER_SHIFT_DP * density.density,
-                    holderFraction = edgeFraction,
-                )
                 translationX = 0f
-                translationY = edgeTranslationY
+                translationY = 0f
                 scaleX = localScale
-                scaleY = localScale * edgeScaleY
+                scaleY = localScale
                 alpha = 1f
                 transformOrigin = TransformOrigin(0.5f, 0.5f)
                 compositingStrategy = CompositingStrategy.ModulateAlpha
@@ -2824,6 +2936,9 @@ private data class VirtualListPhysicalHolderRenderSpec(
     val selectionActive: Boolean,
     val boundaryScaleProvider: () -> Float,
     val virtualListEdgeOvershootProvider: () -> Float = { 0f },
+    val edgeFirstVisibleIndex: Int = 0,
+    val edgeLastVisibleIndex: Int = -1,
+    val edgeColumns: Int = 1,
     val viewportHeightPx: Int = 0,
     val sceneTransform: RetainedSceneItemTransform?,
     val hideCover: Boolean,
@@ -2859,6 +2974,9 @@ private fun RenderSettledVirtualListPhysicalHolder(spec: VirtualListPhysicalHold
             selectionActive = spec.selectionActive,
             boundaryScaleProvider = spec.boundaryScaleProvider,
             virtualListEdgeOvershootProvider = spec.virtualListEdgeOvershootProvider,
+            edgeFirstVisibleIndex = spec.edgeFirstVisibleIndex,
+            edgeLastVisibleIndex = spec.edgeLastVisibleIndex,
+            edgeColumns = spec.edgeColumns,
             viewportHeightPx = spec.viewportHeightPx,
             sceneTransform = spec.sceneTransform,
             hideCover = spec.hideCover,
@@ -3029,6 +3147,7 @@ private fun buildOrdinaryPowerItemRolePopulation(
     artworkAnimationsEnabled: Boolean,
     customProvider: VirtualListCustomProvider?,
     density: Float,
+    fontDensity: Density,
     physicalSlotPool: VirtualListPhysicalSlotPool,
     physicalKeyPrefix: Any?,
     sharedCoverElementIdProvider: (AudioFile, Int) -> String,
@@ -3059,6 +3178,7 @@ private fun buildOrdinaryPowerItemRolePopulation(
                 params,
                 density,
                 song.virtualListArtworkRadiusType(),
+                fontDensity = fontDensity,
             )
             add(
                 VirtualListSettledNodeItem(
@@ -3484,7 +3604,7 @@ private fun ComposeVirtualListViewportLayer(
         artworkAnimationsEnabled,
         strictVisualRange,
         holderCustomProvider,
-        density.density,
+        density,
         physicalSlotPool,
         physicalKeyPrefix,
         sharedCoverElementIdProvider,
@@ -3506,6 +3626,7 @@ private fun ComposeVirtualListViewportLayer(
             artworkAnimationsEnabled = artworkAnimationsEnabled,
             customProvider = holderCustomProvider,
             density = density.density,
+            fontDensity = density,
             physicalSlotPool = physicalSlotPool,
             physicalKeyPrefix = physicalKeyPrefix,
             sharedCoverElementIdProvider = sharedCoverElementIdProvider,
@@ -3515,6 +3636,7 @@ private fun ComposeVirtualListViewportLayer(
     val powerRoleFrame = VirtualListSettledNodeFrame(
         items = powerRoleItems,
         density = density.density,
+        fontDensity = density,
         textDensity = density.density * density.fontScale,
         dark = ThemeManager.isDarkMode(context),
         configuredTypeface = FontManager.typeface,
@@ -3526,6 +3648,11 @@ private fun ComposeVirtualListViewportLayer(
         scrollInvalidationOwner = nodeScrollInvalidationOwner,
         viewportHeightPx = viewportHeightPx,
         virtualListEdgeOvershootProvider = { state.virtualListEdgeOvershootPx },
+        edgeFirstVisibleIndex = strictVisualRange.first,
+        edgeLastVisibleIndex = strictVisualRange.last,
+        edgeColumns = geometry.columns,
+        boundaryScaleProvider = boundaryScaleProvider,
+        boundaryMotionActive = state.isPinching || state.isBoundaryElasticActive,
         onPlayingCoverBoundsChanged = onPlayingCoverBoundsChanged,
         onPlayingCoverTargetChanged = onPlayingCoverTargetChanged,
         onSongClick = onSongClick,
@@ -3542,7 +3669,7 @@ private fun ComposeVirtualListViewportLayer(
             settledSharedCoverRegistry.freezeSnapshot(snapshot)
         },
         canStartSharedCoverTransition = {
-            !settledSharedCoverRegistry.isPhysicalPromotionActive()
+            settledSharedCoverRegistry.canStartPhysicalSharedClick(sharedCoverSceneId)
         },
     )
     if (physicalLayoutSlots != null) {
@@ -3650,6 +3777,13 @@ private fun ComposeVirtualListViewportLayer(
     val boundarySnapshot = state.isBoundaryElasticActive
     val virtualListEdgeSnapshot = state.isVirtualListEdgeActive
     val customProviderSnapshot = holderCustomProvider != null
+    val persistentAndroidVirtualListOwner =
+        hostPersistentRuntime != null &&
+            LocalVirtualListPresentationHostExternal.current &&
+            ReferenceLibraryPresentationHostBackend == VirtualListPresentationHostBackend.ANDROID_VIEW
+    val retainNativeEndpoint = retainNativeEndpointDuringPinch(
+        persistentAndroidVirtualListOwner, customProviderSnapshot,
+    )
     val settledNodeIneligibleReason = when {
         !VIRTUAL_LIST_SETTLED_NODE_RENDERER_ENABLED -> "disabled"
         ordinaryPublicationOnly -> "dual_layout_publication"
@@ -3670,19 +3804,17 @@ private fun ComposeVirtualListViewportLayer(
         libraryPreflightSnapshot && hostPersistentRuntime == null -> "library_preflight"
         libraryMotionSnapshot -> "library_motion"
         transitioningSnapshot -> "internal_transition"
-        pinchingSnapshot -> "pinch"
-        boundarySnapshot -> "boundary_elastic"
+        pinchingSnapshot && !retainNativeEndpoint -> "pinch"
+        boundarySnapshot && !retainNativeEndpoint -> "boundary_elastic"
         else -> "settled"
     }
     val settledNodeEligible = settledNodeIneligibleReason == "settled"
-    val persistentAndroidVirtualListOwner =
-        hostPersistentRuntime != null &&
-            LocalVirtualListPresentationHostExternal.current &&
-            ReferenceLibraryPresentationHostBackend == VirtualListPresentationHostBackend.ANDROID_VIEW
-    val physicalInternalZoomOwner =
-        persistentAndroidVirtualListOwner &&
-            !customProviderSnapshot &&
-            (transitioningSnapshot || pinchingSnapshot)
+    val physicalInternalZoomOwner = shouldUsePhysicalInternalZoomOwner(
+        persistentAndroidOwner = persistentAndroidVirtualListOwner,
+        customProvider = customProviderSnapshot,
+        transitioning = transitioningSnapshot,
+        pinching = pinchingSnapshot,
+    )
     // A heterogeneous provider does not replace VirtualList itself; it only supplies a different
     // holder type for the slots it handles. Keep the retained Node publisher alive for ordinary
     // slots (or an empty settled frame when every visible HOME slot is custom) and overlay only the
@@ -3927,6 +4059,9 @@ private fun ComposeVirtualListViewportLayer(
                             selectionActive = selectedPositions.isNotEmpty(),
                             boundaryScaleProvider = boundaryScaleProvider,
                             virtualListEdgeOvershootProvider = { state.virtualListEdgeOvershootPx },
+                            edgeFirstVisibleIndex = strictVisualRange.first,
+                            edgeLastVisibleIndex = strictVisualRange.last,
+                            edgeColumns = geometry.columns,
                             viewportHeightPx = viewportHeightPx,
                             sceneTransform = sceneTransform,
                             hideCover = hideCover,
@@ -4071,6 +4206,7 @@ private fun ComposePhysicalVirtualListZoomLayer(
     val holderFrame = VirtualListSettledNodeFrame(
         items = holderItems,
         density = density.density,
+        fontDensity = density,
         textDensity = density.density * density.fontScale,
         dark = ThemeManager.isDarkMode(context),
         configuredTypeface = FontManager.typeface,
@@ -4220,6 +4356,9 @@ private fun ComposeVirtualListTransitionItem(
     selectionActive: Boolean = false,
     boundaryScaleProvider: () -> Float = { 1f },
     virtualListEdgeOvershootProvider: () -> Float = { 0f },
+    edgeFirstVisibleIndex: Int = 0,
+    edgeLastVisibleIndex: Int = -1,
+    edgeColumns: Int = 1,
     viewportHeightPx: Int = 0,
     sceneTransform: RetainedSceneItemTransform? = null,
     hideCover: Boolean = false,
@@ -4271,9 +4410,10 @@ private fun ComposeVirtualListTransitionItem(
                     val edgeOvershoot = virtualListEdgeOvershootProvider()
                     val maxEdgeOvershoot = VIRTUAL_LIST_MAX_OVERSHOOT_DP * density.density
                     val edgeFraction = virtualListHolderEdgeFraction(
-                        holderTopPx = layoutPosition.bounds.top.toFloat(),
-                        holderBottomPx = layoutPosition.bounds.bottom.toFloat(),
-                        viewportHeightPx = viewportHeightPx,
+                        itemIndex = index,
+                        firstVisibleIndex = edgeFirstVisibleIndex,
+                        lastVisibleIndex = edgeLastVisibleIndex,
+                        columns = edgeColumns,
                     )
                     val edgeScaleY = virtualListHolderScaleY(
                         edgeOvershoot,
@@ -4286,12 +4426,12 @@ private fun ComposeVirtualListTransitionItem(
                         holderShiftPx = VIRTUAL_LIST_HOLDER_SHIFT_DP * density.density,
                         holderFraction = edgeFraction,
                     )
-                    val sceneScale = sceneTransform?.scaleProvider?.invoke()?.coerceIn(0.5f, 1.5f) ?: 1f
+                    val sceneScale = sceneTransform?.scaleProvider?.invoke()?.let { if (sceneTransform.rectangleMapped) it else it.coerceIn(0.5f, 1.5f) } ?: 1f
                     if (sceneTransform != null) {
                         val centerX = (layoutPosition.bounds.left + layoutPosition.bounds.right) * 0.5f
                         val centerY = (layoutPosition.bounds.top + layoutPosition.bounds.bottom) * 0.5f
-                        translationX = (centerX - sceneTransform.pivotX) * (sceneScale - 1f)
-                        translationY = (centerY - sceneTransform.pivotY) * (sceneScale - 1f)
+                        translationX = (centerX - sceneTransform.pivotX) * (sceneScale - 1f) + sceneTransform.translationXProvider()
+                        translationY = (centerY - sceneTransform.pivotY) * (sceneScale - 1f) + sceneTransform.translationYProvider()
                     } else {
                         translationX = 0f
                         translationY = edgeTranslationY
@@ -4616,8 +4756,15 @@ private fun ComposeVirtualListDrawnItem(
     val colors = virtualListColors(dark, isPlaying, isSelected)
     val edgeScale = boundaryScale.coerceIn(0.9105f, 1.0895f)
     val artworkRadiusType = song.virtualListArtworkRadiusType()
-    val rects = remember(position, mode, params, density.density, edgeScale, artworkRadiusType) {
-        val base = composeArtworkItemSceneRects(position, mode, params, density.density, artworkRadiusType)
+    val rects = remember(position, mode, params, density, edgeScale, artworkRadiusType) {
+        val base = composeArtworkItemSceneRects(
+            position,
+            mode,
+            params,
+            density.density,
+            artworkRadiusType,
+            fontDensity = density,
+        )
         if (edgeScale == 1f) {
             base
         } else {
@@ -4665,7 +4812,7 @@ private fun ComposeVirtualListDrawnItem(
     val titleText = rememberVirtualListPreparedText(
         text = title,
         rect = rects.title,
-        density = density.density * density.fontScale,
+        fontDensity = density,
         bold = true,
         animate = animateListText,
         configuredTypeface = configuredTypeface
@@ -4673,7 +4820,7 @@ private fun ComposeVirtualListDrawnItem(
     val subtitleText = rememberVirtualListPreparedText(
         text = subtitle,
         rect = rects.subtitle,
-        density = density.density * density.fontScale,
+        fontDensity = density,
         bold = false,
         animate = animateListText,
         configuredTypeface = configuredTypeface
@@ -4681,7 +4828,7 @@ private fun ComposeVirtualListDrawnItem(
     val metaText = rememberVirtualListPreparedText(
         text = meta,
         rect = rects.meta,
-        density = density.density * density.fontScale,
+        fontDensity = density,
         bold = false,
         leftInsetPx = if (hasCollectionMetaIcon) 16f * density.density else 0f,
         animate = animateListText,
@@ -4757,6 +4904,17 @@ private fun ComposeVirtualListDrawnItem(
         // geometry. Coordinate-only snapshots remain disallowed below by the physicalSlotId gate.
         val left = (origin?.x ?: position.bounds.left.toFloat()) + cover.left
         val top = (origin?.y ?: position.bounds.top.toFloat()) + cover.top
+        fun childBounds(rect: ComposeItemRect): Rect? {
+            if (rect.width <= 0 || rect.height <= 0 || rect.alpha <= 0f) return null
+            val childLeft = (origin?.x ?: position.bounds.left.toFloat()) + rect.left
+            val childTop = (origin?.y ?: position.bounds.top.toFloat()) + rect.top
+            return Rect(
+                left = childLeft,
+                top = childTop,
+                right = childLeft + rect.width,
+                bottom = childTop + rect.height,
+            )
+        }
         return SharedCoverSnapshot(
             sceneId = sharedCoverSceneId,
             elementId = sharedCoverElementId,
@@ -4766,8 +4924,12 @@ private fun ComposeVirtualListDrawnItem(
                 right = left + cover.width,
                 bottom = top + cover.height,
             ),
+            layoutColumns = mode.columns,
             coverKey = song.coverKey,
             radiusDp = rects.coverRadiusDp,
+            titleBoundsInWindow = childBounds(rects.title),
+            subtitleBoundsInWindow = childBounds(rects.subtitle),
+            metaBoundsInWindow = childBounds(rects.meta),
             itemIndex = index,
             physicalSlotId = physicalSlotId,
             itemViewportBounds = Rect(
@@ -4854,7 +5016,7 @@ private fun ComposeVirtualListDrawnItem(
                 text = titleText.display,
                 rect = rects.title,
                 color = titleColor,
-                density = density.density * density.fontScale,
+                fontDensity = density,
                 bold = true,
                 typefaceOverride = titleText.typeface,
                 alreadyEllipsized = true,
@@ -4869,7 +5031,7 @@ private fun ComposeVirtualListDrawnItem(
                 text = subtitleText.display,
                 rect = rects.subtitle,
                 color = subtitleColor,
-                density = density.density * density.fontScale,
+                fontDensity = density,
                 bold = false,
                 typefaceOverride = subtitleText.typeface,
                 alreadyEllipsized = true,
@@ -4884,7 +5046,7 @@ private fun ComposeVirtualListDrawnItem(
                 text = metaText.display,
                 rect = rects.meta,
                 color = metaColor,
-                density = density.density * density.fontScale,
+                fontDensity = density,
                 bold = false,
                 leftInsetPx = if (hasCollectionMetaIcon) 16f * density.density else 0f,
                 typefaceOverride = metaText.typeface,
@@ -5217,7 +5379,7 @@ internal fun drawVirtualListText(
     text: String,
     rect: ComposeItemRect,
     color: Color,
-    density: Float,
+    fontDensity: Density,
     bold: Boolean,
     leftInsetPx: Float = 0f,
     typefaceOverride: Typeface? = null,
@@ -5228,7 +5390,7 @@ internal fun drawVirtualListText(
     if (text.isBlank() || rect.alpha <= 0f || rect.width <= 0 || rect.height <= 0) return
     val fontSizeSp = rect.fontSizeSp.takeIf { it > 0f } ?: 14f
     virtualListTextPaint.color = color.copy(alpha = color.alpha * rect.alpha.coerceIn(0f, 1f)).toArgb()
-    virtualListTextPaint.textSize = fontSizeSp * density
+    virtualListTextPaint.textSize = fontDensity.virtualListSpToPx(fontSizeSp)
     virtualListTextPaint.typeface = typefaceOverride
         ?: FontManager.resolveTypeface(if (bold) 700 else 400)
     val availableWidth = (rect.width.toFloat() - leftInsetPx).coerceAtLeast(1f)
@@ -5291,27 +5453,26 @@ internal data class PreparedVirtualListText(
 private data class PreparedTransitionVirtualListText(
     val text: String,
     val typeface: Typeface,
-    /** Measured pixel width at fontSizeSp=1 for the current density/fontScale. */
-    val widthPerSpPx: Float,
+    /** Measured width at a 1 px paint size; multiply by the resolved font pixel size. */
+    val widthPerPixelPx: Float,
 )
 
 private fun prepareTransitionVirtualListText(
     text: String,
     bold: Boolean,
-    textDensity: Float,
     configuredTypeface: Typeface?,
 ): PreparedTransitionVirtualListText {
     // configuredTypeface remains part of the retained text signature so a global font change
     // invalidates prepared widths, while the concrete face is resolved with the semantic weight.
     val resolvedTypeface = FontManager.resolveTypeface(if (bold) 700 else 400)
     val paint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
-        textSize = textDensity
+        textSize = 1f
         typeface = resolvedTypeface
     }
     return PreparedTransitionVirtualListText(
         text = text,
         typeface = resolvedTypeface,
-        widthPerSpPx = paint.measureText(text),
+        widthPerPixelPx = paint.measureText(text),
     )
 }
 
@@ -5331,14 +5492,14 @@ internal fun PreparedVirtualListText.marqueeOffset(
 internal fun prepareVirtualListText(
     text: String,
     rect: ComposeItemRect,
-    density: Float,
+    fontDensity: Density,
     bold: Boolean,
     leftInsetPx: Float = 0f,
     animate: Boolean,
     configuredTypeface: Typeface?
 ): PreparedVirtualListText {
     val paint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
-        textSize = (rect.fontSizeSp.takeIf { it > 0f } ?: 14f) * density
+        textSize = fontDensity.virtualListSpToPx(rect.fontSizeSp.takeIf { it > 0f } ?: 14f)
         // Keep configuredTypeface in the caller's remember/signature key; resolve the actual
         // requested 400/700 face here so the global weight offset is not overwritten by BOLD/NORMAL.
         typeface = FontManager.resolveTypeface(if (bold) 700 else 400)
@@ -5368,7 +5529,7 @@ internal fun prepareVirtualListText(
 private fun rememberVirtualListPreparedText(
     text: String,
     rect: ComposeItemRect,
-    density: Float,
+    fontDensity: Density,
     bold: Boolean,
     leftInsetPx: Float = 0f,
     animate: Boolean,
@@ -5378,7 +5539,9 @@ private fun rememberVirtualListPreparedText(
         text,
         rect.width,
         rect.fontSizeSp,
-        density,
+        fontDensity,
+        fontDensity.density,
+        fontDensity.fontScale,
         bold,
         leftInsetPx,
         animate,
@@ -5387,7 +5550,7 @@ private fun rememberVirtualListPreparedText(
         prepareVirtualListText(
             text = text,
             rect = rect,
-            density = density,
+            fontDensity = fontDensity,
             bold = bold,
             leftInsetPx = leftInsetPx,
             animate = animate,
@@ -5535,33 +5698,34 @@ private fun TransitionTexts(
     progressProvider: () -> Float,
     marqueeVisible: Boolean,
 ) {
-    val density = LocalDensity.current
-    // Preserve the existing transition actor's font sizing; this round only restores marquee motion.
-    val textDensity = density.density
+    val fontDensity = LocalDensity.current
+    val density = fontDensity.density
     val configuredTypeface = FontManager.typeface
     val animateListText = LongTextMotionState.enabled && LongTextMotionState.enabledEverywhere
     val listMarqueeVisible = LongTextMotionState.LocalListMarqueeVisibility.current
-    val titleText = remember(song.displayName, textDensity, configuredTypeface) {
-        prepareTransitionVirtualListText(song.displayName, true, textDensity, configuredTypeface)
+    val titleText = remember(song.displayName, fontDensity, configuredTypeface) {
+        prepareTransitionVirtualListText(song.displayName, true, configuredTypeface)
     }
-    val subtitleText = remember(song.subtitle(), textDensity, configuredTypeface) {
-        prepareTransitionVirtualListText(song.subtitle(), false, textDensity, configuredTypeface)
+    val subtitleText = remember(song.subtitle(), fontDensity, configuredTypeface) {
+        prepareTransitionVirtualListText(song.subtitle(), false, configuredTypeface)
     }
-    val metaText = remember(song.metaText(), textDensity, configuredTypeface) {
-        prepareTransitionVirtualListText(song.metaText(), false, textDensity, configuredTypeface)
+    val metaText = remember(song.metaText(), fontDensity, configuredTypeface) {
+        prepareTransitionVirtualListText(song.metaText(), false, configuredTypeface)
     }
 
     // Reference keeps MarqueeTextNode alive while its ArtworkItemNode alpha is non-zero. Internal
     // LIST/GRID zoom replaces Raw's settled row with this retained transition actor, so this actor
     // has to remain a marquee consumer as well; otherwise the clock may keep running globally while
     // the visibly interpolated title itself appears frozen for the whole pinch. Text width is
-    // measured once at composition and scales linearly with fontSizeSp in draw; never call
+    // measured once at composition in pixel units and scales linearly with resolved pixel size;
+    // never call
     // TextPaint.measureText() for every holder on every pinch frame.
     val hasPotentialMarqueeOverflow = remember(titleText, subtitleText, metaText, source, target) {
         fun overflows(text: PreparedTransitionVirtualListText, rect: ComposeItemRect): Boolean {
             if (text.text.isBlank() || rect.alpha <= 0f || rect.width <= 1) return false
             val fontSizeSp = rect.fontSizeSp.takeIf { it > 0f } ?: 14f
-            return text.widthPerSpPx * fontSizeSp - rect.width.toFloat() > 0.5f
+            return text.widthPerPixelPx * fontDensity.virtualListSpToPx(fontSizeSp) -
+                rect.width.toFloat() > 0.5f
         }
         overflows(titleText, source.title) || overflows(titleText, target.title) ||
             overflows(subtitleText, source.subtitle) || overflows(subtitleText, target.subtitle) ||
@@ -5593,13 +5757,15 @@ private fun TransitionTexts(
                 fontSizeSp = lerpFloatLocal(sourceFontSize, targetFontSize, progress)
             )
             val overflowPx = (
-                text.widthPerSpPx * (rect.fontSizeSp.takeIf { it > 0f } ?: 14f) -
+                text.widthPerPixelPx * fontDensity.virtualListSpToPx(
+                    rect.fontSizeSp.takeIf { it > 0f } ?: 14f
+                ) -
                     rect.width.toFloat().coerceAtLeast(1f)
                 ).coerceAtLeast(0f)
             val horizontalOffsetPx = LongTextMotionState.marqueeOffset(
                 elapsedMs = marqueeElapsedMs,
                 overflowPx = overflowPx,
-                speedPxPerSecond = 42.5f * density.density,
+                speedPxPerSecond = 42.5f * density,
                 enabled = listMarqueeEnabled && overflowPx > 0.5f,
             )
             drawVirtualListText(
@@ -5607,7 +5773,7 @@ private fun TransitionTexts(
                 text = text.text,
                 rect = rect,
                 color = color,
-                density = textDensity,
+                fontDensity = fontDensity,
                 bold = bold,
                 typefaceOverride = text.typeface,
                 alreadyEllipsized = animateListText,
@@ -5851,6 +6017,7 @@ private fun buildTransitionItems(
     targetGeometry: ComposeVirtualListGeometry,
     scrollModel: TransitionScrollModel,
     density: Float,
+    fontDensity: Density,
     slotPool: ComposeSlotPool
 ): List<ComposeTransitionItem> {
     val visibleRange = mergedLayoutRange(
@@ -5950,8 +6117,22 @@ private fun buildTransitionItems(
         val baseTarget = targetPosition ?: sourcePosition ?: continue
         val physicalSlot = slotPool.slotIdFor(index).takeIf { it >= 0 } ?: (index - visibleRange.first)
         val artworkRadiusType = song.virtualListArtworkRadiusType()
-        val sourceRects = composeArtworkItemSceneRects(baseSource, sourceMode, sourceParams, density, artworkRadiusType)
-        val targetRects = composeArtworkItemSceneRects(baseTarget, targetMode, targetParams, density, artworkRadiusType)
+        val sourceRects = composeArtworkItemSceneRects(
+            baseSource,
+            sourceMode,
+            sourceParams,
+            density,
+            artworkRadiusType,
+            fontDensity = fontDensity,
+        )
+        val targetRects = composeArtworkItemSceneRects(
+            baseTarget,
+            targetMode,
+            targetParams,
+            density,
+            artworkRadiusType,
+            fontDensity = fontDensity,
+        )
         result += ComposeTransitionItem(
             index = index,
             song = song,
@@ -6523,7 +6704,7 @@ private fun rememberComposeVirtualListTransitionSnapshot(
     widthPx: Int,
     heightPx: Int,
     density: Float,
-    fontScale: Float,
+    fontDensity: Density,
     contentTopPaddingPx: Int,
     sourceBottomPaddingPx: Int,
     targetBottomPaddingPx: Int,
@@ -6543,14 +6724,14 @@ private fun rememberComposeVirtualListTransitionSnapshot(
         val sourceMetrics = computeVirtualListMetrics(
             widthPx = widthPx,
             density = density,
-            scaledDensity = density * fontScale,
+            fontDensity = fontDensity,
             mode = session.sourceMode,
             params = sourceParams,
         )
         val targetMetrics = computeVirtualListMetrics(
             widthPx = widthPx,
             density = density,
-            scaledDensity = density * fontScale,
+            fontDensity = fontDensity,
             mode = session.targetMode,
             params = targetParams,
         )
@@ -6590,6 +6771,7 @@ private fun rememberComposeVirtualListTransitionSnapshot(
             targetGeometry = targetGeometry,
             scrollModel = scrollModel,
             density = density,
+            fontDensity = fontDensity,
             slotPool = slotPool,
         )
         ComposeVirtualListTransitionSnapshot(
@@ -6787,4 +6969,29 @@ private fun mergedLayoutRange(
         if (targetRange.isEmpty()) 0 else targetRange.last
     ).coerceIn(first, itemCount - 1)
     return first..last
+}
+/** The all-songs pre-data holder is a native artwork item, not a Compose custom overlay. */
+internal fun virtualListItemHeightsPx(
+    songs: List<AudioFile>,
+    customProvider: VirtualListCustomProvider?,
+    defaultHeightPx: Int,
+    density: Density,
+): IntArray? {
+    val hasNativePreData = songs.firstOrNull()?.encodingFormat == VIRTUAL_LIST_ARTIST_ALL_SONGS_ENCODING
+    if (!hasNativePreData && customProvider == null) return null
+    var hasOverride = false
+    return IntArray(songs.size) { index ->
+        val song = songs[index]
+        val override = when {
+            index == 0 && song.encodingFormat == VIRTUAL_LIST_ARTIST_ALL_SONGS_ENCODING -> 88.dp
+            customProvider?.handles?.invoke(song, index) == true -> customProvider.itemHeight(song, index)
+            else -> null
+        }
+        if (override != null) {
+            hasOverride = true
+            with(density) { override.roundToPx() }.coerceAtLeast(1)
+        } else {
+            defaultHeightPx.coerceAtLeast(1)
+        }
+    }.takeIf { hasOverride }
 }

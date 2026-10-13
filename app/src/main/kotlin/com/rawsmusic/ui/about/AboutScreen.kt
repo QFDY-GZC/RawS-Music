@@ -110,6 +110,8 @@ fun AboutScreen(onBack: () -> Unit) {
         OpenSourceItem("Backdrop-Compose", "Kyant", stringResource(R.string.ui_about_backdrop_desc), stringResource(R.string.ui_about_apache_license), colors)
         Spacer(Modifier.height(16.dp))
         OpenSourceItem("libusb", "libusb Contributors", stringResource(R.string.ui_about_libusb_desc), stringResource(R.string.ui_about_lgpl_license), colors)
+        Spacer(Modifier.height(16.dp))
+        OpenSourceItem("Noto Animated Emoji", "Google", "Animated emoji used in the spectrum quality card", "CC BY 4.0 · googlefonts.github.io/noto-emoji-animation", colors)
 
         Spacer(Modifier.height(160.dp))
     }

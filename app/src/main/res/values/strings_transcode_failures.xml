@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="transcode_failure_invalid_request">The conversion request is invalid.</string>
+    <string name="transcode_failure_unsupported_source">This source audio format or parameter set is not supported.</string>
+    <string name="transcode_failure_unsupported_target">The selected output format or parameters are not supported.</string>
+    <string name="transcode_failure_output_exists">The output file already exists.</string>
+    <string name="transcode_failure_insufficient_space">There is not enough storage space for the conversion.</string>
+    <string name="transcode_failure_encode_failed">Audio encoding failed.</string>
+    <string name="transcode_failure_metadata_migration">Metadata could not be preserved as requested.</string>
+    <string name="transcode_failure_verification">The converted file failed verification.</string>
+    <string name="transcode_failure_commit">The converted file could not be committed to its final location.</string>
+    <string name="transcode_failure_process_interrupted">The conversion was interrupted before it completed.</string>
+    <string name="transcode_failure_internal">The conversion failed because of an internal error.</string>
+    <string name="transcode_failure_with_native_code">%1$s (native=%2$d)</string>
+</resources>

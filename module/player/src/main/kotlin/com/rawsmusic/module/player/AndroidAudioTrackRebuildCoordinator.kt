@@ -36,6 +36,8 @@ internal class AndroidAudioTrackRebuildCoordinator(
         forceSco: Boolean = false,
         forcedDevice: AudioDeviceInfo? = null,
     ): AudioTrack? {
+        // Capture before detachAndRelease destroys the old track's explicit route intent.
+        val recoveryDevice = routeController.deviceForRecovery(forcedDevice)
         val useSco = AudioOutputManager.shouldUseScoMode(context)
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
         val scoActive = forceSco || (audioManager?.isBluetoothScoOn == true)
@@ -86,7 +88,7 @@ internal class AndroidAudioTrackRebuildCoordinator(
                 reason = "recreateAudioTrackInline",
                 useScoAttributes = spec.useScoAttributes,
                 allowDirectPreferredDevice = !useSco,
-                forcedDevice = forcedDevice,
+                forcedDevice = if (spec.useScoAttributes && forcedDevice == null) null else recoveryDevice,
                 trackOverride = newTrack,
             )
             onTrackCreated(newTrack, spec.sampleRate, spec.channelConfig, spec.encoding)

@@ -77,6 +77,7 @@ object BitmapPool {
             if (bitmap.width != width || bitmap.height != height || bitmap.config != config) {
                 bitmap.reconfigure(width, height, config)
             }
+            if (android.os.Build.VERSION.SDK_INT >= 34) bitmap.setGainmap(null)
             bitmap.eraseColor(0)
             bitmap
         } catch (_: Throwable) {

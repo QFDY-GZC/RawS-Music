@@ -1,0 +1,4 @@
+<resources>
+    <string name="player_more_add_to_playlist">재생목록에 추가</string>
+    <string name="player_more_remove_from_playlists">저장된 재생목록에서 곡 제거</string>
+</resources>

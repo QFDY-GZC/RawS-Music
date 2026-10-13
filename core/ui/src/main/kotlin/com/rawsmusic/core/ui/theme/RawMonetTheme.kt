@@ -73,6 +73,7 @@ val RawMonet: RawMonetTokens
 fun RawMonetTheme(
     isDark: Boolean = isSystemInDarkTheme(),
     colorThemeMode: ColorThemeMode = ColorThemeMode.MIUIX,
+    forceDarkPalette: Boolean = false,
     applySystemBars: Boolean = true,
     content: @Composable () -> Unit
 ) {
@@ -82,10 +83,14 @@ fun RawMonetTheme(
         colorThemeMode == ColorThemeMode.MONET_LIGHT ||
         colorThemeMode == ColorThemeMode.MONET_DARK
 
-    val effectiveIsDark = when (colorThemeMode) {
-        ColorThemeMode.MONET_LIGHT -> false
-        ColorThemeMode.MONET_DARK -> true
-        else -> isDark
+    val effectiveIsDark = if (forceDarkPalette) {
+        true
+    } else {
+        when (colorThemeMode) {
+            ColorThemeMode.MONET_LIGHT -> false
+            ColorThemeMode.MONET_DARK -> true
+            else -> isDark
+        }
     }
 
     val colorScheme = remember(context, effectiveIsDark, useDynamic) {

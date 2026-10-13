@@ -303,19 +303,42 @@ object AppPreferences {
                 kv.encode("player_usb_target_bit_depth", normalized)
             }
 
-        /** 是否启用回放增益（ReplayGain） */
+        /**
+         * Legacy ReplayGain enable flag. New UI should use [effectiveReplayGainMode] and
+         * [setUnifiedReplayGainMode] so this flag cannot diverge from the selected mode.
+         */
         var replayGainEnabled: Boolean
             get() = kv.decodeBool("player_replay_gain_enabled", false)
             set(value) { kv.encode("player_replay_gain_enabled", value) }
 
-        /** 回放增益模式：0=关闭, 1=音轨, 2=专辑 */
+        /** ReplayGain mode: 0=off, 1=track, 2=album. */
         var replayGainMode: Int
             get() = kv.decodeInt("player_replay_gain_mode", 1)
             set(value) { kv.encode("player_replay_gain_mode", value.coerceIn(0, 2)) }
 
+        /** Legacy volume-normalization switch. Historically this meant ReplayGain Track mode. */
         var volumeNormalizationEnabled: Boolean
             get() = kv.decodeBool("player_volume_normalization", false)
             set(value) { kv.encode("player_volume_normalization", value) }
+
+        /**
+         * Canonical playback mode while preserving existing installs:
+         * explicit ReplayGain wins, the old normalization switch maps to Track mode,
+         * otherwise normalization is off.
+         */
+        fun effectiveReplayGainMode(): Int = when {
+            replayGainEnabled -> replayGainMode.coerceIn(0, 2)
+            volumeNormalizationEnabled -> 1
+            else -> 0
+        }
+
+        /** Write the single user-facing normalization setting and retire the legacy switch. */
+        fun setUnifiedReplayGainMode(mode: Int) {
+            val normalized = mode.coerceIn(0, 2)
+            replayGainMode = normalized
+            replayGainEnabled = normalized != 0
+            volumeNormalizationEnabled = false
+        }
 
         var gaplessPlaybackEnabled: Boolean
             get() = kv.decodeBool("player_gapless", true)
@@ -503,11 +526,11 @@ object AppPreferences {
             get() = kv.decodeBool("dsd_conversion_enabled", false)
             set(value) { kv.encode("dsd_conversion_enabled", value) }
 
-        /** DSD 输出倍率：64=DSD64, 128=DSD128, 256=DSD256, 512=DSD512 */
+        /** DSD 输出倍率：64/128/256/512/1024 */
         var dsdRate: Int
             get() = kv.decodeInt("dsd_rate", 64)
             set(value) {
-                val valid = if (value in listOf(64, 128, 256, 512)) value else 64
+                val valid = if (value in listOf(64, 128, 256, 512, 1024)) value else 64
                 kv.encode("dsd_rate", valid)
             }
 
@@ -675,6 +698,10 @@ object AppPreferences {
             get() = kv.decodeInt("ui_font_weight_v2", 400).coerceIn(100, 900)
             set(value) { kv.encode("ui_font_weight_v2", value.coerceIn(100, 900)) }
 
+        var experimentalFontWeightEnabled: Boolean
+            get() = kv.decodeBool("ui_experimental_font_weight_v1", false)
+            set(value) { kv.encode("ui_experimental_font_weight_v1", value) }
+
         var fontItalic: Boolean
             get() = kv.decodeBool("ui_font_italic_v2", false)
             set(value) { kv.encode("ui_font_italic_v2", value) }
@@ -754,6 +781,20 @@ object AppPreferences {
             get() = kv.decodeInt("ui_audio_visualizer_particle_color_mode", 0).coerceIn(0, 1)
             set(value) { kv.encode("ui_audio_visualizer_particle_color_mode", value.coerceIn(0, 1)) }
 
+        /** Only disables player artwork track swipes; buttons and the home carousel remain active. */
+        var playerSwipeToChangeTrackDisabled: Boolean
+            get() = kv.decodeBool("ui_player_swipe_to_change_track_disabled", false)
+            set(value) { kv.encode("ui_player_swipe_to_change_track_disabled", value) }
+
+        var immersiveVerticalTrackSwipeEnabled: Boolean
+            get() = kv.decodeBool("ui_immersive_vertical_track_swipe_enabled", false)
+            set(value) { kv.encode("ui_immersive_vertical_track_swipe_enabled", value) }
+
+        /** Optional playlist shortcut in the player More popup header; hidden by default. */
+        var playerMoreFavoriteVisible: Boolean
+            get() = kv.decodeBool("ui_player_more_favorite_visible", false)
+            set(value) { kv.encode("ui_player_more_favorite_visible", value) }
+
         /** 普通播放页专辑图切换动画：0=透视切换，1=内倾轮播，2=平移。 */
         var playerArtworkAnimationStyle: Int
             get() = kv.decodeInt("ui_player_artwork_animation_style", 0).coerceIn(0, 2)
@@ -763,6 +804,11 @@ object AppPreferences {
         var landscapePlayerLocked: Boolean
             get() = kv.decodeBool("ui_landscape_player_locked", false)
             set(value) { kv.encode("ui_landscape_player_locked", value) }
+
+        /** 平板横屏内嵌歌词字号；不改变独立歌词页字号。 */
+        var inlinePlayerLyricFontSizeSp: Int
+            get() = normalizeInlineLyricFontSize(kv.decodeInt("ui_inline_player_lyric_font_size_sp", 28))
+            set(value) { kv.encode("ui_inline_player_lyric_font_size_sp", normalizeInlineLyricFontSize(value)) }
 
         /** 歌词页主歌词字号（sp）。 */
         var lyricFontSizeSp: Int
@@ -783,6 +829,11 @@ object AppPreferences {
         var lyricBlurEnabled: Boolean
             get() = kv.decodeBool("ui_lyric_blur_enabled", true)
             set(value) { kv.encode("ui_lyric_blur_enabled", value) }
+
+        /** 为只有逐行时间的歌词按每行起止时间绘制相对高亮；默认不伪造逐字效果。 */
+        var lyricRelativeLineProgressEnabled: Boolean
+            get() = kv.decodeBool("ui_lyric_relative_line_progress_enabled", false)
+            set(value) { kv.encode("ui_lyric_relative_line_progress_enabled", value) }
 
         /** 歌词页是否让非当前歌词也使用完整高亮色与不透明度。 */
         var lyricHighlightAllEnabled: Boolean
@@ -913,6 +964,14 @@ object AppPreferences {
 
     /** 媒体库扫描与统计偏好 */
     object Scanner {
+        var automaticScanEnabled: Boolean
+            get() = kv.decodeBool("scan_automatic_enabled", true)
+            set(value) { kv.encode("scan_automatic_enabled", value) }
+
+        var immediateAutoScanEnabled: Boolean
+            get() = kv.decodeBool("scan_automatic_immediate", false)
+            set(value) { kv.encode("scan_automatic_immediate", value) }
+
         /** Internal directory timestamp index used by the cold-start incremental scanner. */
         var coldDirectoryFingerprints: String
             get() = kv.decodeString("scan_cold_directory_fingerprints_v1", "") ?: ""
@@ -1128,6 +1187,10 @@ object AppPreferences {
     }
 
     object Lyrics {
+        var exportSignature: String
+            get() = kv.decodeString("lyrics_export_signature", "RawS Music") ?: "RawS Music"
+            set(value) { kv.encode("lyrics_export_signature", value.trim().take(40)) }
+
         private const val FLYME_DEFAULT_OFF_MIGRATION = "lyrics_flyme_default_off_v1"
 
         const val COLOROS_DELIVERY_MODE_MODULE = 0
@@ -1277,6 +1340,17 @@ object AppPreferences {
         var bluetoothLyricTranslation: Boolean
             get() = kv.decodeBool("lyrics_bluetooth_translation", false)
             set(value) { kv.encode("lyrics_bluetooth_translation", value) }
+
+        /** Per-device compatibility experiment. Legacy artist updates remain the safe default. */
+        var bluetoothLyricMetadataField: String
+            get() = kv.decodeString("lyrics_bluetooth_metadata_field", "artist")
+                .takeIf { it == "title" || it == "dual" } ?: "artist"
+            set(value) {
+                kv.encode(
+                    "lyrics_bluetooth_metadata_field",
+                    value.takeIf { it == "title" || it == "dual" } ?: "artist",
+                )
+            }
 
         var desktopLyricEnabled: Boolean
             get() = kv.decodeBool("lyrics_desktop_enabled", false)
@@ -1445,6 +1519,10 @@ object AppPreferences {
         var fontWeight: Int
             get() = kv.decodeInt("lyric_font_weight", 800).coerceIn(100, 900)
             set(value) { kv.encode("lyric_font_weight", value.coerceIn(100, 900)) }
+
+        var experimentalFontWeightEnabled: Boolean
+            get() = kv.decodeBool("lyric_experimental_font_weight_v1", false)
+            set(value) { kv.encode("lyric_experimental_font_weight_v1", value) }
 
         var fontScale: Int
             get() = kv.decodeInt("lyric_font_scale", 100).coerceIn(60, 180)
@@ -1876,6 +1954,17 @@ object AppPreferences {
             set(value) { kv.encode("surround_360_rotation_speed", value.coerceIn(0f, 360f)) }
     }
 
+    object Reverb {
+        var isEnabled: Boolean
+            get()=kv.decodeBool("reverb_enabled",false)
+            set(value){kv.encode("reverb_enabled",value)}
+        var parameters: String
+            get()=kv.decodeString("reverb_parameters_v1","")?:""
+            set(value){kv.encode("reverb_parameters_v1",value)}
+        var presets: String
+            get()=kv.decodeString("reverb_presets_v1","[]")?:"[]"
+            set(value){kv.encode("reverb_presets_v1",value)}
+    }
     object Panoramic360 {
         var isEnabled: Boolean
             get() = kv.decodeBool("panoramic_360_enabled", false)

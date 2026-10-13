@@ -2,6 +2,7 @@
 
 # Keep FFmpegBridge and related classes
 -keep class com.rawsmusic.core.common.ffmpeg.FFmpegBridge { *; }
+-keep class com.rawsmusic.core.common.sacd.SacdIsoBridge { *; }
 
 # Keep native methods
 -keepclasseswithmembernames class * {

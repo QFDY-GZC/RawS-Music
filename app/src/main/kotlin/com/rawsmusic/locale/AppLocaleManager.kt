@@ -12,6 +12,8 @@ object AppLocaleManager {
     const val SYSTEM = "system"
     const val SIMPLIFIED_CHINESE = "zh-CN"
     const val ENGLISH = "en"
+    const val JAPANESE = "ja"
+    const val KOREAN = "ko"
 
     private const val PREFS = "raws_locale_preferences"
     private const val KEY_LANGUAGE = "application_language"
@@ -64,17 +66,26 @@ object AppLocaleManager {
         resources.updateConfiguration(configuration, resources.displayMetrics)
     }
 
-    fun setLanguage(context: Context, language: String) {
+    /**
+     * Persists and applies the app language.
+     *
+     * Returns true only on releases where the caller must recreate its Activity manually.
+     * Android 13+ LocaleManager already schedules the configuration recreation itself; calling
+     * Activity.recreate() there creates a second overlapping recreation and can leave vendor
+     * edge-to-edge windows with their launch-theme system-bar background.
+     */
+    fun setLanguage(context: Context, language: String): Boolean {
         require(language in supportedLanguages)
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_LANGUAGE, language)
             .apply()
         apply(context.applicationContext)
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
     }
 
     val supportedLanguages: Set<String> =
-        setOf(SYSTEM, SIMPLIFIED_CHINESE, ENGLISH)
+        setOf(SYSTEM, SIMPLIFIED_CHINESE, ENGLISH, JAPANESE, KOREAN)
 
     private object ResourcesLocale {
         fun systemLocale(): Locale {

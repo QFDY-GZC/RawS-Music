@@ -14,6 +14,14 @@ import java.io.File
 object MetadataParser {
 
     fun parseFromFile(filePath: String): AudioFile? {
+        if (filePath.substringAfterLast('.').equals("iso", true)) {
+            val iso = File(filePath)
+            if (!iso.isFile || !iso.canRead()) return null
+            val source = AudioFile(path = filePath, title = iso.nameWithoutExtension, format = "ISO",
+                fileSize = iso.length(), dateAdded = iso.lastModified(), dateModified = iso.lastModified())
+            return com.rawsmusic.core.common.sacd.SacdIsoBridge.enrichContainer(source)
+                .takeIf { it.format == "SACD-ISO" }
+        }
         return try {
             val file = File(filePath)
             if (!file.exists() || !AudioUtils.isAudioFile(file)) return null

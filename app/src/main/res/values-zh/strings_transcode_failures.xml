@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="transcode_failure_invalid_request">转换请求无效。</string>
+    <string name="transcode_failure_unsupported_source">当前源音频格式或参数不受支持。</string>
+    <string name="transcode_failure_unsupported_target">所选输出格式或参数不受支持。</string>
+    <string name="transcode_failure_output_exists">目标文件已存在。</string>
+    <string name="transcode_failure_insufficient_space">存储空间不足，无法完成转换。</string>
+    <string name="transcode_failure_encode_failed">音频编码失败。</string>
+    <string name="transcode_failure_metadata_migration">无法按要求完整保留元数据。</string>
+    <string name="transcode_failure_verification">转换后的文件未通过校验。</string>
+    <string name="transcode_failure_commit">无法将转换结果提交到最终位置。</string>
+    <string name="transcode_failure_process_interrupted">转换在完成前被中断。</string>
+    <string name="transcode_failure_internal">转换因内部错误失败。</string>
+    <string name="transcode_failure_with_native_code">%1$s（native=%2$d）</string>
+</resources>

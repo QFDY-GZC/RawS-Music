@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,18 +18,22 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -48,15 +53,29 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.SortOrder
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.ui.scene.LocalBottomChromeInsets
+import com.rawsmusic.core.ui.scene.LocalRawWindowLayoutProfile
 import com.rawsmusic.core.ui.scene.LocalSharedCoverRegistry
 import com.rawsmusic.core.ui.scene.NavScene
+import com.rawsmusic.core.ui.systemui.rawStableStatusBarTopPadding
 import com.rawsmusic.core.ui.theme.ThemeManager
 import com.rawsmusic.core.ui.widget.index.RawAlphabetIndex
 import com.rawsmusic.core.ui.widget.index.rememberAdaptiveAlphabetIndexData
+import com.rawsmusic.core.ui.widget.bitmaps.CrossfadeAlbumArt
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
+import com.rawsmusic.core.ui.widget.virtuallist.AlbumVirtualListItem
+import com.rawsmusic.core.ui.widget.virtuallist.ArtistAllSongsVirtualListItem
 import com.rawsmusic.core.ui.widget.virtuallist.ArtistVirtualListItem
+import com.rawsmusic.core.ui.widget.virtuallist.LocalVirtualListCustomProvider
 import com.rawsmusic.core.ui.widget.virtuallist.LocalReferenceLibraryProviderPublicationOnly
 import com.rawsmusic.core.ui.widget.virtuallist.ComposeGenericVirtualList
 import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListState
+import com.rawsmusic.core.ui.widget.virtuallist.VIRTUAL_LIST_ARTIST_ALL_SONGS_ENCODING
+import com.rawsmusic.core.ui.widget.virtuallist.VIRTUAL_LIST_UNKNOWN_ALBUM_SENTINEL
+import com.rawsmusic.core.ui.widget.virtuallist.VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL
+import com.rawsmusic.core.ui.widget.virtuallist.VirtualListCustomProvider
+import com.rawsmusic.core.ui.widget.virtuallist.VirtualListSectionHeader
+import com.rawsmusic.core.ui.widget.virtuallist.VirtualListVisualItem
 import com.rawsmusic.core.ui.widget.virtuallist.formatVirtualListDuration
 import com.rawsmusic.core.ui.widget.virtuallist.rememberComposeVirtualListState
 import com.rawsmusic.core.ui.widget.virtuallist.stableVirtualListHash64
@@ -140,7 +159,10 @@ fun ArtistsPage(
     songs: List<AudioFile> = emptyList(),
     dataSource: ArtistComposeDataSource? = null,
     selectedArtistKey: String? = null,
+    selectedArtistScene: NavScene = NavScene.ARTIST_DETAIL,
     onArtistClick: (String) -> Unit = {},
+    onAlbumClick: (String) -> Unit = {},
+    onOpenAllSongs: (String) -> Unit = {},
     onBack: () -> Unit,
     onPlayQueue: (List<AudioFile>, Int) -> Unit = { _, _ -> },
     onSongLongClick: (AudioFile, Int) -> Unit = { _, _ -> },
@@ -153,6 +175,7 @@ fun ArtistsPage(
     detailListState: ComposeVirtualListState = rememberComposeVirtualListState("artist_detail_songs"),
     modifier: Modifier = Modifier
 ) {
+    val unknownArtistLabel = stringResource(com.rawsmusic.core.ui.R.string.common_unknown_artist)
     val groupedArtists by produceState(
         initialValue = LibrarySceneGroupingWarmup.artists(songs),
         key1 = songs,
@@ -165,8 +188,8 @@ fun ArtistsPage(
         } else {
             dataSource?.artists.orEmpty().map { artist ->
                 ArtistGroupUi(
-                    key = artist.name.ifBlank { "未知艺术家" },
-                    name = artist.name.ifBlank { "未知艺术家" },
+                    key = artist.name.ifBlank { VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL },
+                    name = artist.name.ifBlank { VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL },
                     songs = emptyList(),
                     albumCount = 0,
                     coverKey = "",
@@ -202,8 +225,27 @@ fun ArtistsPage(
         )
     } else {
         val decodedKey = remember(selectedArtistKey) { Uri.decode(selectedArtistKey) }
-        val artist = remember(decodedKey, artists) {
-            artists.firstOrNull { it.key == decodedKey } ?: ArtistGroupUi.empty(decodedKey)
+        val artist = remember(decodedKey, artists, songs) {
+            artists.firstOrNull { it.key.equals(decodedKey, ignoreCase = true) }
+                ?: com.rawsmusic.core.ui.widget.player.creditedSongsForArtist(decodedKey, songs)
+                    .takeIf { it.isNotEmpty() }
+                    ?.let { credited ->
+                        val coverSong = credited.firstOrNull { it.albumArtPath.isNotBlank() }
+                            ?: credited.first()
+                        ArtistGroupUi(
+                            key = decodedKey,
+                            name = decodedKey,
+                            songs = credited.sortedWith(
+                                compareBy<AudioFile> { it.album }
+                                    .thenBy { it.discNumber }
+                                    .thenBy { it.trackNumber },
+                            ),
+                            albumCount = credited.map { it.album }.distinct().size,
+                            coverKey = coverSong.coverKey,
+                            totalDurationMs = credited.sumOf { it.duration.coerceAtLeast(0L) },
+                        )
+                    }
+                ?: ArtistGroupUi.empty(decodedKey)
         }
         val lifecycleOwner = LocalLifecycleOwner.current
         var biographyEnabled by remember(decodedKey) {
@@ -227,46 +269,79 @@ fun ArtistsPage(
         var artworkViewerVisible by remember(decodedKey) { mutableStateOf(false) }
         var artworkViewerOwnsHero by remember(decodedKey) { mutableStateOf(false) }
         var heroArtworkBounds by remember(decodedKey) { mutableStateOf<Rect?>(null) }
-        val originalHero = remember(artist, artist.albumCount) {
-            artist.toHeroData("")
+        val originalHero = remember(artist, artist.albumCount, unknownArtistLabel) {
+            artist.toHeroData("", unknownArtistLabel)
         }
         val albumCountText = stringResource(com.rawsmusic.core.ui.R.string.library_album_count, artist.albumCount)
         val originalArtworkKey = originalHero.coverKey
         val currentArtworkKey = temporaryArtworkKey ?: originalArtworkKey
-        val hero = remember(artist, albumCountText, currentArtworkKey) {
-            artist.toHeroData(albumCountText).copy(coverKey = currentArtworkKey)
+        val hero = remember(artist, albumCountText, currentArtworkKey, unknownArtistLabel) {
+            artist.toHeroData(albumCountText, unknownArtistLabel).copy(coverKey = currentArtworkKey)
+        }
+        val artistAlbums = remember(artist.songs) { artist.songs.toAlbumGroups() }
+        val allSongsTitle = stringResource(com.rawsmusic.core.ui.R.string.library_artist_all_songs)
+        val allSongsCountText = stringResource(com.rawsmusic.core.ui.R.string.library_statistics_songs, artist.songCount)
+        val allSongsHero = remember(hero, allSongsTitle, allSongsCountText) {
+            hero.copy(
+                sharedElementId = "cover:artist-all-songs:${stableVirtualListHash64(artist.key)}",
+                title = allSongsTitle,
+                subtitle = "",
+                meta = allSongsCountText,
+            )
         }
 
         Box(modifier = modifier) {
-            CollectionHeroDetailPage(
-                hero = hero,
-                listScene = NavScene.ARTISTS,
-                detailScene = NavScene.ARTIST_DETAIL,
-                songListState = detailListState,
-                onBack = onBack,
-                onPlayQueue = onPlayQueue,
-                onSongLongClick = onSongLongClick,
-                selectionActions = selectionActions,
-                onOpenFolder = onOpenFolder,
-                onShuffle = onShuffle,
-                onSearch = onSearch,
-                onBiography = if (biographyEnabled) {
-                    { onOpenBiography(artist.key) }
-                } else {
-                    null
-                },
-                onHeroArtworkLongPress = if (artworkViewerEnabled) {
-                    {
-                        artworkViewerOwnsHero = false
-                        artworkViewerVisible = true
-                    }
-                } else {
-                    null
-                },
-                onHeroArtworkBoundsChanged = { heroArtworkBounds = it },
-                hideHeroArtwork = artworkViewerOwnsHero,
-                modifier = Modifier.fillMaxSize(),
-            )
+            val biographyAction = if (biographyEnabled) {
+                { onOpenBiography(artist.key) }
+            } else {
+                null
+            }
+            val artworkLongPressAction = if (artworkViewerEnabled) {
+                {
+                    artworkViewerOwnsHero = false
+                    artworkViewerVisible = true
+                }
+            } else {
+                null
+            }
+            if (selectedArtistScene == NavScene.ARTIST_ALL_SONGS) {
+                CollectionHeroDetailPage(
+                    hero = allSongsHero,
+                    listScene = NavScene.ARTIST_DETAIL,
+                    detailScene = NavScene.ARTIST_ALL_SONGS,
+                    songListState = detailListState,
+                    onBack = onBack,
+                    onPlayQueue = onPlayQueue,
+                    onSongLongClick = onSongLongClick,
+                    selectionActions = selectionActions,
+                    onOpenFolder = onOpenFolder,
+                    onShuffle = onShuffle,
+                    onSearch = onSearch,
+                    onBiography = biographyAction,
+                    onHeroArtworkLongPress = artworkLongPressAction,
+                    onHeroArtworkBoundsChanged = { heroArtworkBounds = it },
+                    hideHeroArtwork = artworkViewerOwnsHero,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                ArtistAlbumsDetailPage(
+                    hero = hero,
+                    albums = artistAlbums,
+                    listState = detailListState,
+                    onBack = onBack,
+                    onOpenAllSongs = { onOpenAllSongs(artist.key) },
+                    onAlbumClick = onAlbumClick,
+                    onPlayQueue = onPlayQueue,
+                    onShuffle = onShuffle,
+                    onOpenFolder = onOpenFolder,
+                    onSearch = onSearch,
+                    onBiography = biographyAction,
+                    onHeroArtworkLongPress = artworkLongPressAction,
+                    onHeroArtworkBoundsChanged = { heroArtworkBounds = it },
+                    hideHeroArtwork = artworkViewerOwnsHero,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
 
             if (artworkViewerVisible) {
                 ArtistArtworkViewer(
@@ -294,6 +369,221 @@ fun ArtistsPage(
 }
 
 @Composable
+private fun ArtistAlbumsDetailPage(
+    hero: CollectionHeroData,
+    albums: List<AlbumGroupUi>,
+    listState: ComposeVirtualListState,
+    onBack: () -> Unit,
+    onOpenAllSongs: () -> Unit,
+    onAlbumClick: (String) -> Unit,
+    onPlayQueue: (List<AudioFile>, Int) -> Unit,
+    onShuffle: (List<AudioFile>) -> Unit,
+    onOpenFolder: () -> Unit,
+    onSearch: () -> Unit,
+    onBiography: (() -> Unit)?,
+    onHeroArtworkLongPress: (() -> Unit)?,
+    onHeroArtworkBoundsChanged: ((Rect) -> Unit)?,
+    hideHeroArtwork: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val chromeInfo = LocalLibraryChromeInfo.current
+    val coverRegistry = LocalSharedCoverRegistry.current
+    val unknownAlbumLabel = stringResource(com.rawsmusic.core.ui.R.string.player_unknown_album)
+    val unknownArtistLabel = stringResource(com.rawsmusic.core.ui.R.string.common_unknown_artist)
+    var showMoreDialog by remember(hero.stableKey) { mutableStateOf(false) }
+    var showSortLayout by remember(hero.stableKey) { mutableStateOf(false) }
+    var sortOrder by remember(hero.stableKey) {
+        mutableStateOf(
+            CollectionSortPreferences.read(
+                ownerTag = "artist_detail_albums",
+                stableKey = hero.stableKey,
+                default = SortOrder.TITLE_ASC,
+            )
+        )
+    }
+    val sortedAlbums = remember(albums, sortOrder) { albums.sortedForArtistDetail(sortOrder) }
+    val allSongsTitle = stringResource(com.rawsmusic.core.ui.R.string.library_artist_all_songs)
+    val allSongsCountText = stringResource(com.rawsmusic.core.ui.R.string.library_statistics_songs, hero.songs.size)
+    val allSongsItem = remember(hero.stableKey, allSongsTitle, allSongsCountText, hero.coverKey) {
+        ArtistAllSongsVirtualListItem(
+            artistKey = hero.stableKey,
+            title = allSongsTitle,
+            cover = hero.coverKey,
+            songCountText = allSongsCountText,
+        )
+    }
+    val albumItems = remember(sortedAlbums, unknownAlbumLabel, unknownArtistLabel) {
+        retainedMappedList(sortedAlbums) { album ->
+            AlbumVirtualListItem(
+                key = album.key,
+                name = album.name,
+                artist = album.artist,
+                cover = album.coverKey,
+                songCount = album.songCount,
+                totalDurationMs = album.totalDurationMs,
+                unknownAlbumLabel = unknownAlbumLabel,
+                unknownArtistLabel = unknownArtistLabel,
+            )
+        }
+    }
+    val items = remember(allSongsItem, albumItems) {
+        object : AbstractList<VirtualListVisualItem>() {
+            override val size: Int get() = albumItems.size + 1
+            override fun get(index: Int): VirtualListVisualItem = when {
+                index == 0 -> allSongsItem
+                index in 1 until size -> albumItems[index - 1]
+                else -> throw IndexOutOfBoundsException("index=$index size=$size")
+            }
+        }
+    }
+    val bottomPadding = LocalBottomChromeInsets.current.contentBottom
+    val detailAlphabetIndex = rememberAdaptiveAlphabetIndexData(items) { item ->
+        if (item is AlbumVirtualListItem) item.name else allSongsTitle
+    }
+
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val heroGeometry = resolveCollectionHeroWindowGeometry(
+            scene = NavScene.ARTIST_DETAIL,
+            window = LocalRawWindowLayoutProfile.current,
+            statusBarTop = rawStableStatusBarTopPadding(),
+        )
+        ComposeGenericVirtualList(
+                items = items,
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clipToBounds(),
+                sharedCoverSceneId = NavScene.ARTIST_DETAIL.name,
+                persistentHeaderHeight = heroGeometry.headerHeight,
+                persistentHeaderVisibilityHeight = heroGeometry.headerHeight,
+                persistentHeaderSceneItemVisibilityHeight = heroGeometry.artworkHeight,
+                persistentHeaderSceneItemLeft = heroGeometry.artworkLeft,
+                persistentHeaderSceneItemTop = heroGeometry.artworkTop,
+                persistentHeaderSceneItemWidth = heroGeometry.artworkWidth,
+                persistentHeaderSceneItemId = hero.sharedElementId,
+                virtualListEdgeEnabled = true,
+                persistentHeaderContent = { _, coverVisible ->
+                    CollectionHeroHeader(
+                        hero = hero,
+                        geometry = heroGeometry,
+                        listScene = NavScene.ARTISTS,
+                        detailScene = NavScene.ARTIST_DETAIL,
+                        coverVisible = coverVisible,
+                        freezeArtworkUpdates = listState.isTransitioning,
+                        onBack = onBack,
+                        onMore = { showMoreDialog = true },
+                        onShuffle = { onShuffle(hero.songs) },
+                        onPlay = {
+                            if (hero.songs.isNotEmpty()) onPlayQueue(hero.songs, 0)
+                        },
+                        onSearch = onSearch,
+                        onSelect = null,
+                        onBiography = onBiography,
+                        onHeroArtworkLongPress = onHeroArtworkLongPress,
+                        onHeroArtworkBoundsChanged = onHeroArtworkBoundsChanged,
+                        hideHeroArtwork = hideHeroArtwork,
+                        headerEdgeOvershootProvider = { listState.virtualListHeaderEdgeOvershootPx },
+                        listEdgeOvershootProvider = { listState.virtualListEdgeOvershootPx },
+                    )
+                },
+                contentBottomPadding = bottomPadding,
+                onItemClick = { item, _, _ ->
+                    // Same click contract as the root Albums/Artists lists: freeze the exact
+                    // clicked holder under this scene before navigating, so ItemToHeader can
+                    // promote it into the destination header instead of starting without a source.
+                    when (item) {
+                        is ArtistAllSongsVirtualListItem -> {
+                            coverRegistry.freeze(
+                                sceneId = NavScene.ARTIST_DETAIL.name,
+                                elementId = item.sharedCoverElementId,
+                            )
+                            onOpenAllSongs()
+                        }
+                        is AlbumVirtualListItem -> {
+                            coverRegistry.freeze(
+                                sceneId = NavScene.ARTIST_DETAIL.name,
+                                elementId = item.sharedCoverElementId,
+                            )
+                            onAlbumClick(item.key)
+                        }
+                        else -> Unit
+                    }
+                },
+        )
+
+        if (!com.rawsmusic.core.ui.scene.LocalReferenceLibraryFullScenePreflight.current &&
+            !com.rawsmusic.core.ui.scene.LocalReferenceLibraryTopChromeOverlayOnly.current) {
+            RawAlphabetIndex(
+                data = detailAlphabetIndex,
+                sceneId = NavScene.ARTIST_DETAIL.name,
+                scrollActiveProvider = { listState.isListScrollInProgress },
+                modifier = Modifier.align(Alignment.CenterEnd).padding(top = 92.dp, bottom = bottomPadding),
+                onTopSelect = { listState.requestScrollToIndex(0) },
+                onSelect = { _, index -> listState.requestScrollToIndex(index) },
+            )
+        }
+
+        LibraryMoreDialog(
+            visible = showMoreDialog,
+            sourceOrder = chromeInfo.metadataMatchSources,
+            onDismiss = { showMoreDialog = false },
+            onChooseFolder = onOpenFolder,
+            onOpenSort = { showSortLayout = true },
+            onMoveSource = chromeInfo.onMoveMetadataSource,
+            onAutoMatchCurrent = chromeInfo.onAutoMatchCurrent,
+            onRematchAll = chromeInfo.onAutoRematchAll,
+        )
+
+        SongsSortLayoutSheet(
+            visible = showSortLayout,
+            currentSortOrder = sortOrder,
+            virtualListState = listState,
+            onSortSelected = { selected ->
+                sortOrder = selected
+                CollectionSortPreferences.write(
+                    ownerTag = "artist_detail_albums",
+                    stableKey = hero.stableKey,
+                    value = selected,
+                )
+            },
+            sortOptions = listOf(
+                stringResource(com.rawsmusic.core.ui.R.string.sort_by_name) to SortOrder.TITLE_ASC,
+                stringResource(com.rawsmusic.core.ui.R.string.sort_by_artist) to SortOrder.ARTIST_ASC,
+                stringResource(com.rawsmusic.core.ui.R.string.sort_by_year) to SortOrder.YEAR_ASC,
+                stringResource(com.rawsmusic.core.ui.R.string.sort_by_added) to SortOrder.DATE_ADDED_ASC,
+                stringResource(com.rawsmusic.core.ui.R.string.sort_by_modified) to SortOrder.DATE_MODIFIED_ASC,
+                stringResource(com.rawsmusic.core.ui.R.string.sort_by_duration) to SortOrder.DURATION_ASC,
+                stringResource(com.rawsmusic.core.ui.R.string.sort_by_song_count) to SortOrder.PLAYBACK_INFO,
+            ),
+            onDismiss = { showSortLayout = false },
+        )
+    }
+}
+
+private fun List<AlbumGroupUi>.sortedForArtistDetail(order: SortOrder): List<AlbumGroupUi> {
+    val descending = order in setOf(
+        SortOrder.TITLE_DESC, SortOrder.ARTIST_DESC, SortOrder.ALBUM_DESC,
+        SortOrder.DATE_ADDED_DESC, SortOrder.DATE_MODIFIED_DESC, SortOrder.DURATION_DESC,
+        SortOrder.YEAR_DESC, SortOrder.FILE_NAME_DESC, SortOrder.PATH_DESC,
+        SortOrder.PLAYBACK_INFO_DESC,
+    )
+    val comparator = when (order) {
+        SortOrder.ARTIST_ASC, SortOrder.ARTIST_DESC ->
+            compareBy<AlbumGroupUi> { it.artist.lowercase() }.thenBy { it.name.lowercase() }
+        SortOrder.YEAR_ASC, SortOrder.YEAR_DESC ->
+            compareBy { group -> group.songs.map { it.year }.filter { it > 0 }.minOrNull() ?: 0 }
+        SortOrder.DURATION_ASC, SortOrder.DURATION_DESC -> compareBy { it.totalDurationMs }
+        SortOrder.DATE_ADDED_ASC, SortOrder.DATE_ADDED_DESC ->
+            compareBy { group -> group.songs.maxOfOrNull { it.dateAdded } ?: 0L }
+        SortOrder.DATE_MODIFIED_ASC, SortOrder.DATE_MODIFIED_DESC ->
+            compareBy { group -> group.songs.maxOfOrNull { it.dateModified } ?: 0L }
+        SortOrder.PLAYBACK_INFO, SortOrder.PLAYBACK_INFO_DESC -> compareBy { it.songCount }
+        else -> compareBy<AlbumGroupUi> { it.name.lowercase() }.thenBy { it.artist.lowercase() }
+    }
+    return sortedWith(if (descending) comparator.reversed() else comparator)
+}
+
+@Composable
 private fun ArtistListPage(
     artists: List<ArtistGroupUi>,
     librarySongCount: Int,
@@ -307,7 +597,9 @@ private fun ArtistListPage(
     modifier: Modifier = Modifier
 ) {
     val coverRegistry = LocalSharedCoverRegistry.current
-    val items = remember(artists) {
+    val context = LocalContext.current
+    val unknownArtistLabel = stringResource(com.rawsmusic.core.ui.R.string.common_unknown_artist)
+    val items = remember(artists, unknownArtistLabel, context.resources.configuration) {
         retainedMappedList(artists) { artist ->
             ArtistVirtualListItem(
                 key = artist.key,
@@ -315,7 +607,12 @@ private fun ArtistListPage(
                 cover = artist.coverKey,
                 songCount = artist.songCount,
                 albumCount = artist.albumCount,
-                totalDurationMs = artist.totalDurationMs
+                totalDurationMs = artist.totalDurationMs,
+                unknownArtistLabel = unknownArtistLabel,
+                albumCountLabel = context.getString(
+                    com.rawsmusic.core.ui.R.string.library_album_count,
+                    artist.albumCount,
+                ),
             )
         }
     }
@@ -371,6 +668,7 @@ private fun ArtistListPage(
 
         RawAlphabetIndex(
             data = alphabetIndexData,
+            sceneId = NavScene.ARTISTS.name,
             scrollActiveProvider = { state.isListScrollInProgress },
             modifier = Modifier
                 .align(Alignment.CenterEnd)
@@ -399,12 +697,13 @@ internal data class ArtistGroupUi(
     val songCount: Int get() = songs.size
     val sharedElementId: String get() = "cover:artist:${stableVirtualListHash64(key)}"
 
-    fun toHeroData(albumCountText: String): CollectionHeroData {
+    fun toHeroData(albumCountText: String, unknownArtistLabel: String): CollectionHeroData {
         return CollectionHeroData(
             stableKey = key,
             sharedElementId = sharedElementId,
             coverKey = coverKey,
-            title = name,
+            title = name.takeUnless { it == VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL }
+                .orEmpty().ifBlank { unknownArtistLabel },
             subtitle = albumCountText,
             meta = "$songCount | ${formatVirtualListDuration(totalDurationMs)}",
             songs = songs
@@ -415,7 +714,7 @@ internal data class ArtistGroupUi(
         fun empty(key: String): ArtistGroupUi {
             return ArtistGroupUi(
                 key = key,
-                name = key.ifBlank { "未知艺术家" },
+                name = key.ifBlank { VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL },
                 songs = emptyList(),
                 albumCount = 0,
                 coverKey = "",
@@ -429,12 +728,12 @@ internal fun List<AudioFile>.toArtistGroups(): List<ArtistGroupUi> {
     return asSequence()
         .filter { it.artist.isNotBlank() || it.albumArtist.isNotBlank() || it.displayName.isNotBlank() }
         .groupBy { song ->
-            song.artist.ifBlank { song.albumArtist }.ifBlank { "未知艺术家" }
+            song.artist.ifBlank { song.albumArtist }.ifBlank { VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL }
         }
         .map { (artistName, artistSongs) ->
             val coverSong = artistSongs.firstOrNull { it.albumArtPath.isNotBlank() } ?: artistSongs.firstOrNull()
             val albumCount = artistSongs
-                .map { it.album.ifBlank { "未知专辑" } }
+                .map { it.album.ifBlank { VIRTUAL_LIST_UNKNOWN_ALBUM_SENTINEL } }
                 .distinct()
                 .size
             ArtistGroupUi(

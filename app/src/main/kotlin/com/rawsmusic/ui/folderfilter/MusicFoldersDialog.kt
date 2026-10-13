@@ -57,6 +57,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.rawsmusic.R
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.locale.localizedErrorMessage
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.scanner.ScanScheduler
 import com.rawsmusic.module.scanner.SafUtils
@@ -335,7 +336,7 @@ fun MusicFoldersDialog(
             loading = false
         }.onFailure { e ->
             loading = false
-            loadError = e.message ?: context.getString(R.string.folder_filter_load_failed)
+            loadError = context.localizedErrorMessage(e, R.string.folder_filter_load_failed)
             AppLogger.e(TAG, "load roots failed", e)
         }
     }

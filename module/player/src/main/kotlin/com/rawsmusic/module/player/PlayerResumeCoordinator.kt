@@ -72,8 +72,17 @@ internal class PlayerResumeCoordinator(
             }
             if (nativeState == UsbAudioEngine.NativeStreamState.PREPARED) {
                 resetPreparedUsbSession()
-                ffmpegResume()
+                val resumed = ffmpegResume()
+                if (!resumed) {
+                    AppLogger.w(tag, "resume: prepared USB transport restart failed, recovering")
+                    recoverUsbExclusiveAsync()
+                    return
+                }
+                if (isUsbHardwareVolumeRouteActive()) {
+                    AppLogger.i(tag, "USB prepared resume keeps Feature Unit at the user value")
+                }
                 transitionPlayState(PlayState.PLAYING, "resume_prepared")
+                startUsbKeepAlive("manual_resume_prepared")
                 startProgressUpdate()
                 return
             }

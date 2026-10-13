@@ -89,6 +89,9 @@ internal class GaplessPlanHandoffGate {
     }
 
     @Synchronized
+    fun isCommitting(generation: Int): Boolean = active?.generation == generation
+
+    @Synchronized
     fun snapshot(): String {
         val current = active
         return if (current == null) {

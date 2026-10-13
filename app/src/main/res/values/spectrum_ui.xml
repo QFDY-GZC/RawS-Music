@@ -1,0 +1,11 @@
+<resources>
+    <string name="spectrum_ui_mean_help">RMS is the decoded signal’s average power level, not perceived loudness. Integrated LUFS is in the quality details.</string>
+    <string name="spectrum_ui_peak_help">Sample peak is the largest decoded sample. A full-scale sample alone does not prove clipping; see sustained rails and true peak in the details.</string>
+    <string name="spectrum_ui_band_help">This is an estimated spectral extent, not proof of the original sample rate. A repeated sharp edge is marked separately when supported.</string>
+    <string name="spectrum_ui_duration_help">Duration comes from the file or library. The quality details compare it with the actual decoded length.</string>
+    <string name="spectrum_ui_cutoff">Cutoff · %1$s</string>
+    <string name="spectrum_ui_extent">Estimated extent · %1$s</string>
+    <string name="spectrum_ui_band_occupancy">Measured frequency extent / Nyquist: %1$s%%. Bandwidth occupancy does not by itself establish source quality.</string>
+    <string name="spectrum_ui_legend">Spectral level · dBFS / bin</string>
+    <string name="spectrum_ui_log_resolution">Log view redistributes cached frequency bins; interpolation does not add frequency resolution.</string>
+</resources>

@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,7 +35,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.rawsmusic.R
+import com.rawsmusic.module.data.prefs.FontFileInspector
 import com.rawsmusic.module.data.prefs.LyricFontManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
@@ -51,11 +55,24 @@ internal fun FontCatalogDialog(
     onImport: (() -> Unit)? = null,
 ) {
     var query by remember { mutableStateOf("") }
+    var capabilityMap by remember {
+        mutableStateOf<Map<String, FontFileInspector.Capabilities>>(emptyMap())
+    }
     val normalized = query.trim().lowercase()
-    val allFonts = remember(systemFonts, importedFonts, normalized) {
+    val catalogFonts = remember(systemFonts, importedFonts) {
         (importedFonts + systemFonts)
             .distinctBy { it.path }
+    }
+    val allFonts = remember(catalogFonts, normalized) {
+        catalogFonts
             .filter { normalized.isBlank() || it.name.lowercase().contains(normalized) }
+    }
+    LaunchedEffect(catalogFonts) {
+        capabilityMap = withContext(Dispatchers.IO) {
+            catalogFonts.associate { font ->
+                font.path to FontFileInspector.inspect(font.path)
+            }
+        }
     }
     val scrimInteraction = remember { MutableInteractionSource() }
     val cardInteraction = remember { MutableInteractionSource() }
@@ -125,6 +142,7 @@ internal fun FontCatalogDialog(
                     items(allFonts, key = { it.path }) { font ->
                         FontCatalogRow(
                             name = font.name,
+                            capability = fontCapabilitySummary(capabilityMap[font.path]),
                             selected = selectedPath == font.path,
                             onClick = {
                                 onSelect(font)
@@ -163,6 +181,7 @@ internal fun FontCatalogDialog(
 @Composable
 private fun FontCatalogRow(
     name: String,
+    capability: String? = null,
     selected: Boolean,
     onClick: () -> Unit,
 ) {
@@ -179,14 +198,24 @@ private fun FontCatalogRow(
             .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = name,
-            modifier = Modifier.weight(1f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            fontSize = 14.sp,
-            color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onBackground,
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = name,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 14.sp,
+                color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onBackground,
+            )
+            if (!capability.isNullOrBlank()) {
+                Text(
+                    text = capability,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontSize = 11.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+        }
         if (selected) {
             Text(
                 text = "✓",

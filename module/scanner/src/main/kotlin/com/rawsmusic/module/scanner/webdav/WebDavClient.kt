@@ -318,6 +318,18 @@ class WebDavClient {
         }
     }
 
+    fun downloadFile(config: WebDavConfig, remotePath: String, maxBytes: Int): ByteArray? {
+        require(maxBytes in 1 until Int.MAX_VALUE)
+        val url = canonicalizeResourceUrl(remotePath)
+        httpClient.newCall(requestBuilder(url, config).get().build()).execute().use { response ->
+            if (response.code == 404) return null
+            if (!response.isSuccessful) throw responseException(response)
+            val body = response.body ?: return null
+            require(body.contentLength() <= maxBytes) { "WebDAV backup exceeds size limit" }
+            return body.byteStream().use { WebDavBoundedBody.read(it, maxBytes) }
+        }
+    }
+
     /**
      * Opens a streaming WebDAV resource request for the local range bridge. The returned response
      * owns the network body and must be closed by the caller. Range is forwarded verbatim so FFmpeg

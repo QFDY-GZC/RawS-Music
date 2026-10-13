@@ -1,6 +1,7 @@
 package com.rawsmusic.transcode
 
 import android.content.Context
+import android.util.Log
 import com.rawsmusic.module.scanner.LibraryIncrementalPathPublisher
 import java.io.File
 import java.util.UUID
@@ -61,6 +62,7 @@ data class AudioTranscodeQueueTerminalSummary(
  * PROCESS_INTERRUPTED failure instead of guessing how to continue a hidden partial file.
  */
 object AudioTranscodeQueue {
+    private const val LOG_TAG = "AudioTranscode"
     private data class JobHolder(
         val request: AudioTranscodeRequest,
         @Volatile var task: AudioTranscodeTask? = null,
@@ -194,12 +196,13 @@ object AudioTranscodeQueue {
     fun enqueuePriority(request: AudioTranscodeRequest): String = enqueueInternal(request, priority = true)
 
     private fun enqueueInternal(request: AudioTranscodeRequest, priority: Boolean): String {
+        val normalizedRequest = request.withCanonicalOutputExtension()
         val id = UUID.randomUUID().toString()
-        holders[id] = JobHolder(request)
+        holders[id] = JobHolder(normalizedRequest)
         mutateEntries { current ->
             val entry = AudioTranscodeQueueEntry(
                 id = id,
-                request = request,
+                request = normalizedRequest,
                 state = AudioTranscodeQueueState.QUEUED,
             )
             insertQueuedEntries(current, listOf(entry), priority)
@@ -238,7 +241,7 @@ object AudioTranscodeQueue {
     ): List<String> {
         if (requests.isEmpty()) return emptyList()
         val staged = requests.map { request ->
-            UUID.randomUUID().toString() to request
+            UUID.randomUUID().toString() to request.withCanonicalOutputExtension()
         }
         staged.forEach { (id, request) -> holders[id] = JobHolder(request) }
         mutateEntries { current ->
@@ -386,6 +389,12 @@ object AudioTranscodeQueue {
         val queued = entry(id) ?: return
         if (queued.state != AudioTranscodeQueueState.QUEUED) return
 
+        Log.i(
+            LOG_TAG,
+            "QUEUE_START jobId=$id format=${holder.request.format.name} " +
+                "input=${holder.request.inputPath} output=${holder.request.outputPath}",
+        )
+
         val task = AudioTranscodeManager.start(holder.request)
         holder.task = task
         mutateEntry(id) { entry ->
@@ -411,14 +420,42 @@ object AudioTranscodeQueue {
             }
         }
         holder.task = null
+        when (result) {
+            is AudioTranscodeResult.Success -> Log.i(
+                LOG_TAG,
+                "QUEUE_RESULT jobId=$id state=COMPLETED format=${holder.request.format.name} " +
+                    "output=${result.output.absolutePath}",
+            )
+            is AudioTranscodeResult.Failure -> Log.e(
+                LOG_TAG,
+                "QUEUE_RESULT jobId=$id state=FAILED format=${holder.request.format.name} " +
+                    "reason=${result.reason.name} native=${result.nativeCode ?: 0} detail=${result.detail} " +
+                    "input=${holder.request.inputPath} output=${holder.request.outputPath}",
+            )
+            AudioTranscodeResult.Cancelled -> Log.w(
+                LOG_TAG,
+                "QUEUE_RESULT jobId=$id state=CANCELLED format=${holder.request.format.name} " +
+                    "input=${holder.request.inputPath} output=${holder.request.outputPath}",
+            )
+        }
         val postActions = if (result is AudioTranscodeResult.Success) {
             val context = applicationContext
             if (context != null) {
-                AudioTranscodePostProcessor.afterCommittedSuccess(
-                    context = context,
-                    request = holder.request,
-                    output = result.output,
-                )
+                runCatching {
+                    AudioTranscodePostProcessor.afterCommittedSuccess(
+                        context = context,
+                        request = holder.request,
+                        output = result.output,
+                    )
+                }.onFailure { error ->
+                    Log.e(
+                        LOG_TAG,
+                        "POST_PROCESS_FAIL jobId=$id format=${holder.request.format.name} " +
+                            "output=${result.output.absolutePath} " +
+                            "error=${error.message ?: error::class.java.simpleName}",
+                        error,
+                    )
+                }.getOrNull()
             } else {
                 AudioTranscodePostActionReport(
                     detail = "转换已完成，但系统媒体库刷新未执行：队列缺少 application context",
@@ -428,6 +465,14 @@ object AudioTranscodeQueue {
             }
         } else {
             null
+        }
+        if (postActions != null) {
+            Log.i(
+                LOG_TAG,
+                "POST_PROCESS_RESULT jobId=$id mediaScan=${postActions.mediaScanRequested} " +
+                    "libraryScan=${postActions.libraryScanRequested} sourceDeleted=${postActions.sourceDeleted} " +
+                    "detail=${postActions.detail.orEmpty()}",
+            )
         }
         if (postActions?.libraryScanRequested == true) pendingLibraryScan = true
         if (result is AudioTranscodeResult.Success && holder.request.format.isDsd) {

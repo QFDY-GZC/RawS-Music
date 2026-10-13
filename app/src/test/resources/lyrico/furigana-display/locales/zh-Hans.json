@@ -1,0 +1,5 @@
+{
+  "plugin.name": "日语歌词源插件",
+  "plugin.description": "专门搜日语歌词，并自动为汉字加上注音（フリガナ）。Lyrico 导出 TTML 时带 tts:ruby 注音。只提供歌词源，不包含元数据搜索和封面搜索。只返回日语歌词，中文等其他语言的歌词不会出现在搜索结果里。",
+  "error.lyricsCandidate": "歌曲 %1$s 的歌词候选获取失败：%2$s"
+}

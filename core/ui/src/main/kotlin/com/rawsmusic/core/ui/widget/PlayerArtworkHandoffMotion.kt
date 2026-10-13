@@ -1,11 +1,37 @@
 package com.rawsmusic.core.ui.widget
 
+fun suppressMiniPlayerArtworkForHandoff(sceneIsMain: Boolean, transitioning: Boolean): Boolean =
+    !sceneIsMain || transitioning
+
+internal fun resolvePlayerSharedArtworkAlpha(expansion: Float): Float =
+    if (expansion.isFinite()) 1f else 0f
+
+/** Only the final collapsed sliver fades; the expanded page remains fully opaque. */
+internal fun resolvePlayerSurfaceOwnershipAlpha(expansion: Float): Float =
+    if (expansion.isFinite()) (expansion / 0.08f).coerceIn(0f, 1f) else 0f
+
 internal data class PlayerArtworkHandoffRect(
     val left: Float,
     val top: Float,
     val width: Float,
     val height: Float,
 )
+
+/** Retain a laid-out endpoint; never chase a population's animated screen-space bounds. */
+internal class PlayerArtworkEndpointSnapshot {
+    var rect: PlayerArtworkHandoffRect? = null
+        private set
+
+    fun update(measured: PlayerArtworkHandoffRect?, motionActive: Boolean) {
+        if ((motionActive && rect != null) || measured == null) return
+        if (measured.left.isFinite() && measured.top.isFinite() &&
+            measured.width.isFinite() && measured.height.isFinite() &&
+            measured.width > 0f && measured.height > 0f
+        ) {
+            rect = measured
+        }
+    }
+}
 
 
 /**
@@ -204,6 +230,44 @@ internal fun resolvePlayerArtworkHandoffRect(
         width = width,
         height = height,
     )
+}
+
+/**
+ * Stable, untransformed destination for a MiniPlayer cover morphing into the immersive clear
+ * artwork. The normal portrait artwork lane occupies 41% of the height plus its feather reserve.
+ * Resolve it from the stationary viewport, never from a moving page's boundsInRoot.
+ */
+internal fun resolveImmersiveClearArtworkHandoffRect(
+    viewportWidth: Float,
+    viewportHeight: Float,
+    edgeExtensionPx: Float,
+    clearFraction: Float,
+    landscapeTopInsetPx: Float = 0f,
+    landscapeBottomInsetPx: Float = 0f,
+): PlayerArtworkHandoffRect {
+    val width = viewportWidth.coerceAtLeast(1f)
+    val height = viewportHeight.coerceAtLeast(1f)
+    val extension = edgeExtensionPx.coerceAtLeast(0f)
+    val fraction = clearFraction.coerceIn(0f, 1f)
+    return if (width > height) {
+        // Unlike portrait, landscape's clear artwork is padded inside the status/navigation
+        // insets and a 76dp top/bottom gap. Resolve the *drawn* image lane, not its outer slot.
+        val top = landscapeTopInsetPx.coerceIn(0f, height - 1f)
+        val bottom = landscapeBottomInsetPx.coerceIn(0f, height - top - 1f)
+        PlayerArtworkHandoffRect(
+            left = 0f,
+            top = top,
+            width = (width * fraction + extension).coerceAtMost(width),
+            height = height - top - bottom,
+        )
+    } else {
+        PlayerArtworkHandoffRect(
+            left = 0f,
+            top = 0f,
+            width = width,
+            height = (height * fraction + extension).coerceAtMost(height),
+        )
+    }
 }
 
 private fun cubicBezier(

@@ -1,0 +1,35 @@
+<resources>
+    <string name="spectrum_signal_grade_unrated">Unrated</string>
+    <string name="spectrum_signal_grade_poor">Poor</string>
+    <string name="spectrum_signal_grade_fair">Fair</string>
+    <string name="spectrum_signal_grade_high">High</string>
+    <string name="spectrum_signal_grade_review">High · source review</string>
+    <string name="spectrum_signal_grade_reference">High · reference match</string>
+    <string name="spectrum_signal_summary">%1$s %2$s</string>
+    <string name="spectrum_signal_good">Measured signal has no obvious level, channel or bandwidth flags.</string>
+    <string name="spectrum_signal_reference">Measurements show no obvious flags, and full PCM matches the chosen reference.</string>
+    <string name="spectrum_signal_missing">The audio is too short or required measurements are unavailable.</string>
+    <string name="spectrum_signal_silence">The signal is almost silent, with insufficient content to rate.</string>
+    <string name="spectrum_signal_incomplete">Decoded length differs substantially from the recorded duration; check file integrity.</string>
+    <string name="spectrum_signal_rail">Many consecutive full-scale samples indicate substantial clipping risk.</string>
+    <string name="spectrum_signal_strong_dc">Large DC offset consumes substantial signal headroom.</string>
+    <string name="spectrum_signal_dc">DC offset warrants attention.</string>
+    <string name="spectrum_signal_true_peak">True peak exceeds full scale, indicating reconstruction overload risk.</string>
+    <string name="spectrum_signal_phase">Strong negative channel correlation causes attenuation when summed to mono.</string>
+    <string name="spectrum_signal_balance">Average channel levels differ substantially; check the mix.</string>
+    <string name="spectrum_signal_compressed">Low crest factor indicates dense dynamics, which may also reflect the arrangement.</string>
+    <string name="spectrum_signal_bandwidth">Measured bandwidth is limited; speech and older recordings may naturally be narrowband.</string>
+    <string name="spectrum_signal_source_review">Levels and channels look good, but bandwidth or precision suggests reviewing the source resolution.</string>
+    <string name="spectrum_signal_grade_basis">Rating basis</string>
+    <string name="spectrum_signal_grade_rules">This rating screens the decoded signal: substantial sustained full-scale samples or large DC offset rate Poor; overload risk, mono cancellation, dense dynamics or limited bandwidth rate Fair; no triggered rule rates High. Loudness, LRA, bitrate and format alone do not establish quality. Source clues are reported separately. This rating does not judge musical content or listening preference.</string>
+    <string name="spectrum_signal_loudness_title">Loudness and true peak</string>
+    <string name="spectrum_signal_loudness_values">Integrated loudness: %1$s LUFS\nLoudness range: %2$s LU\nTrue peak: %3$s dBTP\nLUFS and LRA describe loudness and variation; larger or smaller is not intrinsically better.</string>
+    <string name="spectrum_signal_channels_title">Channels and DC offset</string>
+    <string name="spectrum_signal_channels_values">Left/right DC offset: %1$s%% / %2$s%%\nDC-removed channel correlation: %3$s\nMid/side RMS: %4$s / %5$s dBFS\nCorrelation is not judged for mono, silence or zero-variance signals. Near 1 does not imply poor stereo.</string>
+    <string name="spectrum_signal_coverage_title">Coverage and silence</string>
+    <string name="spectrum_signal_coverage_values">Decoded: %1$s s; recorded duration: %2$s s\nNear-silence (both channels ≤ −100 dBFS): %3$s%%\nLongest continuous near-silence: %4$s s\nExact integer rail: %5$d frames / %6$d frames\nSilence may be an intro, interlude or ending. Integer rails alone do not prove audible clipping.</string>
+    <string name="spectrum_signal_analysis_scope">Analyzed at %1$d Hz, %2$d channels, %3$d-point FFT. Multichannel sources are assessed after downmix; DSD/resampling results describe decoded PCM only.</string>
+    <string name="spectrum_signal_not_measured">Not measured</string>
+    <string name="spectrum_signal_lossless_encoding">Lossless encoding</string>
+    <string name="spectrum_signal_lossy_encoding">Lossy encoding</string>
+</resources>

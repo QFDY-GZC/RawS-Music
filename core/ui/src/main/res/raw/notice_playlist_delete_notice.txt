@@ -1,0 +1,2 @@
+Source: user-provided Delete icon animation.json.
+Vector animation retained without replacing artwork or timing.

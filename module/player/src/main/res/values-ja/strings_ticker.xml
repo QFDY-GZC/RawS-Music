@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel_floating_lyrics">フローティング歌詞</string>
+    <string name="notification_channel_floating_lyrics_description">Meizu 以外の端末で歌詞をフローティング通知として表示します</string>
+    <string name="notification_channel_flyme_lyrics">Flyme ステータスバー歌詞</string>
+    <string name="notification_channel_flyme_lyrics_description">Flyme のステータスバーへ歌詞を送信します</string>
+</resources>

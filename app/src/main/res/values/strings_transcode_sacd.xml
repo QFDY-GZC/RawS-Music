@@ -1,0 +1,3 @@
+<resources>
+    <string name="transcode_sacd_iso_note">Single-track stereo DSD64 SACD image. Embeds a complete source metadata snapshot, including artwork, lyrics and custom tags, verified in strict mode. RawSMusic reads the snapshot; other SACD players may display only standard TOC text. Temporary audio and metadata files require additional disk space.</string>
+</resources>

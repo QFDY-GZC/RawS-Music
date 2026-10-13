@@ -629,29 +629,33 @@ fun FullCoverPage(
                 Text("←", fontSize = 20.sp, color = Color.White)
             }
             if (displayedSong != null) {
+                PlayerContentCrossfade(
+                    key = "${displayedSong.path}|${displayedSong.cueTrackIndex}|${displayedSong.cueOffsetMs}",
+                    value = displayedSong) { shownSong ->
                 Column(
                     modifier = Modifier
                         .padding(start = 4.dp)
                         .widthIn(max = 320.dp),
                 ) {
                     Text(
-                        text = displayedSong.displayName,
+                        text = shownSong.displayName,
                         color = Color.White,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (displayedSong.artist.isNotBlank()) {
+                    if (shownSong.artist.isNotBlank()) {
                         Spacer(Modifier.height(3.dp))
                         Text(
-                            text = displayedSong.artist,
+                            text = shownSong.artist,
                             color = Color.White.copy(alpha = 0.68f),
                             fontSize = 13.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+                }
                 }
             }
         }
@@ -670,13 +674,9 @@ fun FullCoverPage(
             )
         }
 
-        if (lyricSong != null) {
-            FullCoverLyricPreview(
-                song = lyricSong,
-                positionMs = lyricPositionMs,
-                isPlaying = lyricIsPlaying,
-                durationMs = currentSong?.duration ?: 0L,
-                onSeek = onLyricSeek,
+        PlayerContentCrossfade(
+                key = playerLyricIdentity(lyricSong),
+                value = PlayerLyricFrame(lyricSong, lyricPositionMs),
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(end = 28.dp, bottom = 24.dp)
@@ -687,7 +687,16 @@ fun FullCoverPage(
                         scaleX = sceneChromeScale
                         scaleY = sceneChromeScale
                     },
-            )
+            ) { frame ->
+            if (frame.song != null) {
+                FullCoverLyricPreview(
+                    song = frame.song,
+                    positionMs = frame.positionMs,
+                    isPlaying = lyricIsPlaying && frame.song === lyricSong,
+                    durationMs = frame.song.duration,
+                    onSeek = { time -> if (frame.song === lyricSong) onLyricSeek(time) },
+                )
+            }
         }
     }
 }

@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
@@ -213,16 +214,18 @@ private fun DrawScope.drawLabels(
 
     val nativeCanvas = drawContext.canvas.nativeCanvas
     // Alternative: drawIntoCanvas { canvas -> canvas.nativeCanvas }
-        val freqPaint = android.graphics.Paint().apply {
-            color = colors.labelColor.toArgb()
-            textSize = 24f
-            textAlign = android.graphics.Paint.Align.CENTER
-        }
-        val gainPaint = android.graphics.Paint().apply {
-            color = colors.labelColor.toArgb()
-            textSize = 20f
-            textAlign = android.graphics.Paint.Align.RIGHT
-        }
+    val freqTextSizePx = with(this) { (24f / density).sp.toPx() }
+    val gainTextSizePx = with(this) { (20f / density).sp.toPx() }
+    val freqPaint = android.graphics.Paint().apply {
+        color = colors.labelColor.toArgb()
+        textSize = freqTextSizePx
+        textAlign = android.graphics.Paint.Align.CENTER
+    }
+    val gainPaint = android.graphics.Paint().apply {
+        color = colors.labelColor.toArgb()
+        textSize = gainTextSizePx
+        textAlign = android.graphics.Paint.Align.RIGHT
+    }
 
     for (i in freqLabels.indices) {
         val x = padding + freqToX(freqLabels[i]) * chartWidth

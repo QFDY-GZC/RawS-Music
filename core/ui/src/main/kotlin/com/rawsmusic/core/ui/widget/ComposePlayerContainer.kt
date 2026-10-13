@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import com.rawsmusic.core.ui.widget.player.LocalPlayerPlaylistAction
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
@@ -57,7 +58,6 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.drawscope.clipRect
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricTimingEditorTarget
-import com.rawsmusic.core.common.utils.PlayerSwitchTrace
 import com.rawsmusic.core.ui.scene.CoverTransitionTarget
 import com.rawsmusic.core.ui.scene.LocalUiFrameAnimationActive
 import com.rawsmusic.core.ui.systemui.rawReducedNavigationBottomPadding
@@ -67,8 +67,6 @@ import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkDirection
-import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkPerfEvent
-import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkPerfTrace
 import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkTransitionState
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackQueueBindingIndex
@@ -94,6 +92,9 @@ import com.rawsmusic.core.ui.widget.player.STANDARD_PLAYER_ARTWORK_CONTENT_SCALE
 import com.rawsmusic.core.ui.widget.player.STANDARD_PLAYER_ARTWORK_ELEVATION_DP
 import com.rawsmusic.core.ui.widget.player.STANDARD_PLAYER_ARTWORK_PAUSED_HOLDER_SCALE
 import com.rawsmusic.core.ui.widget.player.StandardPlayerBackdrop
+import com.rawsmusic.core.ui.scene.LocalAppBackdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.rawsmusic.module.data.prefs.LyricLayoutPreferences
 import com.rawsmusic.module.data.prefs.LyricTopLayoutStyle
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
@@ -161,6 +162,7 @@ fun ComposePlayerContainer(
     onPlayMode: () -> Unit = {},
     onPlayModeLongPress: () -> Unit = {},
     onMore: () -> Unit = {},
+    onAddSongToPlaylist: ((AudioFile) -> Unit)? = null,
     onOpenMetadata: () -> Unit = {},
     onOpenAudioEffects: () -> Unit = {},
     onOpenSpectrumAnalysis: () -> Unit = {},
@@ -195,6 +197,7 @@ fun ComposePlayerContainer(
     onPlayerCoverSwipeDownProgress: (Float) -> Unit = {},
     onPlayerCoverSwipeDownEnd: (Boolean, Float) -> Unit = { _, _ -> },
     onMainPlayerSheetGeometryChanged: (Float, Float) -> Unit = { _, _ -> },
+    onStandardPlayerLayoutReady: (() -> Unit)? = null,
     onLyricCoverSwipeDownStart: () -> Unit = {},
     onLyricCoverSwipeDownProgress: (Float) -> Unit = {},
     onLyricCoverSwipeDownEnd: (Boolean, Float) -> Unit = { _, _ -> },
@@ -229,6 +232,7 @@ fun ComposePlayerContainer(
     controllerFromScene: PlayerSceneController.Scene? = null,
     controllerToScene: PlayerSceneController.Scene? = null,
     controllerProgress: Float = 0f,
+    controllerSceneProgressState: State<Float>? = null,
     controllerProgressState: State<Float>? = null,
     controllerIsTransitioning: Boolean = false,
     controllerIsInteractiveGesture: Boolean = false,
@@ -249,11 +253,6 @@ fun ComposePlayerContainer(
     floatingMiniPlayerTopPx: Float? = null,
     modifier: Modifier = Modifier
 ) {
-    SideEffect {
-        if (PlaybackArtworkPerfTrace.isActive()) {
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.PLAYER_CONTAINER_COMPOSE_COMMIT)
-        }
-    }
     val miniPlayerStyle by PersonalizationPreferences.miniPlayerStyle.collectAsState()
     val latestOnModalVisibleChange by rememberUpdatedState(onModalVisibleChange)
     val latestOnModalDismissActionChange by rememberUpdatedState(onModalDismissActionChange)
@@ -476,16 +475,6 @@ fun ComposePlayerContainer(
         }
         requestedQueueIndexRef[0] = index
         val targetKey = queueArtworkKeys.getOrNull(index) ?: song.resolvePlaybackArtworkKey(null)
-        if (!PlayerSwitchTrace.isActive()) {
-            PlayerSwitchTrace.begin(
-                kind = "queue_tap",
-                detail = "from=$committedQueueIndex to=$index key=${targetKey?.hashCode()?.toString(16) ?: "-"}",
-            )
-        }
-        PlayerSwitchTrace.mark(
-            "ui_queue_tap_arm",
-            "from=$committedQueueIndex to=$index key=${targetKey?.hashCode()?.toString(16) ?: "-"}",
-        )
         // reference player retained pager programmatic motion starts its ListWidget/retained pager holder programmatic motion from the
         // authoritative current-track callback, not from the click callback.  Only arm the exact
         // identity here.  bindSong() will consume this marker after renderer commitment and move
@@ -503,16 +492,7 @@ fun ComposePlayerContainer(
         command: () -> AudioFile?,
         gestureCommand: () -> AudioFile?
     ) {
-        if (!PlayerSwitchTrace.isActive()) {
-            PlayerSwitchTrace.begin(
-                kind = "ui_${direction.name.lowercase()}",
-                detail = "queueIndex=$committedQueueIndex queueSize=${queueSongs.size}",
-            )
-        }
-        PlayerSwitchTrace.mark(
-            "ui_track_command_begin",
-            "dir=$direction committed=$committedQueueIndex requested=${requestedQueueIndexRef[0]} gesture=${artworkTransitionState.isGestureActive}",
-        )
+        val inputStartedNs = System.nanoTime()
         // An edge/empty-neighbour swipe has no target key by design. ArtworkPager already ran the
         // resisted current-holder motion and is settling back; this one-shot release only asks the
         // transport traversal for its authoritative boundary result so the app can show feedback.
@@ -558,14 +538,17 @@ fun ComposePlayerContainer(
             expectedKey = previewKey,
             expectedQueueIndex = previewIndex,
         )
-        PlayerSwitchTrace.mark(
-            "ui_manual_arm",
-            "dir=$direction previewIndex=$previewIndex previewKey=${previewKey?.hashCode()?.toString(16) ?: "-"}",
-        )
         val directGestureCommit = gestureTargetKey != null
         if (!directGestureCommit && previewIndex >= 0) requestedQueueIndexRef[0] = previewIndex
 
-        val dispatchedSong = if (directGestureCommit) gestureCommand() else command()
+        val transportStartedNs = System.nanoTime()
+        android.os.Trace.beginSection("RawS.player.button.transport")
+        val dispatchedSong = try {
+            if (directGestureCommit) gestureCommand() else command()
+        } finally {
+            android.os.Trace.endSection()
+        }
+        val transportFinishedNs = System.nanoTime()
         val dispatchedKey = dispatchedSong.resolvePlaybackArtworkKey(null)
         val dispatchedIndex = when {
             dispatchedSong == null -> -1
@@ -576,15 +559,10 @@ fun ComposePlayerContainer(
         if (!directGestureCommit && dispatchedIndex >= 0) requestedQueueIndexRef[0] = dispatchedIndex
 
         if (dispatchedKey.isNullOrBlank()) {
-            PlayerSwitchTrace.mark("ui_dispatch_no_key", "dir=$direction")
             artworkTransitionState.cancelManualNavigationExpectation()
             return
         }
 
-        PlayerSwitchTrace.mark(
-            "ui_transport_identity",
-            "dir=$direction dispatchedIndex=$dispatchedIndex key=${dispatchedKey.hashCode().toString(16)} directGesture=$directGestureCommit",
-        )
 
         if (dispatchedKey == artworkTransitionState.foregroundCurrentKey()) {
             // The common opposite-button case while A -> B is still physically settling is
@@ -627,11 +605,17 @@ fun ComposePlayerContainer(
                 expectedKey = dispatchedKey,
                 expectedQueueIndex = dispatchedIndex,
             )
-            PlayerSwitchTrace.mark(
-                "ui_artwork_motion_started",
-                "dir=$direction index=$dispatchedIndex key=${dispatchedKey.hashCode().toString(16)}",
-            )
         }
+        val inputFinishedNs = System.nanoTime()
+        android.util.Log.i(
+            "PlayerButtonTiming",
+            "direction=$direction gesture=$directGestureCommit " +
+                "admissionMs=${(transportStartedNs - inputStartedNs) / 1_000_000.0} " +
+                "transportMs=${(transportFinishedNs - transportStartedNs) / 1_000_000.0} " +
+                "visualMs=${(inputFinishedNs - transportFinishedNs) / 1_000_000.0} " +
+                "totalMs=${(inputFinishedNs - inputStartedNs) / 1_000_000.0} " +
+                "thread=${Thread.currentThread().name}",
+        )
     }
 
     val previousFromPlayer = {
@@ -689,6 +673,7 @@ fun ComposePlayerContainer(
     }
 
     CompositionLocalProvider(
+        LocalPlayerPlaylistAction provides onAddSongToPlaylist,
         LocalAudioVisualizerStyle provides audioVisualizerStyle,
         LocalAudioVisualizerStyleChange provides onAudioVisualizerStyleChange,
         LocalAudioVisualizerParticleColorMode provides audioVisualizerParticleColorMode,
@@ -704,6 +689,7 @@ fun ComposePlayerContainer(
             totalDurationMs = totalDurationMs,
             audioVisualizerEnabled = audioVisualizerEnabled,
             audioSpectrum = audioSpectrum,
+            audioSpectrumState = audioSpectrumState,
             audioVisualizerForeground = audioVisualizerForeground,
             onAudioVisualizerDismiss = onAudioVisualizerDismiss,
             onAudioVisualizerEnabledChange = onAudioVisualizerEnabledChange,
@@ -732,15 +718,9 @@ fun ComposePlayerContainer(
             onModalDismissActionChange = modalDismissActionChanged,
             onSeekStart = onSeekStart,
             onSeekStop = onSeekStop,
-            onPrevious = {
-                onPrevious()
-                Unit
-            },
+            onPrevious = previousFromPlayer,
             onPlayPause = onPlayPause,
-            onNext = {
-                onNext()
-                Unit
-            },
+            onNext = nextFromPlayer,
             onPlayMode = onPlayMode,
             onLyricModifyAlbumArt = onLyricModifyAlbumArt,
             onSearchLyrico = onSearchLyrico,
@@ -783,7 +763,14 @@ fun ComposePlayerContainer(
             controllerFromScene = controllerFromScene,
             controllerToScene = controllerToScene,
             controllerProgress = controllerProgress,
+            controllerProgressState = controllerSceneProgressState,
             controllerIsTransitioning = controllerIsTransitioning,
+            mainSheetExpansionState = controllerProgressState,
+            sourceCoverTarget = sourceCoverTarget,
+            miniPlayerBoundsInRoot = miniPlayerBoundsInRoot,
+            miniPlayerExpandedHeightDp = miniPlayerStyle.expandedHeightDp,
+            miniPlayerCornerRadiusDp = miniPlayerStyle.cornerRadiusDp,
+            onMainPlayerSheetGeometryChanged = onMainPlayerSheetGeometryChanged,
             modifier = modifier
         )
     } else {
@@ -856,6 +843,7 @@ fun ComposePlayerContainer(
             onPlayerCoverSwipeDownProgress = onPlayerCoverSwipeDownProgress,
             onPlayerCoverSwipeDownEnd = onPlayerCoverSwipeDownEnd,
             onMainPlayerSheetGeometryChanged = onMainPlayerSheetGeometryChanged,
+            onStandardPlayerLayoutReady = onStandardPlayerLayoutReady,
             onLyricCoverSwipeDownStart = onLyricCoverSwipeDownStart,
             onLyricCoverSwipeDownProgress = onLyricCoverSwipeDownProgress,
             onLyricCoverSwipeDownEnd = onLyricCoverSwipeDownEnd,
@@ -928,6 +916,7 @@ private fun ImmersiveComposePlayerContainer(
     totalDurationMs: Long,
     audioVisualizerEnabled: Boolean,
     audioSpectrum: FloatArray,
+    audioSpectrumState: State<FloatArray>?,
     audioVisualizerForeground: Boolean,
     onAudioVisualizerDismiss: () -> Unit,
     onAudioVisualizerEnabledChange: (Boolean) -> Unit,
@@ -1001,7 +990,14 @@ private fun ImmersiveComposePlayerContainer(
     controllerFromScene: PlayerSceneController.Scene?,
     controllerToScene: PlayerSceneController.Scene?,
     controllerProgress: Float,
+    controllerProgressState: State<Float>?,
     controllerIsTransitioning: Boolean,
+    mainSheetExpansionState: State<Float>?,
+    sourceCoverTarget: CoverTransitionTarget?,
+    miniPlayerBoundsInRoot: androidx.compose.ui.geometry.Rect?,
+    miniPlayerExpandedHeightDp: Float,
+    miniPlayerCornerRadiusDp: Float,
+    onMainPlayerSheetGeometryChanged: (Float, Float) -> Unit,
     modifier: Modifier
 ) {
     val controllerSceneForVisibility = if (controllerIsTransitioning) {
@@ -1024,12 +1020,20 @@ private fun ImmersiveComposePlayerContainer(
         if (scene in setOf(PlayerScene.PLAYER, PlayerScene.LYRIC, PlayerScene.ALBUM_DETAIL)) {
             val from = (controllerFromScene ?: scene.toControllerScene()).inlineQueueHostScene()
             val to = (controllerToScene ?: scene.toControllerScene()).inlineQueueHostScene()
-            val progress = controllerProgress.coerceIn(0f, 1f)
-            val drawerProgress = when {
-                controllerIsTransitioning && from == PlayerSceneController.Scene.MAIN && to != PlayerSceneController.Scene.MAIN -> progress
-                controllerIsTransitioning && from != PlayerSceneController.Scene.MAIN && to == PlayerSceneController.Scene.MAIN -> 1f - progress
-                else -> 1f
-            }.coerceIn(0f, 1f)
+            val mainPlayerPair = controllerIsTransitioning &&
+                ((from == PlayerSceneController.Scene.MAIN && to == PlayerSceneController.Scene.PLAYER) ||
+                    (from == PlayerSceneController.Scene.PLAYER && to == PlayerSceneController.Scene.MAIN))
+            ImmersiveMainExpansionHost(
+                coverPath = coverPath,
+                artworkTransitionState = artworkTransitionState,
+                mainTransition = mainPlayerPair,
+                expansionState = mainSheetExpansionState,
+                sourceCoverTarget = sourceCoverTarget,
+                miniPlayerBoundsInRoot = miniPlayerBoundsInRoot,
+                miniPlayerExpandedHeightDp = miniPlayerExpandedHeightDp,
+                miniPlayerCornerRadiusDp = miniPlayerCornerRadiusDp,
+                onSheetGeometryChanged = onMainPlayerSheetGeometryChanged,
+            ) { sharedArtworkActive, collapsedTop ->
             AnimatedVisibility(
                 visible = true,
                 enter = androidx.compose.animation.EnterTransition.None,
@@ -1041,7 +1045,12 @@ private fun ImmersiveComposePlayerContainer(
                     fromScene = from,
                     toScene = to,
                     progress = controllerProgress,
+                    progressState = controllerProgressState,
                     isTransitioning = controllerIsTransitioning,
+                    mainPlayerTransition = mainPlayerPair,
+                    mainSheetExpansionState = mainSheetExpansionState,
+                    collapsedMiniTopPx = collapsedTop,
+                    externallyOwnedClearArtwork = sharedArtworkActive,
                     currentSong = currentSong,
                     coverPath = coverPath,
                     artworkTransitionState = artworkTransitionState,
@@ -1050,6 +1059,7 @@ private fun ImmersiveComposePlayerContainer(
                     totalDurationMs = totalDurationMs,
                     audioVisualizerEnabled = audioVisualizerEnabled,
                     audioSpectrum = audioSpectrum,
+                    audioSpectrumState = audioSpectrumState,
                     audioVisualizerForeground = audioVisualizerForeground,
                     onAudioVisualizerDismiss = onAudioVisualizerDismiss,
                     onAudioVisualizerEnabledChange = onAudioVisualizerEnabledChange,
@@ -1123,12 +1133,28 @@ private fun ImmersiveComposePlayerContainer(
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
-                            translationY = size.height * (1f - drawerProgress)
-                            alpha = 1f
-                            clip = true
+                            // PLAYER has one shared surface/sheet clock; preserve the historical
+                            // full-page retreat for LYRIC/ALBUM_DETAIL -> MAIN. Those scenes do
+                            // not have a MiniPlayer foreground-artwork endpoint.
+                            if (controllerIsTransitioning && !mainPlayerPair &&
+                                (from == PlayerSceneController.Scene.MAIN ||
+                                    to == PlayerSceneController.Scene.MAIN)
+                            ) {
+                                val motion = (controllerProgressState?.value ?: controllerProgress)
+                                    .coerceIn(0f, 1f)
+                                val visible = if (from == PlayerSceneController.Scene.MAIN) {
+                                    motion
+                                } else {
+                                    1f - motion
+                                }
+                                translationY = size.height * (1f - visible)
+                            } else {
+                                translationY = 0f
+                            }
                         }
-                        .clipToBounds()
+                        .clipToBounds(),
                 )
+            }
             }
             return@Box
         }
@@ -1220,6 +1246,7 @@ private fun StandardComposePlayerContainer(
     onPlayerCoverSwipeDownProgress: (Float) -> Unit,
     onPlayerCoverSwipeDownEnd: (Boolean, Float) -> Unit,
     onMainPlayerSheetGeometryChanged: (Float, Float) -> Unit,
+    onStandardPlayerLayoutReady: (() -> Unit)?,
     onLyricCoverSwipeDownStart: () -> Unit,
     onLyricCoverSwipeDownProgress: (Float) -> Unit,
     onLyricCoverSwipeDownEnd: (Boolean, Float) -> Unit,
@@ -1284,11 +1311,8 @@ private fun StandardComposePlayerContainer(
     val scene = if (resolvedScene == PlayerScene.QUEUE) PlayerScene.PLAYER else resolvedScene
     val prewarmMainOnly = prewarmStandardPlayerInMain &&
         scene == PlayerScene.MAIN
-    // Persistent NORMAL owns a stable *host*, not a permanently live PLAYER/LYRIC content tree.
-    // Once the one-shot prewarm has been consumed, settled MAIN returns before mounting the full
-    // player hierarchy. MiniPlayer/bottom chrome remains the collapsed endpoint outside this tree;
-    // transition-to-PLAYER resolves [scene] to PLAYER before animation work begins and remounts the
-    // already-hot hierarchy in the same stable host.
+    // MAIN retains the measured content offstage with frame owners asleep. Reopening reuses
+    // these nodes instead of paying composition, resource decode and measure again.
     if (scene == PlayerScene.MAIN && !prewarmMainOnly && !controllerIsTransitioning) return
 
     // A seek gesture is a child-owned interaction. Publish that ownership from DOWN until
@@ -1414,6 +1438,7 @@ private fun StandardComposePlayerContainer(
                 onPlayerCoverSwipeDownProgress = onPlayerCoverSwipeDownProgress,
                 onPlayerCoverSwipeDownEnd = onPlayerCoverSwipeDownEnd,
                 onMainPlayerSheetGeometryChanged = onMainPlayerSheetGeometryChanged,
+                onStandardPlayerLayoutReady = onStandardPlayerLayoutReady,
                 onLyricCoverSwipeDownStart = onLyricCoverSwipeDownStart,
                 onLyricCoverSwipeDownProgress = onLyricCoverSwipeDownProgress,
                 onLyricCoverSwipeDownEnd = onLyricCoverSwipeDownEnd,
@@ -1458,6 +1483,7 @@ private fun StandardComposePlayerContainer(
             modifier = Modifier.fillMaxSize()
         ) {
             PlayerMainPage(
+                hdrArtworkVisible = !prewarmMainOnly && (scene == PlayerScene.PLAYER || controllerIsTransitioning),
                 currentSong = currentSong,
                 coverPath = coverPath,
                 artworkTransitionState = artworkTransitionState,
@@ -1558,6 +1584,8 @@ private fun StandardComposePlayerContainer(
                 onOpenExternalTimingEditor = onOpenExternalTimingEditor,
                 onSearchLyrico = onSearchLyrico,
                 onModifyAlbumArt = onLyricModifyAlbumArt,
+                audioVisualizerEnabled = audioVisualizerEnabled,
+                onAudioVisualizerEnabledChange = onAudioVisualizerEnabledChange,
                 onModalVisibleChange = onModalVisibleChange,
                 onModalDismissActionChange = onModalDismissActionChange,
                 onBack = onBackToPlayer
@@ -1688,6 +1716,7 @@ private fun StandardPlayerLyricStack(
     onPlayerCoverSwipeDownProgress: (Float) -> Unit,
     onPlayerCoverSwipeDownEnd: (Boolean, Float) -> Unit,
     onMainPlayerSheetGeometryChanged: (Float, Float) -> Unit,
+    onStandardPlayerLayoutReady: (() -> Unit)?,
     onLyricCoverSwipeDownStart: () -> Unit,
     onLyricCoverSwipeDownProgress: (Float) -> Unit,
     onLyricCoverSwipeDownEnd: (Boolean, Float) -> Unit,
@@ -1725,6 +1754,32 @@ private fun StandardPlayerLyricStack(
     modifier: Modifier = Modifier
 ) {
     var containerRootBounds by remember { mutableStateOf<RectF?>(null) }
+    val windowLayoutProfile = com.rawsmusic.core.ui.scene.LocalRawWindowLayoutProfile.current
+    val widePlayerLayout = windowLayoutProfile.useWidePlayerLayout
+    val wideArtworkEndpoint = remember(
+        coverPath, windowLayoutProfile.windowWidth, windowLayoutProfile.windowHeight,
+    ) { PlayerArtworkEndpointSnapshot() }
+    var settledWideArtworkRect by remember(wideArtworkEndpoint) {
+        mutableStateOf<PlayerArtworkHandoffRect?>(null)
+    }
+    var playerContentPlaced by remember { mutableStateOf(false) }
+    LaunchedEffect(onStandardPlayerLayoutReady, playerContentPlaced, widePlayerLayout, settledWideArtworkRect) {
+        if (onStandardPlayerLayoutReady != null && playerContentPlaced &&
+            (!widePlayerLayout || settledWideArtworkRect != null)
+        ) {
+            // Placement is the prerequisite, not a guess based on elapsed vsyncs.
+            // Let that traversal finish before the controller starts motion.
+            withFrameNanos { }
+            onStandardPlayerLayoutReady()
+        }
+    }
+    var fullLyricsPrepared by remember { mutableStateOf(false) }
+    LaunchedEffect(prewarmOnly, isTransitioning, currentScene) {
+        if (!prewarmOnly && !isTransitioning && currentScene == PlayerSceneController.Scene.PLAYER) {
+            withFrameNanos { }
+            fullLyricsPrepared = true
+        }
+    }
     var playerArtworkAnchor by remember(coverPath) {
         mutableStateOf<PlayerLyricsArtworkAnchor?>(null)
     }
@@ -1840,7 +1895,11 @@ private fun StandardPlayerLyricStack(
         // and shook the artwork. Freeze the endpoint, but derive it from PlayerMainPage's current
         // outer-item + local ArtworkImageNode inset/scale formula rather than obsolete layout margins.
         // The measured anchor remains authoritative for stable PLAYER/LYRIC transitions.
-        val playerCoverRect = if (mainPlayerTransition) {
+        val playerCoverRect = if (mainPlayerTransition && widePlayerLayout) {
+            settledWideArtworkRect?.let {
+                RectF(it.left, it.top, it.left + it.width, it.top + it.height)
+            } ?: measuredPlayerCoverRect ?: fallbackPlayerCoverRect
+        } else if (mainPlayerTransition) {
             fallbackPlayerCoverRect
         } else {
             measuredPlayerCoverRect ?: fallbackPlayerCoverRect
@@ -1853,6 +1912,7 @@ private fun StandardPlayerLyricStack(
             toScene == PlayerSceneController.Scene.MAIN
         val mainSharedTransition = ENABLE_PLAYER_LIST_COVER_TRANSITION &&
             mainPlayerTransition &&
+            (!widePlayerLayout || settledWideArtworkRect != null) &&
             !coverPath.isNullOrBlank() &&
             source != null &&
             // Never let an entry-time ListCover survive into PLAYER -> MAIN. If a stale
@@ -1967,11 +2027,11 @@ private fun StandardPlayerLyricStack(
 
         fun currentPlayerBackdropAlpha(): Float {
             if (!mainPlayerTransition && currentScene == PlayerSceneController.Scene.MAIN) return 0f
-            // reference player's player root (k1) only cross-fades when the background drawable itself is
-            // replaced; sheet motion changes the owning View/clip/translation. Raw already reveals
-            // this backdrop through playerSurfaceClipModifier, so applying another reveal-ratio
-            // alpha here creates a non-reference player full-screen background fade on PLAYER enter/return.
-            return 1f
+            // The collapsed PLAYER surface overlaps the real MiniPlayer. Release its opaque
+            // background at that endpoint without fading the shared artwork sibling.
+            return if (mainPlayerTransition) {
+                resolvePlayerSurfaceOwnershipAlpha(currentPlayerRevealFraction())
+            } else 1f
         }
         val reducedNavigationBottomPadding = rawReducedNavigationBottomPadding(reduceBy = 12.dp)
         val miniPlayerLocalBounds = miniPlayerBoundsInRoot?.let { bounds ->
@@ -2265,6 +2325,10 @@ private fun StandardPlayerLyricStack(
                 )
                 val start = down.position
                 val enabledAtDown =
+                    !usesInlinePlayerLyrics(
+                        context.resources.configuration.smallestScreenWidthDp,
+                        windowLayoutProfile.windowWidth.value, windowLayoutProfile.windowHeight.value,
+                    ) &&
                     latestPlayerLyricUpScene == PlayerSceneController.Scene.PLAYER &&
                         !latestPlayerLyricUpTransition &&
                         !latestPlayerLyricUpQueueVisible &&
@@ -2489,61 +2553,22 @@ private fun StandardPlayerLyricStack(
             // exists. This removes the independent screen-space content flight entirely.
             val playerSurfaceClipModifier = Modifier
                 .fillMaxSize()
-                .drawWithCache {
-                    // One retained path mirrors a View/RenderNode clip. Reusing it avoids allocating
-                    // Path/RoundRect objects on every animation frame.
-                    val retainedClip = AndroidPath()
-                    onDrawWithContent drawPlayerSurface@{
-                        val reveal = currentPlayerRevealFraction().coerceIn(0f, 1f)
-                        val shouldUseMiniPlayerClip =
-                            mainPlayerTransition || currentScene == PlayerSceneController.Scene.MAIN
-                        if (!shouldUseMiniPlayerClip || reveal >= 0.999f) {
-                            drawContent()
-                        } else {
-                            val surface = resolvePlayerSurfaceHandoffBounds(
-                                sourceLeft = collapsedBackdropBounds.left,
-                                sourceTop = collapsedBackdropBounds.top,
-                                sourceRight = collapsedBackdropBounds.right,
-                                sourceBottom = collapsedBackdropBounds.bottom,
-                                sourceCornerRadius = collapsedBackdropCornerRadiusPx,
-                                viewportWidth = size.width,
-                                viewportHeight = size.height,
-                                fraction = reveal,
-                            )
-                            if (surface.cornerRadius > 0.5f) {
-                                retainedClip.rewind()
-                                retainedClip.addRoundRect(
-                                    surface.left,
-                                    surface.top,
-                                    surface.right,
-                                    surface.bottom,
-                                    surface.cornerRadius,
-                                    surface.cornerRadius,
-                                    AndroidPath.Direction.CW,
-                                )
-                                val nativeCanvas = drawContext.canvas.nativeCanvas
-                                val saveCount = nativeCanvas.save()
-                                try {
-                                    nativeCanvas.clipPath(retainedClip)
-                                    this@drawPlayerSurface.drawContent()
-                                } finally {
-                                    nativeCanvas.restoreToCount(saveCount)
-                                }
-                            } else {
-                                clipRect(
-                                    surface.left,
-                                    surface.top,
-                                    surface.right,
-                                    surface.bottom,
-                                ) {
-                                    this@drawPlayerSurface.drawContent()
-                                }
-                            }
-                        }
-                    }
-                }
+                .playerMainExpansionSurfaceClip(
+                    active = mainPlayerTransition ||
+                        currentScene == PlayerSceneController.Scene.MAIN,
+                    collapsed = PlayerSurfaceHandoffBounds(
+                        collapsedBackdropBounds.left,
+                        collapsedBackdropBounds.top,
+                        collapsedBackdropBounds.right,
+                        collapsedBackdropBounds.bottom,
+                        collapsedBackdropCornerRadiusPx,
+                    ),
+                    expansion = ::currentPlayerRevealFraction,
+                    expansionState = mainPlayerExpansionState,
+                )
 
             Box(modifier = playerSurfaceClipModifier) {
+            val playerPopupBackdrop = rememberLayerBackdrop()
             // Backdrop geometry is independent from the translated content sheet. At the first
             // MAIN -> PLAYER frame only the MiniPlayer rectangle owns the player background; the
             // stacked navigation area is never part of that source surface. As expansion grows,
@@ -2553,8 +2578,8 @@ private fun StandardPlayerLyricStack(
             CompositionLocalProvider(
                 // Both MAIN and PLAYER backgrounds are visible during the sheet handoff, so both
                 // may own their draw clocks while motion is in flight. At the PLAYER endpoint the
-                // library owner is frozen by AppMainLayout; at MAIN the PLAYER tree is unmounted.
-                // Hidden prewarm remains the only state which must never own a frame callback.
+                // library owner is frozen by AppMainLayout; at MAIN the retained PLAYER sleeps.
+                // Hidden residency must never own a frame callback.
                 LocalUiFrameAnimationActive provides !prewarmOnly,
             ) {
                 StandardPlayerBackdrop(
@@ -2567,6 +2592,7 @@ private fun StandardPlayerLyricStack(
                             artworkTransitionState.isSettling,
                     modifier = Modifier
                         .fillMaxSize()
+                        .layerBackdrop(playerPopupBackdrop)
                         .graphicsLayer {
                             alpha = currentPlayerBackdropAlpha()
                         }
@@ -2592,6 +2618,7 @@ private fun StandardPlayerLyricStack(
                     .clipToBounds(),
             )
 
+            CompositionLocalProvider(LocalAppBackdrop provides playerPopupBackdrop) {
             Box(
                 modifier = Modifier.fillMaxSize()
             ) {
@@ -2618,8 +2645,10 @@ private fun StandardPlayerLyricStack(
                 coverPath = coverPath,
                 artworkTransitionState = artworkTransitionState,
                 isPlaying = isPlaying && (
+                    // The retained player must release HDR at the lyric/main endpoint.
                     currentScene == PlayerSceneController.Scene.PLAYER || playerLyricTransition
                     ),
+                hdrArtworkVisible = !prewarmOnly && (settledPlayerVisible || mainPlayerTransition || playerLyricTransition),
                 artworkPlaybackActive = isPlaying,
                 currentPositionMs = currentPositionMs,
                 currentPositionState = currentPositionState,
@@ -2677,6 +2706,14 @@ private fun StandardPlayerLyricStack(
                 onModalDismissActionChange = onModalDismissActionChange,
                 onAudioQuality = onAudioQuality,
                 onOpenLyric = onOpenLyric,
+                onInlineLyricSeek = if (usesInlinePlayerLyrics(
+                    context.resources.configuration.smallestScreenWidthDp,
+                    windowLayoutProfile.windowWidth.value, windowLayoutProfile.windowHeight.value,
+                )) onLyricSeek else null,
+                inlineLyricActions = com.rawsmusic.core.ui.widget.player.InlinePlayerLyricActions(
+                    onLyricTranslationToggle, onLyricRomaToggle, onLyricModifyAlbumArt,
+                    onSearchLyrico, onOpenInLyrico, onAiTimingPreview, onOpenExternalTimingEditor,
+                ),
                 onArtworkLongPress = onArtworkLongPress,
                 onClosePlayer = onClosePlayer,
                 onCoverSwipeUpStart = onPlayerCoverSwipeUpStart,
@@ -2690,6 +2727,25 @@ private fun StandardPlayerLyricStack(
                 mainPlayerSheetTravelPx = playerSheetTravelPx,
                 rootOwnsPlayerSheetDownGesture = rootOwnsMainPlayerSheetDownGesture,
                 rootOwnsPlayerLyricUpGesture = true,
+                onArtworkLayoutBoundsChanged = { bounds ->
+                    // Prewarm is real layout too. Capture it before the 1.25 -> 1 population
+                    // transform starts; publishing only after prewarm lost the tablet endpoint.
+                    if (widePlayerLayout) {
+                        wideArtworkEndpoint.update(
+                            bounds?.let { rect ->
+                                // Already in PLAYER layout space; no animated root-space inverse.
+                                PlayerArtworkHandoffRect(
+                                    left = rect.left,
+                                    top = rect.top,
+                                    width = rect.width,
+                                    height = rect.height,
+                                )
+                            },
+                            motionActive = isTransitioning,
+                        )
+                        settledWideArtworkRect = wideArtworkEndpoint.rect
+                    }
+                },
                 onArtworkAnchorChanged = {
                     if (!prewarmOnly) {
                         playerArtworkAnchor = it
@@ -2760,11 +2816,17 @@ private fun StandardPlayerLyricStack(
                             TransformOrigin.Center
                         }
                     }
+                    .onGloballyPositioned { coordinates ->
+                        if (coordinates.size.width > 0 && coordinates.size.height > 0) {
+                            playerContentPlaced = true
+                        }
+                    }
             )
             }
             }
 
-                // Keep the full LYRIC scene mounted for PLAYER<->LYRIC geometry continuity, but
+            if (fullLyricsPrepared || settledLyricVisible || playerLyricTransition) {
+                // Retain LYRIC after preparation for PLAYER<->LYRIC geometry continuity, but
                 // freeze its playback/follow owner for the entire scene transition. reference player moves
                 // an already-laid-out lyrics population; it does not make the list seek/follow its
                 // live clock while that population is being transformed. Waking the LazyColumn,
@@ -2802,6 +2864,8 @@ private fun StandardPlayerLyricStack(
                 onOpenInLyrico = onOpenInLyrico,
                 onAiTimingPreview = onAiTimingPreview,
                 onOpenExternalTimingEditor = onOpenExternalTimingEditor,
+                audioVisualizerEnabled = audioVisualizerEnabled,
+                onAudioVisualizerEnabledChange = onAudioVisualizerEnabledChange,
                 onModalVisibleChange = onModalVisibleChange,
                 onModalDismissActionChange = onModalDismissActionChange,
                 onBack = onBackToPlayer,
@@ -2851,6 +2915,8 @@ private fun StandardPlayerLyricStack(
                         }
                     }
                 )
+            }
+            }
         }
 
         if (mainSharedTransition) {
@@ -2900,12 +2966,10 @@ private fun StandardPlayerLyricStack(
                         translationY = rect.top - playerCoverRect.top
                         this.scaleX = scale
                         this.scaleY = scale
-                        // The real mini-player stays mounted at the collapsed anchor. Cross-fade
-                        // ownership instead of replacing it on the first committed frame. This is
-                        // especially important for the vinyl source, whose sleeve + record cannot
-                        // be represented by the single shared bitmap node. On return the same curve
-                        // hands the final frame back to the real mini-player with no shape pop.
-                        alpha = (1f - kotlin.math.exp(-300f * f)).coerceIn(0f, 1f)
+                        // The mini-player bitmap is hidden while this actor owns the artwork.
+                        // Keep this actor opaque until the scene commit removes it and reveals
+                        // the retained miniature in the same ownership handoff.
+                        alpha = resolvePlayerSharedArtworkAlpha(f)
                         transformOrigin = TransformOrigin(0f, 0f)
                         // Keep the artwork image view elevation continuous while the shared actor owns
                         // the outer holder. Divide by the current scale so the screen-space shadow

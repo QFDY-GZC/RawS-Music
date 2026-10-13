@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -19,6 +20,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.res.stringResource
 import com.rawsmusic.R
 import com.rawsmusic.helper.LogExportHelper
+import com.rawsmusic.lyric.XiaomiXmsfNetworkHelper
+import kotlinx.coroutines.launch
 import com.rawsmusic.module.data.prefs.AppPreferences.Lyrics
 import com.rawsmusic.module.data.prefs.XiaomiSuperIslandSettings
 import top.yukonga.miuix.kmp.basic.Button
@@ -40,6 +43,7 @@ class XiaomiSuperIslandSettingsActivity : BaseSettingsActivity() {
 @Composable
 private fun XiaomiSuperIslandSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var settings by remember { mutableStateOf(Lyrics.xiaomiSuperIslandSettings) }
     var showCustomColor by remember { mutableStateOf(false) }
     var customColor by remember(settings.customColor) { mutableStateOf(Color(settings.customColor)) }
@@ -220,8 +224,18 @@ private fun XiaomiSuperIslandSettingsScreen(onBack: () -> Unit) {
                 summary = xmsfSummaries[mode],
                 items = xmsfLabels.mapIndexed { index, label -> DropdownItem(title = label, summary = xmsfSummaries[index]) },
                 selectedIndex = mode,
-                onSelectedIndexChange = { update(settings.copy(xmsfBypassMode = it)) }
+                onSelectedIndexChange = {
+                    update(settings.copy(xmsfBypassMode = it))
+                    if (it != XiaomiSuperIslandSettings.XMSF_MODE_DISABLED) {
+                        scope.launch { XiaomiXmsfNetworkHelper.ensureShizukuPermission() }
+                    }
+                }
             )
+            if (mode != XiaomiSuperIslandSettings.XMSF_MODE_DISABLED) {
+                Button(onClick = { scope.launch { XiaomiXmsfNetworkHelper.ensureShizukuPermission() } }) {
+                    Text(stringResource(R.string.settings_xiaomi_super_island_shizuku_permission))
+                }
+            }
             if (settings.xmsfBypassMode == XiaomiSuperIslandSettings.XMSF_MODE_CUSTOM) {
                 IslandSlider(
                     stringResource(R.string.settings_xiaomi_super_island_xmsf_duration),

@@ -19,6 +19,7 @@ enum class AudioTranscodeFormat(
     WAVPACK("wavpack", "wv", setOf("wv"), false, false),
     TTA("tta", "tta", setOf("tta"), false, false),
     DSF("dsf", "dsf", setOf("dsf"), true, false),
+    SACD_ISO("sacd_iso", "iso", setOf("iso"), true, false),
     AAC("aac", "m4a", setOf("m4a"), false, true),
     MP2("mp2", "mp2", setOf("mp2", "mpa", "m2a"), false, true),
     MP3("mp3", "mp3", setOf("mp3"), false, true),
@@ -74,6 +75,27 @@ data class AudioTranscodeRequest(
     val autoScanOnSuccess: Boolean = false,
     val overwrite: Boolean = false,
 )
+
+/**
+ * Keep the durable/public filename tied to the selected encoder target.
+ *
+ * Queue entries are persisted independently from UI state, so an old outputPath can otherwise
+ * survive after the target format changes and publish a WAV/FLAC task with a stale `.wv` suffix.
+ * Normalize at every queue boundary instead of trusting a caller-provided extension.
+ */
+internal fun AudioTranscodeRequest.withCanonicalOutputExtension(): AudioTranscodeRequest {
+    val output = File(outputPath)
+    val canonicalExtension = format.extension.lowercase()
+    if (output.extension.equals(canonicalExtension, ignoreCase = true)) return this
+
+    val stem = output.nameWithoutExtension
+        .takeIf(String::isNotBlank)
+        ?: output.name.takeIf(String::isNotBlank)
+        ?: "audio"
+    val canonicalName = "$stem.$canonicalExtension"
+    val canonicalFile = output.parentFile?.let { File(it, canonicalName) } ?: File(canonicalName)
+    return copy(outputPath = canonicalFile.path)
+}
 
 enum class AudioTranscodeBackendKind {
     HARDWARE,

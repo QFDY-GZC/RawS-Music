@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel_floating_lyrics">悬浮歌词</string>
+    <string name="notification_channel_floating_lyrics_description">在非魅族设备上以悬浮通知形式显示歌词</string>
+    <string name="notification_channel_flyme_lyrics">Flyme 状态栏歌词</string>
+    <string name="notification_channel_flyme_lyrics_description">用于向 Flyme 状态栏推送歌词</string>
+</resources>

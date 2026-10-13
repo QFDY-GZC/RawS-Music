@@ -113,6 +113,39 @@ class PlayerTransportControlCoordinatorTest {
     }
 
     @Test
+    fun mediaPlayColdStartsIdleAndStoppedBackendsInsteadOfCallingResume() {
+        val harness = Harness()
+
+        harness.backendState = PlayerTransportControlCoordinator.BackendState.IDLE
+        harness.coordinator.resume()
+        assertEquals(listOf("play:seed"), harness.backendCalls)
+        assertEquals(0, harness.resumeCount)
+
+        harness.backendCalls.clear()
+        harness.backendState = PlayerTransportControlCoordinator.BackendState.STOPPED
+        harness.coordinator.resume()
+        assertEquals(listOf("play:seed"), harness.backendCalls)
+        assertEquals(0, harness.resumeCount)
+    }
+
+    @Test
+    fun mediaPlayResumesOnlyPausedAndIgnoresPreparingOrPlaying() {
+        val harness = Harness()
+
+        harness.backendState = PlayerTransportControlCoordinator.BackendState.PAUSED
+        harness.coordinator.resume()
+        assertEquals(1, harness.resumeCount)
+
+        harness.backendState = PlayerTransportControlCoordinator.BackendState.PREPARING
+        harness.coordinator.resume()
+        harness.backendState = PlayerTransportControlCoordinator.BackendState.PLAYING
+        harness.coordinator.resume()
+
+        assertEquals(1, harness.resumeCount)
+        assertTrue(harness.backendCalls.isEmpty())
+    }
+
+    @Test
     fun stopUsesSerializedEventSink() {
         val harness = Harness()
         harness.coordinator.stop()

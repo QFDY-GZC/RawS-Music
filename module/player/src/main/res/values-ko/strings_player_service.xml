@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="player_action_playback_mode">재생 모드</string>
+    <string name="player_notification_ready">재생 준비 완료</string>
+    <string name="player_action_previous">이전 곡</string>
+    <string name="player_action_pause">일시정지</string>
+    <string name="player_action_play">재생</string>
+    <string name="player_action_next">다음 곡</string>
+    <string name="player_mode_shuffle">셔플</string>
+    <string name="player_mode_repeat_one">한 곡 반복</string>
+    <string name="player_mode_repeat_all">전체 반복</string>
+    <string name="player_mode_sequential">순차 재생</string>
+    <string name="player_action_desktop_lyric">데스크톱 가사</string>
+</resources>

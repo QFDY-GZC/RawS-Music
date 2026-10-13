@@ -22,7 +22,7 @@ internal fun resolveImmersivePlayerLayoutMetrics(
     titleInfoHeight: Dp,
     progressPanelHeight: Dp,
     transportControlsHeight: Dp,
-    fontScale: Float,
+    estimatedPrimaryRowHeight: Dp,
     hasSecondaryText: Boolean
 ): ImmersivePlayerLayoutMetrics {
     val safeViewport = viewportHeight.coerceAtLeast(1.dp)
@@ -36,12 +36,13 @@ internal fun resolveImmersivePlayerLayoutMetrics(
     val available = (progressTop - lyricTop - 10.dp).coerceAtLeast(0.dp)
     val lyricPreviewHeight = available.coerceAtMost(292.dp)
 
-    val estimatedPrimaryRowHeight =
-        (if (hasSecondaryText) 44f else 31f) * fontScale.coerceIn(0.85f, 1.45f)
+    val minimumEstimatedPrimaryRowHeight = if (hasSecondaryText) 37.4f else 26.35f
+    val estimatedPrimaryRowHeightDp = estimatedPrimaryRowHeight.value
+        .coerceAtLeast(minimumEstimatedPrimaryRowHeight)
     val lyricPreviewRows = if (lyricPreviewHeight <= 0.dp) {
         1
     } else {
-        floor(lyricPreviewHeight.value / estimatedPrimaryRowHeight)
+        floor(lyricPreviewHeight.value / estimatedPrimaryRowHeightDp)
             .toInt()
             .coerceIn(1, if (hasSecondaryText) 3 else 5)
     }

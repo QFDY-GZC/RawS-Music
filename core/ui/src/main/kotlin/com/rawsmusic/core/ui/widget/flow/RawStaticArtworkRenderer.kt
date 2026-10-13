@@ -9,19 +9,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
-import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkPerfStage
-import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkPerfTrace
+import androidx.compose.ui.platform.LocalContext
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkBitmapRuntime
+import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 import kotlin.math.max
@@ -58,7 +62,7 @@ internal fun clearRawStaticArtworkCache() {
     staticAaCache.evictAll()
 }
 
-private data class StaticAaConfig(
+internal data class StaticAaConfig(
     val saturation: Float,
     val brightness: Float,
     val gradient: Float,
@@ -88,12 +92,12 @@ internal fun referenceAaDetailLimit(detail: Float): Int? {
     return if (step >= 10) null else 1 shl step
 }
 
-private fun staticAaIdentity(key: String?, artwork: Bitmap?): String =
+internal fun staticAaIdentity(key: String?, artwork: Bitmap?): String =
     key?.takeIf { it.isNotBlank() }
         ?: artwork?.let { "bitmap:${System.identityHashCode(it)}:${it.width}x${it.height}" }
         ?: "none"
 
-private fun staticAaSourceClass(artwork: Bitmap?, detail: Float): Int {
+internal fun staticAaSourceClass(artwork: Bitmap?, detail: Float): Int {
     val bitmap = artwork?.takeUnless { it.isRecycled } ?: return 0
     val longEdge = max(bitmap.width, bitmap.height)
     val finiteLimit = referenceAaDetailLimit(detail)
@@ -106,7 +110,7 @@ private fun staticAaSourceClass(artwork: Bitmap?, detail: Float): Int {
     return if (longEdge >= 1024) 2 else 1
 }
 
-private fun peekStaticAaEndpoint(
+internal fun peekStaticAaEndpoint(
     key: String?,
     artwork: Bitmap?,
     config: StaticAaConfig,
@@ -115,7 +119,7 @@ private fun peekStaticAaEndpoint(
     return staticAaCache.get(config.cacheKey(staticAaIdentity(key, artwork), sourceClass))
 }
 
-private suspend fun prepareStaticAaEndpoint(
+internal suspend fun prepareStaticAaEndpoint(
     key: String?,
     artwork: Bitmap?,
     config: StaticAaConfig,
@@ -126,17 +130,12 @@ private suspend fun prepareStaticAaEndpoint(
     val cacheKey = config.cacheKey(identity, sourceClass)
     staticAaCache.get(cacheKey)?.let { cached ->
         if (!cached.isRecycled) {
-            PlaybackArtworkPerfTrace.mark(
-                "background_static_cache_hit",
-                "lane=$traceLane key=${PlaybackArtworkPerfTrace.keyTag(key.orEmpty())} bitmap=${cached.width}x${cached.height}",
-            )
             return cached
         }
         staticAaCache.remove(cacheKey)
     }
 
-    val prepareStartNs = if (PlaybackArtworkPerfTrace.isActive()) System.nanoTime() else 0L
-    return try {
+    return run {
         staticAaLoaderGate.withLock {
         staticAaCache.get(cacheKey)?.let { cached ->
             if (!cached.isRecycled) return@withLock cached
@@ -149,13 +148,7 @@ private suspend fun prepareStaticAaEndpoint(
         // Compose effect cheap: there is no hidden Coil decode that survives a source-tier rebind.
         val source = artwork?.takeUnless { it.isRecycled } ?: return@withLock null
 
-        PlaybackArtworkPerfTrace.mark(
-            "background_static_source",
-            "lane=$traceLane key=${PlaybackArtworkPerfTrace.keyTag(key.orEmpty())} supplied=true " +
-                "source=${source.width}x${source.height} sourceClass=${staticAaSourceClass(source, config.detail)}",
-        )
-        val nativeStartNs = if (PlaybackArtworkPerfTrace.isActive()) System.nanoTime() else 0L
-        val result = try {
+        val result = run {
             withContext(staticAaLoaderDispatcher) {
                 NativeStaticBackground.createPlayer(
                     artwork = source,
@@ -167,33 +160,11 @@ private suspend fun prepareStaticAaEndpoint(
                     detail = config.detail,
                 )
             }
-        } finally {
-            if (nativeStartNs != 0L) {
-                PlaybackArtworkPerfTrace.recordDuration(
-                    PlaybackArtworkPerfStage.BACKGROUND_STATIC_NATIVE,
-                    System.nanoTime() - nativeStartNs,
-                )
-            }
         }
         if (result != null && !result.isRecycled) {
             staticAaCache.put(cacheKey, result)
         }
-        if (prepareStartNs != 0L) {
-            PlaybackArtworkPerfTrace.mark(
-                "background_static_ready",
-                "lane=$traceLane key=${PlaybackArtworkPerfTrace.keyTag(key.orEmpty())} " +
-                    "duration=${"%.2f".format((System.nanoTime() - prepareStartNs) / 1_000_000.0)}ms " +
-                    "result=${result?.let { "${it.width}x${it.height}" } ?: "-"}",
-            )
-        }
         result
-        }
-    } finally {
-        if (prepareStartNs != 0L) {
-            PlaybackArtworkPerfTrace.recordDuration(
-                PlaybackArtworkPerfStage.BACKGROUND_STATIC_PREPARE,
-                System.nanoTime() - prepareStartNs,
-            )
         }
     }
 }
@@ -217,11 +188,6 @@ internal class RawStaticArtworkLiveSlots {
             currentKey = secondaryKey
             if (secondaryBitmap != null) {
                 currentBitmap = secondaryBitmap
-                PlaybackArtworkPerfTrace.backgroundCurrentCommit(
-                    lane = "static",
-                    key = currentKey,
-                    detail = "bitmap=${currentBitmap?.width}x${currentBitmap?.height}",
-                )
             }
             secondaryKey = null
             secondaryBitmap = null
@@ -332,6 +298,44 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStaticArtworkCe
 }
 
 @Composable
+private fun rememberStaticArtworkSource(key: String?, supplied: Bitmap?): Bitmap? {
+    val context = LocalContext.current.applicationContext
+    val provided = supplied?.takeUnless { it.isRecycled }
+    // Resolve once per artwork, independently of effect sliders. Every surface uses the playback
+    // provider tier, not its small palette thumbnail. The native detail parameter downsamples later.
+    val slot by produceState(
+        initialValue = BackgroundArtworkSlot(
+            key,
+            provided?.takeIf { StaticArtworkSourcePolicy.canReuse(it.width, it.height) },
+        ),
+        key,
+        provided,
+    ) {
+        if (provided != null && StaticArtworkSourcePolicy.canReuse(provided.width, provided.height)) {
+            value = BackgroundArtworkSlot(key, provided)
+            return@produceState
+        }
+        if (key.isNullOrBlank()) {
+            value = BackgroundArtworkSlot(key, provided)
+            return@produceState
+        }
+        val decoded = recoverBackgroundTexture {
+            ArtworkBitmapRuntime.executeBitmap(
+                context = context,
+                key = key,
+                width = StaticArtworkSourcePolicy.REQUEST_SIDE,
+                height = StaticArtworkSourcePolicy.REQUEST_SIDE,
+                surface = ArtworkSurface.Playback,
+            )
+        }
+        value = BackgroundArtworkSlot(key, decoded ?: provided)
+    }
+    // Do not publish a palette/low wrapper while the canonical request is in flight. Otherwise
+    // finite-detail cache classes can lock in the low endpoint before the full source arrives.
+    return if (key.isNullOrBlank()) provided else slot.forKey(key)
+}
+
+@Composable
 internal fun RawStaticArtworkTransitionBackground(
     currentCoverKey: String?,
     targetCoverKey: String?,
@@ -351,19 +355,26 @@ internal fun RawStaticArtworkTransitionBackground(
             detail = RawFlowTuningState.staticDetail,
         )
     }
-    val scene = remember(config) { RawStaticArtworkLiveSlots() }
-    val currentIdentity = staticAaIdentity(currentCoverKey, currentArtwork)
-    val currentSourceClass = staticAaSourceClass(currentArtwork, config.detail)
-    val currentCached = remember(currentIdentity, config) {
-        peekStaticAaEndpoint(currentCoverKey, currentArtwork, config)
+    // Tuning is an endpoint update, not a new renderer. Retain the visible texture while the loader
+    // prepares the replacement; recreating these slots on each slider tick exposed the black base.
+    val scene = remember { RawStaticArtworkLiveSlots() }
+    val appliedConfig = remember { mutableStateOf(config) }
+    val currentSource = rememberStaticArtworkSource(currentCoverKey, currentArtwork)
+    val currentIdentity = staticAaIdentity(currentCoverKey, currentSource)
+    val currentSourceClass = staticAaSourceClass(currentSource, config.detail)
+    val currentCached = remember(currentIdentity, config, currentSourceClass) {
+        peekStaticAaEndpoint(currentCoverKey, currentSource, config)
     }
     scene.syncCurrent(currentCoverKey, currentCached)
 
     val hasSecondaryIdentity = !targetCoverKey.isNullOrBlank() && targetCoverKey != currentCoverKey
-    val targetIdentity = staticAaIdentity(targetCoverKey, targetArtwork)
-    val targetSourceClass = staticAaSourceClass(targetArtwork, config.detail)
-    val secondaryCached = remember(targetIdentity, config, hasSecondaryIdentity) {
-        if (hasSecondaryIdentity) peekStaticAaEndpoint(targetCoverKey, targetArtwork, config) else null
+    val targetSource = if (hasSecondaryIdentity) {
+        rememberStaticArtworkSource(targetCoverKey, targetArtwork)
+    } else currentSource
+    val targetIdentity = staticAaIdentity(targetCoverKey, targetSource)
+    val targetSourceClass = staticAaSourceClass(targetSource, config.detail)
+    val secondaryCached = remember(targetIdentity, config, targetSourceClass, hasSecondaryIdentity) {
+        if (hasSecondaryIdentity) peekStaticAaEndpoint(targetCoverKey, targetSource, config) else null
     }
     scene.prepareSecondary(targetCoverKey.takeIf { hasSecondaryIdentity }, secondaryCached)
     @Suppress("UNUSED_VARIABLE") val sceneRevision = scene.revision
@@ -373,22 +384,17 @@ internal fun RawStaticArtworkTransitionBackground(
     // native prepare.  Only the explicit detail=10 unbounded lane may promote low -> high once.
     LaunchedEffect(currentIdentity, config, currentSourceClass) {
         if (currentSourceClass == 0) return@LaunchedEffect
-        val bitmap = prepareStaticAaEndpoint(currentCoverKey, currentArtwork, config, traceLane = "current")
+        // Coalesce rapid slider ticks, without delaying initial display or a ready cache endpoint.
+        if (scene.currentBitmap != null && currentCached == null && appliedConfig.value != config) delay(80L)
+        val bitmap = prepareStaticAaEndpoint(currentCoverKey, currentSource, config, traceLane = "current")
         scene.updateCurrentIfIdle(currentCoverKey, bitmap)
+        if (bitmap != null) appliedConfig.value = config
     }
     LaunchedEffect(targetIdentity, config, targetSourceClass, hasSecondaryIdentity) {
         val key = targetCoverKey?.takeIf { hasSecondaryIdentity } ?: return@LaunchedEffect
         if (targetSourceClass == 0) return@LaunchedEffect
-        val bitmap = prepareStaticAaEndpoint(key, targetArtwork, config, traceLane = "target")
+        val bitmap = prepareStaticAaEndpoint(key, targetSource, config, traceLane = "target")
         val progress = progressProvider().coerceIn(0f, 1f)
-        if (bitmap != null) {
-            PlaybackArtworkPerfTrace.backgroundSecondaryAdmit(
-                lane = "static",
-                key = key,
-                progress = progress,
-                detail = "bitmap=${bitmap.width}x${bitmap.height}",
-            )
-        }
         scene.updateSecondaryDuringMotion(key, bitmap, progress)
     }
 

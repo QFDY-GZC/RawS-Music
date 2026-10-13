@@ -22,6 +22,7 @@ class SettingsActivity : BaseSettingsActivity() {
                 onNavigateToHardwareDeviceControl = { navigateToSettings(HardwareDeviceControlActivity::class.java) },
                 onNavigateToGlobalFont = { navigateToSettings(GlobalFontSettingsActivity::class.java) },
                 onNavigateToAlbumArt = { navigateToSettings(AlbumArtActivity::class.java) },
+                onNavigateToHdr = { navigateToSettings(HdrSettingsActivity::class.java) },
                 onWebDavBackup = { navigateToSettings(WebDavBackupActivity::class.java) },
                 onNavigateToLogViewer = { navigateToSettings(LogViewerActivity::class.java) },
                 onNavigateToAbout = { navigateToSettings(AboutActivity::class.java) },

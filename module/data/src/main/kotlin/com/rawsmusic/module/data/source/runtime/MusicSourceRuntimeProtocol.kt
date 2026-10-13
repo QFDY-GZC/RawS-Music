@@ -2,6 +2,8 @@ package com.rawsmusic.module.data.source.runtime
 
 import com.rawsmusic.core.common.source.RawSourceMediaItem
 
+const val MUSIC_SOURCE_SEARCH_DISPLAY_LIMIT = 100
+
 internal object MusicSourceRuntimeWire {
     const val ACTION_SEARCH = 1
     const val ACTION_RESOLVE_AUDIO = 2
@@ -40,7 +42,10 @@ data class AggregatedMusicSourceSearch(
     val groups: List<MusicSourceSearchGroup> = emptyList(),
 ) {
     val items: List<RawSourceMediaItem>
-        get() = groups.flatMap(MusicSourceSearchGroup::items)
+        get() = groups.asSequence()
+            .flatMap { it.items.asSequence() }
+            .take(MUSIC_SOURCE_SEARCH_DISPLAY_LIMIT)
+            .toList()
 
     val errors: List<MusicSourceSearchGroup>
         get() = groups.filter { it.error.isNotBlank() }

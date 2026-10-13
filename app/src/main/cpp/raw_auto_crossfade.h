@@ -29,7 +29,8 @@ public:
 
     void arm(
         int duration_ms,
-        int pivot_ms
+        int pivot_ms,
+        int gentle_ms = 0
     ) noexcept;
     void retime(int duration_ms) noexcept;
     void clear() noexcept;
@@ -67,7 +68,8 @@ private:
         const uint8_t* current,
         const uint8_t* pending,
         size_t length,
-        SampleFormat format
+        SampleFormat format,
+        int frame_size
     ) noexcept;
     void gains_for_frame(int64_t local_frame, float& outgoing, float& incoming) const noexcept;
     void mix_frame(
@@ -94,6 +96,7 @@ private:
 
     // Recipe fields are published before the Arm command's release-store.
     std::atomic<int> pivot_ms_{6600};
+    std::atomic<int> gentle_ms_{0};
 
     // Render-thread-owned state.
     uint32_t applied_serial_ = 0;
@@ -101,6 +104,8 @@ private:
     int sample_rate_ = 0;
     int duration_ms_ = 0;
     int64_t total_frames_ = 0;
+    int64_t gentle_frames_ = 0;
+    float gentle_entry_gain_ = .05f;
     int64_t processed_frames_ = 0;
     int64_t consumed_frames_ = 0;
     float start_outgoing_gain_ = 1.0f;
@@ -108,6 +113,10 @@ private:
     float current_outgoing_gain_ = 1.0f;
     float current_incoming_gain_ = 0.0f;
     float pivot_fraction_ = 0.55f;
+    float base_pivot_fraction_ = 0.55f;
+    float smoothed_outgoing_db_ = -18.0f;
+    float smoothed_incoming_db_ = -18.0f;
+    bool levels_initialized_ = false;
     bool entry_gain_initialized_ = false;
     bool active_ = false;
 };

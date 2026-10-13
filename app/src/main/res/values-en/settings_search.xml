@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_search_recent_title">Recent searches</string>
+    <string name="settings_search_suggestions_title">Common settings</string>
+    <string name="settings_search_clear_history">Clear</string>
+    <string name="settings_search_remove_history">Remove search: %1$s</string>
+    <string name="settings_search_expand_group">Show %1$d more</string>
+    <string name="settings_search_collapse_group">Show less</string>
+</resources>

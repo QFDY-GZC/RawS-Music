@@ -24,6 +24,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 
+internal fun shouldKeepVideoCoverSessionActive(playbackActive: Boolean, firstFramePending: Boolean): Boolean =
+    playbackActive || firstFramePending
+
 @Composable
 fun FfmpegVideoCover(
     uri: String,
@@ -59,6 +62,7 @@ private class FfmpegVideoCoverTextureView(context: Context) : TextureView(contex
     private var source = ""
     private var sessionHandle = 0L
     private var playbackActive = true
+    private var firstFramePending = false
     private var cornerRadiusPx = Float.NaN
 
     init {
@@ -78,7 +82,10 @@ private class FfmpegVideoCoverTextureView(context: Context) : TextureView(contex
     fun setPlaybackActive(active: Boolean) {
         if (playbackActive == active) return
         playbackActive = active
-        FFmpegBridge.setVideoCoverSessionActive(sessionHandle, active)
+        FFmpegBridge.setVideoCoverSessionActive(
+            sessionHandle,
+            shouldKeepVideoCoverSessionActive(playbackActive, firstFramePending),
+        )
     }
 
     fun setCornerRadius(radiusPx: Float) {
@@ -101,6 +108,9 @@ private class FfmpegVideoCoverTextureView(context: Context) : TextureView(contex
         releaseSession()
         val texture = surfaceTexture ?: return
         if (source.isBlank() || !isAvailable) return
+        // A paused, newly selected video has no surface buffer yet. Keep its decoder running
+        // only until TextureView confirms the first frame, then freeze on that frame.
+        firstFramePending = true
         val sourceUri = Uri.parse(source)
         if (sourceUri.scheme.equals("http", ignoreCase = true) ||
             sourceUri.scheme.equals("https", ignoreCase = true)
@@ -108,7 +118,10 @@ private class FfmpegVideoCoverTextureView(context: Context) : TextureView(contex
             val surface = Surface(texture)
             try {
                 sessionHandle = FFmpegBridge.createVideoCoverUrlSession(source, surface)
-                FFmpegBridge.setVideoCoverSessionActive(sessionHandle, playbackActive)
+                FFmpegBridge.setVideoCoverSessionActive(
+                    sessionHandle,
+                    shouldKeepVideoCoverSessionActive(playbackActive, firstFramePending),
+                )
             } finally {
                 surface.release()
             }
@@ -121,7 +134,10 @@ private class FfmpegVideoCoverTextureView(context: Context) : TextureView(contex
             val surface = Surface(texture)
             try {
                 sessionHandle = FFmpegBridge.createVideoCoverSession(it.fd, surface)
-                FFmpegBridge.setVideoCoverSessionActive(sessionHandle, playbackActive)
+                FFmpegBridge.setVideoCoverSessionActive(
+                    sessionHandle,
+                    shouldKeepVideoCoverSessionActive(playbackActive, firstFramePending),
+                )
             } finally {
                 surface.release()
             }
@@ -129,6 +145,7 @@ private class FfmpegVideoCoverTextureView(context: Context) : TextureView(contex
     }
 
     private fun releaseSession() {
+        firstFramePending = false
         FFmpegBridge.releaseVideoCoverSession(sessionHandle)
         sessionHandle = 0L
     }
@@ -144,7 +161,11 @@ private class FfmpegVideoCoverTextureView(context: Context) : TextureView(contex
         return true
     }
 
-    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
+    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
+        if (!firstFramePending) return
+        firstFramePending = false
+        FFmpegBridge.setVideoCoverSessionActive(sessionHandle, playbackActive)
+    }
 
     override fun onDetachedFromWindow() {
         releaseSession()

@@ -1,12 +1,17 @@
 package com.rawsmusic.helper
 
 import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
+import android.os.SystemClock
+import com.rawsmusic.module.scanner.AutomaticScanScheduler
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.locale.localizedErrorMessage
 import com.rawsmusic.module.data.prefs.AppPreferences
-import com.rawsmusic.module.data.repository.MusicRepository
-import com.rawsmusic.module.scanner.AudioFileListUpdater
 import com.rawsmusic.module.scanner.AudioLibraryRepository
 import com.rawsmusic.module.scanner.LibraryScanCoordinator
 import com.rawsmusic.module.scanner.LibraryScanSummary
@@ -41,10 +46,21 @@ class StartupScanHelper(
 ) {
     private var mediaStoreObserver: MediaStoreObserver? = null
     private var autoObserverJob: Job? = null
-    private var currentScanJob: Job? = null
-    private var pendingScanRequest: ScanRequest? = null
-    private var _enrichedCount = 0  // enriched 节流计数器
+    private var mountReceiver: BroadcastReceiver? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val requestScheduler = AutomaticScanScheduler(
+        scope = scope,
+        automaticEnabled = {
+            AppPreferences.Scanner.automaticScanEnabled &&
+                (AppPreferences.UI.scanPaths.isNotEmpty() || AppPreferences.Scanner.musicFolderUris.isNotEmpty())
+        },
+        nowMs = { System.currentTimeMillis() },
+        uptimeMs = { SystemClock.uptimeMillis() },
+        immediate = { AppPreferences.Scanner.immediateAutoScanEnabled },
+        startupToken = coldStartScanRequested,
+        scan = { request -> runScanLoop(context, ScanRequest(request.reason, request.automatic)) },
+        externallyScanning = { LibraryScanCoordinator.isScanning }
+    )
     private var scanCoordinator: LibraryScanCoordinator? = null
     private val resolvedRepository: AudioLibraryRepository? by lazy {
         audioRepository ?: LibraryScannerDependencies.repositoryOrNull(context)
@@ -57,33 +73,32 @@ class StartupScanHelper(
     val songs: StateFlow<List<AudioFile>> = _songs.asStateFlow()
 
     fun start() {
+        if (autoObserverJob != null || mediaStoreObserver != null) return
         AppLogger.d(TAG, "start")
         if (resolvedRepository != null) {
             startAutoMediaStoreScan()
+            registerMountReceiver()
             scope.launch {
                 val existingCount = runCatching {
                     resolvedRepository?.getAllSongs()?.size ?: 0
                 }.getOrDefault(0)
                 val hasSelectedFolders = AppPreferences.UI.scanPaths.isNotEmpty() ||
                     AppPreferences.Scanner.musicFolderUris.isNotEmpty()
-                val shouldAutoScan = AppPreferences.Scanner.coldStartAutoScanEnabled &&
-                    hasSelectedFolders && coldStartScanRequested.compareAndSet(false, true)
+                val shouldAutoScan = AppPreferences.Scanner.automaticScanEnabled &&
+                    AppPreferences.Scanner.coldStartAutoScanEnabled && hasSelectedFolders
 
                 if (shouldAutoScan) {
                     AppLogger.d(TAG, "request cold-start incremental scan, existing songs=$existingCount")
-                    requestScan(
-                        context,
-                        context.getString(R.string.scan_reason_cold_start),
-                        restartIfRunning = false,
-                        coldStart = true
-                    )
+                    requestScheduler.startup(context.getString(R.string.scan_reason_cold_start), true)
                 } else if (existingCount <= 0) {
+                    requestScheduler.startup(context.getString(R.string.scan_reason_cold_start), false)
                     // 没有可扫描来源时保持空态，不从冷启动流程主动拉起系统授权。
                     AppLogger.d(TAG, "library empty, waiting for user to select folders")
                     _scanUiState.value = ScanUiState.idle().copy(
                         message = context.getString(R.string.scan_library_empty)
                     )
                 } else {
+                    requestScheduler.startup(context.getString(R.string.scan_reason_cold_start), false)
                     AppLogger.d(
                         TAG,
                         "cold-start scan skipped: enabled=${AppPreferences.Scanner.coldStartAutoScanEnabled}, " +
@@ -96,22 +111,27 @@ class StartupScanHelper(
                 }
             }
         } else {
-            registerMediaStoreObserver()
+            if (AppPreferences.Scanner.automaticScanEnabled) registerMediaStoreObserver()
             AppLogger.w(TAG, "LibraryScannerDependencies not installed, fallback to legacy ScanScheduler")
-            ScanScheduler.scheduleInitialScan(context)
+            if (AppPreferences.Scanner.automaticScanEnabled && AppPreferences.Scanner.coldStartAutoScanEnabled) {
+                ScanScheduler.scheduleInitialScan(context)
+            }
         }
     }
 
     fun scanLibrary(restartIfRunning: Boolean = true) {
-        if (resolvedRepository != null) requestScan(context, "手动扫描", restartIfRunning)
-        else ScanScheduler.requestDirScan(context, "手动扫描")
+        val reason = context.getString(R.string.scan_settings_rescan_reason_manual)
+        if (resolvedRepository != null) requestScheduler.manual(reason)
+        else ScanScheduler.requestDirScan(context, reason)
     }
 
     fun cancelScan() {
-        currentScanJob?.cancel(CancellationException("User cancelled scan"))
-        currentScanJob = null
+        requestScheduler.cancel()
         ScanScheduler.cancelCurrentScan()
-        _scanUiState.value = ScanUiState.cancelled()
+        _scanUiState.value = ScanUiState.cancelled(
+            stage = context.getString(R.string.scan_stage_cancelled),
+            message = context.getString(R.string.scan_cancelled),
+        )
         AppLogger.d(TAG, "scan cancelled by user")
     }
 
@@ -126,6 +146,19 @@ class StartupScanHelper(
         }
     }
 
+    private fun registerMountReceiver() {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == Intent.ACTION_MEDIA_MOUNTED) {
+                    requestScheduler.mounted(this@StartupScanHelper.context.getString(R.string.scan_media_changed))
+                }
+            }
+        }
+        val filter = IntentFilter(Intent.ACTION_MEDIA_MOUNTED).apply { addDataScheme("file") }
+        ContextCompat.registerReceiver(context.applicationContext, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        mountReceiver = receiver
+    }
+
     private fun startAutoMediaStoreScan() {
         val repository = resolvedRepository
         if (repository == null) {
@@ -135,64 +168,35 @@ class StartupScanHelper(
         scanCoordinator = LibraryScanCoordinator(repository)
 
         autoObserverJob = scope.launch {
-            MediaStoreChangeObserver.observeAudio(context, debounceMs = 2_500L)
+            MediaStoreChangeObserver.observeAudio(context, debounceMs = 0L)
                 .collectLatest { change ->
+                    if (!AppPreferences.Scanner.automaticScanEnabled) return@collectLatest
                     AppLogger.d(TAG, "MediaStore changed: uri=${change.uri}")
                     _scanUiState.value = _scanUiState.value.copy(
                         pendingScan = true,
                         message = context.getString(R.string.scan_media_changed)
                     )
+                    requestScheduler.systemChanged(context.getString(R.string.scan_media_changed))
                 }
         }
         AppLogger.d(TAG, "Auto MediaStore scan started")
     }
 
-    private fun requestScan(
-        context: Context,
-        reason: String,
-        restartIfRunning: Boolean,
-        coldStart: Boolean = false
-    ) {
-        val running = currentScanJob?.isActive == true
-        if (running) {
-            if (restartIfRunning) {
-                AppLogger.d(TAG, "restart scan: $reason")
-                currentScanJob?.cancel(CancellationException("Restart: $reason"))
-            } else {
-                pendingScanRequest = ScanRequest(reason, coldStart)
-                _scanUiState.value = _scanUiState.value.copy(
-                    pendingScan = true,
-                    message = context.getString(R.string.scan_pending, _scanUiState.value.message)
+    private suspend fun runScanLoop(context: Context, request: ScanRequest) {
+        try {
+            runSingleScan(context, request)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _scanUiState.value = _scanUiState.value.copy(
+                isScanning = false, canCancel = false,
+                stage = context.getString(R.string.scan_stage_error), error = e.message,
+                message = context.getString(
+                    R.string.scan_failed,
+                    context.localizedErrorMessage(e, R.string.ui_unknown_error),
                 )
-                AppLogger.d(TAG, "scan running, mark pending: $reason")
-                return
-            }
-        }
-        currentScanJob = scope.launch { runScanLoop(context, ScanRequest(reason, coldStart)) }
-    }
-
-    private suspend fun runScanLoop(context: Context, initialRequest: ScanRequest) {
-        var request = initialRequest
-        while (true) {
-            pendingScanRequest = null
-            _enrichedCount = 0  // 重置 enriched 节流计数器
-            try {
-                runSingleScan(context, request)
-            } catch (e: CancellationException) {
-                _scanUiState.value = ScanUiState.cancelled()
-                AppLogger.d(TAG, "scan cancelled: ${e.message}")
-                throw e
-            } catch (e: Exception) {
-                _scanUiState.value = _scanUiState.value.copy(
-                    isScanning = false, canCancel = false,
-                    stage = context.getString(R.string.scan_stage_error), error = e.message,
-                    message = context.getString(R.string.scan_failed, e.message.orEmpty())
-                )
-                AppLogger.e(TAG, "scan failed", e)
-                return
-            }
-            request = pendingScanRequest ?: return
-            AppLogger.d(TAG, "run pending scan: ${request.reason}")
+            )
+            AppLogger.e(TAG, "scan failed", e)
         }
     }
 
@@ -211,7 +215,11 @@ class StartupScanHelper(
             return
         }
 
-        _scanUiState.value = ScanUiState.starting(reason)
+        _scanUiState.value = ScanUiState.starting(
+            reason = reason,
+            stage = context.getString(R.string.scan_stage_start),
+            message = context.getString(R.string.scan_preparing, reason),
+        )
         val coordinator = scanCoordinator ?: resolvedRepository?.let { LibraryScanCoordinator(it).also { c -> scanCoordinator = c } } ?: return
         var finalSync: LibraryScanCoordinator.Event.DatabaseSyncCompleted? = null
 
@@ -261,7 +269,6 @@ class StartupScanHelper(
                 }
                 is LibraryScanCoordinator.Event.VisibleCompleted -> {
                     _songs.value = event.songs
-                    MusicRepository.publishTransientScanSongs(event.songs)
                     _scanUiState.value = _scanUiState.value.copy(
                         isScanning = true, canCancel = true, pendingScan = false,
                         stage = context.getString(R.string.scan_stage_visible), progress = _scanUiState.value.progress.coerceAtLeast(0.40f),
@@ -329,11 +336,11 @@ class StartupScanHelper(
                 )
             }
             is TwoStageMediaScanner.Event.QuickCompleted -> {
-                if (event.publishVisible) {
-                    _songs.value = event.songs
-                    // 手动完整扫描才发布快速占位；冷启动继续显示旧数据库结果。
-                    MusicRepository.publishTransientScanSongs(event.songs)
-                }
+                // QuickCompleted still contains one physical row per media file and has not
+                // expanded embedded/external CUE yet. Publishing it here can temporarily erase
+                // already-persisted CUE virtual tracks that share the same path. The coordinator
+                // publishes VisibleCompleted immediately after the quick Room sync; only that
+                // repository snapshot is safe to expose to the library UI.
                 _scanUiState.value = _scanUiState.value.copy(
                     isScanning = true, canCancel = true, stage = context.getString(R.string.scan_stage_quick_complete),
                     found = event.found, progress = 0.35f,
@@ -351,23 +358,12 @@ class StartupScanHelper(
                 )
             }
             is TwoStageMediaScanner.Event.SongEnriched -> {
-                val updated = AudioFileListUpdater.applyEnrichedResult(
-                    _songs.value, event.originalSongId, event.originalPath, event.songs
-                )
-                _songs.value = updated
-                // 节流发布到 MusicRepository（每 20 首发布一次）
-                if (_enrichedCount % 20 == 0) {
-                    MusicRepository.publishTransientScanSongs(updated)
-                }
-                _enrichedCount++
+                // Progress only: library rows become visible through committed repository state.
             }
             is TwoStageMediaScanner.Event.EnrichBatchCompleted -> {
                 // 后台懒同步批次，UI 进度由 EnrichProgress 统一更新。
             }
             is TwoStageMediaScanner.Event.FullyCompleted -> {
-                _songs.value = event.songs
-                // 强制发布最终扫描结果到 MusicRepository
-                MusicRepository.publishTransientScanSongs(event.songs)
                 _scanUiState.value = _scanUiState.value.copy(
                     isScanning = true, canCancel = true, stage = context.getString(R.string.scan_stage_prepare_sync),
                     progress = 0.90f, found = event.found,
@@ -385,10 +381,12 @@ class StartupScanHelper(
     }
 
     fun destroy() {
+        requestScheduler.destroy()
+        mountReceiver?.let { runCatching { context.applicationContext.unregisterReceiver(it) } }
+        mountReceiver = null
         mediaStoreObserver?.unregister()
         mediaStoreObserver = null
         autoObserverJob?.cancel()
-        currentScanJob?.cancel()
         scope.cancel()
     }
 

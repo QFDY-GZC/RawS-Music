@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="song_credits_title">歌曲与参与艺人</string>
+    <string name="song_credits_close">关闭</string>
+    <string name="song_credits_unknown_album">未知专辑</string>
+    <string name="song_credits_song_artists">歌曲艺人</string>
+    <string name="song_credits_album_artist">专辑艺人</string>
+    <string name="song_credits_album_participants">专辑参与艺人</string>
+    <string name="song_credits_totals">%1$d 位艺人 · %2$d 首收录曲目 · %3$d 首合作曲目</string>
+    <string name="song_credits_song_count">参与 %1$d 首曲目</string>
+    <string name="song_credits_no_performers">当前音乐文件没有可识别的艺人信息</string>
+    <string name="song_credits_composers">作曲</string>
+    <string name="song_credits_local_source">根据本地音乐文件的艺人、专辑艺人和作曲标签统计；不代表官方完整制作人员名单。</string>
     <string name="player_favorite">收藏</string>
     <string name="static_background_restore_defaults">恢复默认值</string>
     <string name="side_rail_title">快捷入口</string>
@@ -376,6 +387,10 @@
     <string name="flow_background_action">流光背景</string>
     <string name="flow_background_dialog_title">流光背景</string>
     <string name="flow_background_dialog_summary">选择主界面和列表页使用的流光配色。</string>
+    <string name="album_color_background_dialog_title">专辑取色</string>
+    <string name="album_color_background_dialog_summary">从当前封面提取亮色或暗色，并让封面色彩形成连续流动背景。</string>
+    <string name="album_color_switch_to_flow_title">切换流光</string>
+    <string name="album_color_switch_to_flow_summary">切换回普通流光，并恢复暗色式、亮色式和通用流光选项。</string>
     <string name="static_background_dialog_title">静态背景</string>
     <string name="simple_background_dialog_title">简洁背景</string>
     <string name="static_background_dialog_summary">静态渐变</string>
@@ -407,6 +422,8 @@
     <string name="flow_background_style_summary">选择所有主界面和分类页面使用的背景质感。</string>
     <string name="flow_background_style_flow">流光</string>
     <string name="flow_background_style_flow_summary">动态流光</string>
+    <string name="flow_background_style_album_color">专辑取色</string>
+    <string name="flow_background_style_album_color_summary">封面取色流动</string>
     <string name="flow_background_style_static">静态</string>
     <string name="flow_background_style_static_summary">静态渐变</string>
     <string name="flow_background_style_simple">简洁</string>
@@ -431,6 +448,15 @@
     <string name="player_local_metadata_summary">这里展示基于本地播放器可获得的歌曲、专辑、歌手和播放列表信息。</string>
     <string name="player_same_artist_title">听「%1$s」的也在听</string>
     <string name="player_local_music">本地音乐</string>
+    <string name="player_album_detail_title">专辑详情</string>
+    <string name="player_album_detail_full_metadata">完整元数据 ›</string>
+    <string name="player_album_detail_year">发行年份</string>
+    <string name="player_album_detail_genre">流派</string>
+    <string name="player_album_detail_composer">作曲</string>
+    <string name="player_album_detail_tracks">同专辑歌曲</string>
+    <string name="player_album_detail_play_all">全部播放</string>
+    <string name="player_album_detail_summary">%1$d 首</string>
+    <string name="player_album_detail_summary_with_duration">%1$d 首 · %2$s</string>
 
     <!-- Settings root -->
     <string name="settings_back">返回</string>
@@ -451,6 +477,8 @@
     <string name="settings_album_art_summary">画质、高清解码、默认封面、显示规则与切换动画</string>
     <string name="settings_global_font_title">全局字体</string>
     <string name="settings_global_font_summary">字体大小、字重、斜体与全局显示</string>
+    <string name="settings_font_settings_title">字体设置</string>
+    <string name="settings_font_settings_summary">全局与歌词字体、字重、字号和字体能力</string>
     <string name="settings_audio_settings_title">播放与输出</string>
     <string name="settings_audio_settings_summary">输出引擎、采样率、位深、播放行为与蓝牙兼容</string>
     <string name="settings_transition_settings_title">淡入淡出</string>
@@ -479,6 +507,7 @@
     <string name="library_title_albums">专辑</string>
     <string name="library_album_count">%1$d 张专辑</string>
     <string name="library_title_artists">艺术家</string>
+    <string name="library_artist_all_songs">所有艺术家歌曲</string>
     <string name="library_title_playlists">歌单</string>
     <string name="library_title_queue">播放队列</string>
     <string name="library_title_recently_added">最近添加</string>
@@ -545,6 +574,8 @@
     <string name="lyric_more_romanization_off">当前隐藏歌词注音</string>
     <string name="lyric_more_effect_highlight">全歌词高亮</string>
     <string name="lyric_more_effect_blur">景深模糊</string>
+    <string name="lyric_more_relative_line_progress">逐行歌词相对进度</string>
+    <string name="lyric_more_relative_line_progress_summary">仅对无逐字时间的歌词，按当前行时长逐行推进高亮</string>
     <string name="sort_by_name">根据名称</string>
     <string name="sort_alphabetical">按字母顺序排序</string>
     <string name="sort_by_path">根据路径</string>
@@ -713,6 +744,7 @@
     <string name="source_search_failed">聚合搜索失败</string>
     <string name="source_search_history_title">搜索历史</string>
     <string name="source_search_results_title">搜索结果</string>
+    <string name="source_search_results_count">相关 %1$d / 最多 %2$d</string>
     <string name="source_search_group_title">聚合搜索</string>
     <string name="source_search_online_source">在线音源</string>
     <string name="source_search_input_hint">输入关键词开始搜索</string>
@@ -821,6 +853,7 @@
     <string name="home_card_settings_entry_summary">显示、隐藏和调整主页分类卡片顺序</string>
     <string name="home_card_reset">恢复默认卡片</string>
     <string name="home_card_drag_hint_short">主页中再次长按卡片可拖动排序</string>
+    <string name="home_card_edit_drag_notice">再次长按任意卡片即可拖动调整位置</string>
     <string name="home_card_content_count">%1$d 项</string>
     <string name="home_card_statistics_folders">%1$d 个文件夹</string>
     <string name="home_card_statistics_albums">%1$d 张专辑</string>
@@ -830,4 +863,8 @@
     <string name="home_card_statistics_composers">%1$d 位作曲家</string>
 
     <string name="mini_player_previous">上一首</string>
+    <string name="scan_settings_automatic_title">自动扫描</string>
+    <string name="scan_settings_automatic_summary">启动、音乐文件变化时核对已选文件夹；关闭后仍可手动扫描</string>
+    <string name="scan_settings_immediate_title">快速响应文件变化</string>
+    <string name="scan_settings_immediate_summary">缩短系统变化后的等待；大量文件复制时建议关闭</string>
 </resources>

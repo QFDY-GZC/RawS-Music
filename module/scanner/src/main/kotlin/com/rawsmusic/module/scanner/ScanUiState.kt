@@ -23,13 +23,20 @@ data class ScanUiState(
 
     companion object {
         fun idle() = ScanUiState()
-        fun starting(reason: String) = ScanUiState(
+        fun starting(
+            reason: String,
+            stage: String,
+            message: String,
+        ) = ScanUiState(
             isScanning = true, canCancel = true, reason = reason,
-            stage = "准备", message = "$reason：准备扫描"
+            stage = stage, message = message
         )
-        fun cancelled() = ScanUiState(
+        fun cancelled(
+            stage: String,
+            message: String,
+        ) = ScanUiState(
             isScanning = false, canCancel = false,
-            stage = "已取消", message = "扫描已取消"
+            stage = stage, message = message
         )
     }
 }

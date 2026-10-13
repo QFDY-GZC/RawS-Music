@@ -45,6 +45,7 @@ import com.rawsmusic.core.common.model.LyricTimingCorrectionStatus
 import com.rawsmusic.core.common.model.LyricWordTimingChange
 import com.rawsmusic.core.common.model.stableTimingFingerprint
 import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
+import com.rawsmusic.locale.localizedErrorMessage
 import com.rawsmusic.separation.AiLyricTimingCorrectionService
 import com.rawsmusic.separation.AiLyricTimingOutputMode
 import com.rawsmusic.separation.AiLyricTimingWritebackService
@@ -188,8 +189,10 @@ fun AiLyricTimingPreviewDialog(
                     errorText = when (it.message) {
                         "Lyric correction may change timing only, not lyric content" ->
                             context.getString(R.string.ai_lyric_timing_content_mismatch)
-                        else -> it.message
-                            ?: context.getString(R.string.ai_lyric_timing_unavailable)
+                        else -> context.localizedErrorMessage(
+                            it,
+                            R.string.ai_lyric_timing_unavailable,
+                        )
                     }
                 }
         } else {
@@ -205,8 +208,10 @@ fun AiLyricTimingPreviewDialog(
                 )
                 .onSuccess { correction = it }
                 .onFailure {
-                    errorText = it.message
-                        ?: context.getString(R.string.ai_lyric_timing_unavailable)
+                    errorText = context.localizedErrorMessage(
+                        it,
+                        R.string.ai_lyric_timing_unavailable,
+                    )
                 }
         }
         loading = false
@@ -229,7 +234,7 @@ fun AiLyricTimingPreviewDialog(
             val service = AiLyricTimingCorrectionService.get(context)
             val writeback = AiLyricTimingWritebackService.get(context)
             val prepared = writeback.prepareForOutput(current, outputMode).getOrElse {
-                errorText = it.message ?: context.getString(R.string.ai_lyric_timing_write_failed)
+                errorText = context.localizedErrorMessage(it, R.string.ai_lyric_timing_write_failed)
                 busy = false
                 return@launch
             }
@@ -237,12 +242,12 @@ fun AiLyricTimingPreviewDialog(
                 prepared,
                 LyricTimingCorrectionStatus.ACCEPTED
             ).getOrElse {
-                errorText = it.message ?: context.getString(R.string.ai_lyric_timing_write_failed)
+                errorText = context.localizedErrorMessage(it, R.string.ai_lyric_timing_write_failed)
                 busy = false
                 return@launch
             }
             val receipt = service.apply(currentSong, accepted, outputMode).getOrElse {
-                errorText = it.message ?: context.getString(R.string.ai_lyric_timing_write_failed)
+                errorText = context.localizedErrorMessage(it, R.string.ai_lyric_timing_write_failed)
                 busy = false
                 return@launch
             }
@@ -277,20 +282,20 @@ fun AiLyricTimingPreviewDialog(
             val service = AiLyricTimingCorrectionService.get(context)
             val writeback = AiLyricTimingWritebackService.get(context)
             val prepared = writeback.prepareForOutput(current, outputMode).getOrElse {
-                errorText = it.message ?: context.getString(R.string.ai_lyric_timing_write_failed)
+                errorText = context.localizedErrorMessage(it, R.string.ai_lyric_timing_write_failed)
                 busy = false
                 return@launch
             }
             val accepted = service.decide(prepared, LyricTimingCorrectionStatus.ACCEPTED)
                 .getOrElse {
-                    errorText = it.message ?: context.getString(R.string.ai_lyric_timing_write_failed)
+                    errorText = context.localizedErrorMessage(it, R.string.ai_lyric_timing_write_failed)
                     busy = false
                     return@launch
                 }
             val currentSong = song
             if (currentSong != null && outputMode != AiLyricTimingOutputMode.KEEP_CURRENT) {
                 service.apply(currentSong, accepted, outputMode).getOrElse {
-                    errorText = it.message ?: context.getString(R.string.ai_lyric_timing_write_failed)
+                    errorText = context.localizedErrorMessage(it, R.string.ai_lyric_timing_write_failed)
                     busy = false
                     return@launch
                 }

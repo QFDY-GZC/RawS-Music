@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.widget.player
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -16,6 +17,8 @@ fun ReusablePlayerTimelineProgress(
     currentPositionMs: Long,
     totalDurationMs: Long,
     isPlaying: Boolean,
+    spectrum: FloatArray = FloatArray(0),
+    spectrumState: State<FloatArray>? = null,
     climaxEnabled: Boolean,
     waveformRemainingColor: Color,
     waveformPlayedColor: Color,
@@ -23,10 +26,14 @@ fun ReusablePlayerTimelineProgress(
     onSeekStart: () -> Unit,
     onSeekStop: (Float) -> Unit,
     modifier: Modifier = Modifier,
+    coverPath: String? = null,
 ) {
     val waveformBarCount by PlayerProgressPreferences.waveformBarCount.collectAsState()
     when (ImmersiveProgressStyle.from(styleValue)) {
         ImmersiveProgressStyle.Classic -> ClassicTimelineProgress(
+            currentSong = currentSong,
+            isPlaying = isPlaying,
+            coverPath = coverPath,
             currentPositionMs = currentPositionMs,
             totalDurationMs = totalDurationMs,
             onSeekStart = onSeekStart,
@@ -65,15 +72,18 @@ fun ReusablePlayerTimelineProgress(
             modifier = modifier,
         )
 
-        ImmersiveProgressStyle.MusicSpine -> ClassicTimelineProgress(
+        ImmersiveProgressStyle.MusicSpine -> MusicSpineTimelineProgress(
             currentPositionMs = currentPositionMs,
             totalDurationMs = totalDurationMs,
+            isPlaying = isPlaying,
+            spectrum = spectrum,
+            spectrumState = spectrumState,
+            playedColor = waveformPlayedColor,
+            remainingColor = waveformRemainingColor,
+            timeColor = waveformRemainingColor.copy(alpha = 0.72f),
             onSeekStart = onSeekStart,
             onSeekStop = onSeekStop,
             modifier = modifier,
-            trackColor = waveformPlayedColor,
-            fillColor = waveformRemainingColor,
-            timeColor = waveformRemainingColor.copy(alpha = 0.72f),
         )
     }
 }

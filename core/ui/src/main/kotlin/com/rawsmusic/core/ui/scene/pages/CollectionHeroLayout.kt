@@ -12,17 +12,22 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,16 +35,21 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.animation.core.animateDpAsState
@@ -51,7 +61,9 @@ import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.scene.LocalSharedCoverRegistry
 import com.rawsmusic.core.ui.scene.LocalSharedTransitionSpec
 import com.rawsmusic.core.ui.scene.LocalBottomChromeInsets
+import com.rawsmusic.core.ui.scene.LocalRawWindowLayoutProfile
 import com.rawsmusic.core.ui.scene.NavScene
+import com.rawsmusic.core.ui.scene.RawWindowLayoutProfile
 import com.rawsmusic.core.ui.scene.COLLECTION_HEADER_RADIUS_DP
 import com.rawsmusic.core.ui.scene.SharedCoverSnapshot
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkAspectPolicy
@@ -59,7 +71,11 @@ import com.rawsmusic.core.ui.widget.bitmaps.CrossfadeAlbumArt
 import com.rawsmusic.core.ui.widget.flow.usesReferenceStaticForeground
 import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListFull
 import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListState
+import com.rawsmusic.core.ui.widget.virtuallist.VIRTUAL_LIST_HEADER_CHILD_STRETCH_DP
+import com.rawsmusic.core.ui.widget.virtuallist.VIRTUAL_LIST_HEADER_MAX_STRETCH_DP
+import com.rawsmusic.core.ui.widget.virtuallist.virtualListHeaderChildTranslationY
 import com.rawsmusic.core.ui.systemui.rawStableNavigationBottomPadding
+import com.rawsmusic.core.ui.systemui.rawStableStatusBarTopPadding
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
@@ -69,12 +85,80 @@ import top.yukonga.miuix.kmp.icon.extended.Music
 import top.yukonga.miuix.kmp.icon.extended.Search
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import androidx.compose.foundation.shape.CircleShape
+import kotlin.math.roundToInt
 import androidx.compose.foundation.shape.RoundedCornerShape
+import kotlinx.coroutines.isActive
 
-// retained-view implementation `scene_header` retained artwork view is match-parent with scale=1; the detail provider gives the
-// header a window-width square. The actual artwork side is therefore resolved from maxWidth below,
-// never from a fixed dp constant.
-internal val CollectionHeroMetaHeight = 146.dp
+// Collection header metrics. The artwork view fills the retained header bounds inside
+// the header holder; status-bar height is added separately because addStatusBarHeightToHeaders=true.
+private val CollectionHeaderSize = 236.dp
+private val HumanCollectionHeaderSize = 276.dp
+
+private enum class CollectionHeaderMotionDirection { FORWARD, BACK }
+
+private data class CollectionHeaderMotion(
+    val direction: CollectionHeaderMotionDirection,
+    val listEndpoint: SharedCoverSnapshot,
+    val headerEndpoint: SharedCoverSnapshot,
+    val progressProvider: () -> Float,
+) {
+    fun headerPresence(): Float {
+        val progress = progressProvider().coerceIn(0f, 1f)
+        return when (direction) {
+            CollectionHeaderMotionDirection.FORWARD -> progress
+            CollectionHeaderMotionDirection.BACK -> 1f - progress
+        }
+    }
+}
+
+internal fun collectionHeaderBaseHeight(scene: NavScene): androidx.compose.ui.unit.Dp =
+    when (scene) {
+        NavScene.ARTIST_DETAIL,
+        NavScene.ARTIST_ALL_SONGS,
+        NavScene.COMPOSER_DETAIL -> HumanCollectionHeaderSize
+        else -> CollectionHeaderSize
+    }
+
+internal data class CollectionHeroWindowGeometry(
+    val headerHeight: Dp,
+    val artworkLeft: Dp,
+    val artworkTop: Dp,
+    val artworkWidth: Dp,
+    val artworkHeight: Dp,
+    val wide: Boolean,
+)
+
+internal fun resolveCollectionHeroWindowGeometry(
+    scene: NavScene,
+    window: RawWindowLayoutProfile,
+    statusBarTop: Dp,
+): CollectionHeroWindowGeometry {
+    val legacyHeight = collectionHeaderBaseHeight(scene) + statusBarTop
+    if (!window.supportsSupportingPane) {
+        return CollectionHeroWindowGeometry(
+            headerHeight = legacyHeight,
+            artworkLeft = 0.dp,
+            artworkTop = 0.dp,
+            artworkWidth = window.libraryContentMaxWidth,
+            artworkHeight = legacyHeight,
+            wide = false,
+        )
+    }
+
+    val artworkSize = minOf(
+        320.dp,
+        ((window.libraryContentMaxWidth - 96.dp) * 0.42f).coerceAtLeast(260.dp),
+    )
+    val artworkTop = statusBarTop + 12.dp
+    return CollectionHeroWindowGeometry(
+        headerHeight = artworkTop + artworkSize + 20.dp,
+        artworkLeft = 16.dp,
+        artworkTop = artworkTop,
+        artworkWidth = artworkSize,
+        artworkHeight = artworkSize,
+        wide = true,
+    )
+}
 
 @Stable
 internal data class CollectionHeroData(
@@ -133,6 +217,7 @@ internal fun CollectionHeroDetailPage(
     val chromeInfo = LocalLibraryChromeInfo.current
     val sortedSongs = remember(hero.songs, sortOrder) { hero.songs.sortedForCollection(sortOrder) }
     val sortedHero = remember(hero, sortedSongs) { hero.copy(songs = sortedSongs) }
+    val alphabetIndexData = com.rawsmusic.core.ui.widget.index.rememberAdaptiveAlphabetIndexData(sortedSongs) { it.title }
     var selectionMode by remember(hero.stableKey) { mutableStateOf(false) }
     var selectedSongIds by remember(hero.stableKey) { mutableStateOf<Set<Long>>(emptySet()) }
     val selectedSongs = remember(sortedSongs, selectedSongIds) {
@@ -196,10 +281,13 @@ internal fun CollectionHeroDetailPage(
     }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        // retained-view implementation collection/header artwork is the window-width square itself. Do not apply the
-        // player-only 8dp + 0.975 inner ArtworkImageNode geometry to a detail/header scene.
-        val heroCoverHeight = maxWidth
-        val heroTotalHeight = heroCoverHeight + CollectionHeroMetaHeight
+        val windowLayoutProfile = LocalRawWindowLayoutProfile.current
+        val heroGeometry = resolveCollectionHeroWindowGeometry(
+            scene = detailScene,
+            window = windowLayoutProfile,
+            statusBarTop = rawStableStatusBarTopPadding(),
+        )
+        val heroTotalHeight = heroGeometry.headerHeight
         ComposeVirtualListFull(
             songs = sortedSongs,
             state = songListState,
@@ -209,13 +297,16 @@ internal fun CollectionHeroDetailPage(
             // The header is cover + metadata/actions as one moving list item. Keep the full
             // header extent authoritative until its final pixel crosses the top boundary.
             persistentHeaderVisibilityHeight = heroTotalHeight,
-            persistentHeaderSceneItemVisibilityHeight = heroCoverHeight,
+            persistentHeaderSceneItemVisibilityHeight = heroGeometry.artworkHeight,
+            persistentHeaderSceneItemLeft = heroGeometry.artworkLeft,
+            persistentHeaderSceneItemTop = heroGeometry.artworkTop,
+            persistentHeaderSceneItemWidth = heroGeometry.artworkWidth,
             persistentHeaderSceneItemId = hero.sharedElementId,
             virtualListEdgeEnabled = true,
             persistentHeaderContent = { _, coverVisible ->
                 CollectionHeroHeader(
                     hero = sortedHero,
-                    coverHeight = heroCoverHeight,
+                    geometry = heroGeometry,
                     listScene = listScene,
                     detailScene = detailScene,
                     coverVisible = coverVisible,
@@ -223,11 +314,17 @@ internal fun CollectionHeroDetailPage(
                     onBack = onBack,
                     onMore = { showMoreDialog = true },
                     onShuffle = { onShuffle(sortedSongs) },
+                    onPlay = {
+                        if (sortedSongs.isNotEmpty()) onPlayQueue(sortedSongs, 0)
+                    },
                     onSearch = onSearch,
+                    onSelect = { selectionMode = true },
                     onBiography = onBiography,
                     onHeroArtworkLongPress = onHeroArtworkLongPress,
                     onHeroArtworkBoundsChanged = onHeroArtworkBoundsChanged,
                     hideHeroArtwork = hideHeroArtwork,
+                    headerEdgeOvershootProvider = { songListState.virtualListHeaderEdgeOvershootPx },
+                    listEdgeOvershootProvider = { songListState.virtualListEdgeOvershootPx },
                 )
             },
             modifier = Modifier
@@ -257,6 +354,19 @@ internal fun CollectionHeroDetailPage(
                 }
             }
         )
+
+        if (!com.rawsmusic.core.ui.scene.LocalReferenceLibraryFullScenePreflight.current &&
+            !com.rawsmusic.core.ui.scene.LocalReferenceLibraryTopChromeOverlayOnly.current) {
+            com.rawsmusic.core.ui.widget.index.RawAlphabetIndex(
+                sceneId = detailScene.name,
+                data = alphabetIndexData,
+                scrollActiveProvider = { songListState.isListScrollInProgress },
+                modifier = Modifier.align(Alignment.CenterEnd)
+                    .padding(top = 92.dp, bottom = normalBottomPadding),
+                onTopSelect = { songListState.requestScrollToIndex(0) },
+                onSelect = { _, index -> songListState.requestScrollToIndex(index) },
+            )
+        }
 
         SongSelectionMenu(
             visible = selectionMode,
@@ -336,9 +446,9 @@ internal fun CollectionHeroDetailPage(
 }
 
 @Composable
-private fun CollectionHeroHeader(
+internal fun CollectionHeroHeader(
     hero: CollectionHeroData,
-    coverHeight: androidx.compose.ui.unit.Dp,
+    geometry: CollectionHeroWindowGeometry,
     listScene: NavScene,
     detailScene: NavScene,
     coverVisible: Boolean,
@@ -346,16 +456,86 @@ private fun CollectionHeroHeader(
     onBack: () -> Unit,
     onMore: () -> Unit,
     onShuffle: () -> Unit,
+    onPlay: (() -> Unit)? = null,
     onSearch: () -> Unit,
+    onSelect: (() -> Unit)? = null,
     onBiography: (() -> Unit)?,
     onHeroArtworkLongPress: (() -> Unit)?,
     onHeroArtworkBoundsChanged: ((Rect) -> Unit)?,
     hideHeroArtwork: Boolean,
+    showBackButton: Boolean = true,
+    showMoreAction: Boolean = true,
+    showShuffleAction: Boolean = true,
+    showSearchAction: Boolean = true,
+    publishSharedAnchor: Boolean = true,
+    headerEdgeOvershootProvider: () -> Float = { 0f },
+    listEdgeOvershootProvider: () -> Float = { 0f },
 ) {
     val coverRegistry = LocalSharedCoverRegistry.current
-    val staticForeground = usesReferenceStaticForeground()
-    val onBg = if (staticForeground) Color.White else MiuixTheme.colorScheme.onBackground
-    val onBgVariant = if (staticForeground) Color.White.copy(alpha = 0.72f) else MiuixTheme.colorScheme.onSurfaceVariantSummary
+    val sharedSpec = LocalSharedTransitionSpec.current
+    val sharedPair = sharedSpec.transitionKey
+        .takeIf { sharedSpec.active && it.isNotBlank() }
+        ?.let(coverRegistry::getPreparedPair)
+    val statusBarTop = rawStableStatusBarTopPadding()
+    val density = LocalDensity.current
+    val hostView = LocalView.current
+    val onBg = if (geometry.wide) MiuixTheme.colorScheme.onBackground else Color.White
+    val onBgVariant = if (geometry.wide) MiuixTheme.colorScheme.onSurfaceVariantSummary else Color.White
+
+    val headerMotion = sharedPair?.let { pair ->
+        val firstIsList = pair.first.itemViewportBounds != null
+        val secondIsList = pair.second.itemViewportBounds != null
+        val direction = when {
+            sharedSpec.toSceneId == detailScene.name &&
+                sharedSpec.fromSceneId != detailScene.name -> CollectionHeaderMotionDirection.FORWARD
+            sharedSpec.fromSceneId == detailScene.name &&
+                sharedSpec.toSceneId != detailScene.name -> CollectionHeaderMotionDirection.BACK
+            firstIsList && !secondIsList -> CollectionHeaderMotionDirection.FORWARD
+            secondIsList && !firstIsList -> CollectionHeaderMotionDirection.BACK
+            else -> null
+        } ?: return@let null
+        val listEndpoint = if (direction == CollectionHeaderMotionDirection.FORWARD) pair.first else pair.second
+        val headerEndpoint = if (direction == CollectionHeaderMotionDirection.FORWARD) pair.second else pair.first
+        if (headerEndpoint.elementId != hero.sharedElementId || listEndpoint.elementId != hero.sharedElementId) {
+            null
+        } else {
+            CollectionHeaderMotion(
+                direction = direction,
+                listEndpoint = listEndpoint,
+                headerEndpoint = headerEndpoint,
+                progressProvider = {
+                    sharedSpec.progressProvider?.invoke() ?: sharedSpec.progress
+                },
+            )
+        }
+    }
+    val latestHeaderMotion by rememberUpdatedState(headerMotion)
+    val headerMotionFrame = remember(
+        sharedSpec.transitionKey,
+        headerMotion?.direction,
+        hero.sharedElementId,
+    ) {
+        mutableFloatStateOf(headerMotion?.headerPresence() ?: 1f)
+    }
+    LaunchedEffect(
+        sharedSpec.active,
+        sharedSpec.transitionKey,
+        headerMotion?.direction,
+        hero.sharedElementId,
+    ) {
+        if (!sharedSpec.active || latestHeaderMotion == null) {
+            headerMotionFrame.floatValue = 1f
+            return@LaunchedEffect
+        }
+        // progressProvider is a render-time clock, not snapshot State. Sample it once per vsync
+        // into this narrow State; graphicsLayer reads below then update without recomposing the
+        // complete collection-detail page.
+        while (isActive) {
+            val motion = latestHeaderMotion ?: break
+            headerMotionFrame.floatValue = motion.headerPresence()
+            withFrameNanos { }
+        }
+    }
 
     // Exactly one artwork owner, matching retained-view implementation's migrated retained item view. Do not keep a second
     // header bitmap underneath the promoted physical holder and do not wait for an overlay-ready
@@ -366,58 +546,183 @@ private fun CollectionHeroHeader(
     // has reached the source endpoint and is dismissed.
     val coverAlpha = if (physicalSharedOwner || hideHeroArtwork) 0f else 1f
 
-    Column(modifier = Modifier.fillMaxWidth()) {
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(geometry.headerHeight)
+    ) {
+        val headerWidth = maxWidth
+        val headerHeightPx = with(density) { geometry.headerHeight.toPx() }
+        val headerMaxStretchPx = with(density) { VIRTUAL_LIST_HEADER_MAX_STRETCH_DP.dp.toPx() }
+        val headerChildStretchPx = with(density) { VIRTUAL_LIST_HEADER_CHILD_STRETCH_DP.dp.toPx() }
+        val titleLeft = if (geometry.wide) {
+            geometry.artworkLeft + geometry.artworkWidth + 28.dp
+        } else {
+            12.dp
+        }
+        val titleTop = if (geometry.wide) statusBarTop + 68.dp else geometry.headerHeight - 124.333333.dp
+        val titleWidth = if (geometry.wide) {
+            (headerWidth - titleLeft - 72.dp).coerceAtLeast(1.dp)
+        } else {
+            (headerWidth - 30.dp).coerceAtLeast(1.dp)
+        }
+        val titleHeight = 26.333333.dp
+        val subtitleLeft = titleLeft
+        val subtitleTop = if (geometry.wide) titleTop + 38.dp else geometry.headerHeight - 97.dp
+        val subtitleWidth = if (geometry.wide) titleWidth else (headerWidth - 24.dp).coerceAtLeast(1.dp)
+        val subtitleHeight = 23.666667.dp
+        val metaLeft = titleLeft
+        val metaTop = if (geometry.wide) subtitleTop + 31.dp else geometry.headerHeight - 72.333333.dp
+        val metaHeight = 23.333333.dp
+        val actionLeft = titleLeft
+        val actionTop = if (geometry.wide) metaTop + 46.dp else geometry.headerHeight - 48.dp
+        val menuLeft = headerWidth - 56.dp
+        val menuTop = if (geometry.wide) statusBarTop + 12.dp else geometry.headerHeight - 52.dp
+
+        fun headerEdgeChildMotion(childTop: Dp): Modifier {
+            val childTopPx = with(density) { childTop.toPx() }
+            return Modifier.graphicsLayer {
+                translationY = virtualListHeaderChildTranslationY(
+                    edgePx = headerEdgeOvershootProvider(),
+                    maxStretchPx = headerMaxStretchPx,
+                    childStretchPx = headerChildStretchPx,
+                    headerHeightPx = headerHeightPx,
+                    childTopPx = childTopPx,
+                )
+            }
+        }
+
+        fun sharedChildMotion(
+            sourceBounds: Rect?,
+            targetLeft: Dp,
+            targetTop: Dp,
+            sourceSceneScale: Float,
+            fallbackStartOffsetY: Dp = 0.dp,
+        ): Modifier {
+            val motion = headerMotion ?: return Modifier
+            val targetLeftPx = with(density) { targetLeft.toPx() }
+            val targetTopPx = with(density) { targetTop.toPx() }
+            val fallbackOffsetYPx = with(density) { fallbackStartOffsetY.toPx() }
+            val artworkLeftPx = with(density) { geometry.artworkLeft.toPx() }
+            val artworkTopPx = with(density) { geometry.artworkTop.toPx() }
+            val headerWindowLeft = motion.headerEndpoint.boundsInWindow.left - artworkLeftPx
+            val headerWindowTop = motion.headerEndpoint.boundsInWindow.top - artworkTopPx
+            val targetWindowLeft = headerWindowLeft + targetLeftPx
+            val targetWindowTop = headerWindowTop + targetTopPx
+            val pivotX = sharedSpec.detailPivotX.takeIf { it.isFinite() }
+                ?: (hostView.width * 0.5f)
+            val pivotY = sharedSpec.detailPivotY.takeIf { it.isFinite() }
+                ?: (hostView.height * 0.5f)
+            return Modifier.graphicsLayer {
+                // Snapshot read in the layer block: each vsync update invalidates only this layer.
+                val headerPresence = headerMotionFrame.floatValue.coerceIn(0f, 1f)
+                val parentScale = 0.5f + 0.5f * headerPresence
+                if (sourceBounds != null) {
+                    val desiredWindowLeft =
+                        sourceBounds.left + (targetWindowLeft - sourceBounds.left) * headerPresence
+                    val desiredWindowTop =
+                        sourceBounds.top + (targetWindowTop - sourceBounds.top) * headerPresence
+                    // GenericPivot already transforms the detail/header provider 0.5 -> 1 around
+                    // the viewport centre. Invert that parent affine so this child follows the
+                    // absolute source child rect -> scene_header child rect instead of receiving
+                    // the page transform twice.
+                    val parentTx = pivotX * (1f - parentScale)
+                    val parentTy = pivotY * (1f - parentScale)
+                    val requiredPreParentLeft = (desiredWindowLeft - parentTx) / parentScale
+                    val requiredPreParentTop = (desiredWindowTop - parentTy) / parentScale
+                    translationX = requiredPreParentLeft - targetWindowLeft
+                    translationY = requiredPreParentTop - targetWindowTop
+                } else {
+                    translationX = 0f
+                    translationY = fallbackOffsetYPx * (1f - headerPresence)
+                }
+                // Resting title, subtitle and metadata scale is .9; expanded header scale is 1.
+                // normal buttons/menu=.75, header=1. Parent GenericPivot owns alpha.
+                val sceneScale = sourceSceneScale + (1f - sourceSceneScale) * headerPresence
+                // This child lives inside Raw's independently scaled NEXT/CURRENT provider.
+                // Divide out that parent scale so the *screen-space* child scale is exactly the
+                // LayoutRes value rather than 0.5*.9 -> 1 during ItemToHeader.
+                val localCompensatedScale = sceneScale / parentScale.coerceAtLeast(0.001f)
+                scaleX = localCompensatedScale
+                scaleY = localCompensatedScale
+                transformOrigin = TransformOrigin(0f, 0f)
+            }
+        }
+
+        // Compact/medium windows retain full-header artwork geometry. Expanded windows
+        // keep the same single holder/provider but give the artwork a bounded square sub-rect; the
+        // physical VirtualList LayoutRes publishes this exact sub-rect as the shared endpoint.
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(coverHeight)
+                .offset(x = geometry.artworkLeft, y = geometry.artworkTop)
+                .size(width = geometry.artworkWidth, height = geometry.artworkHeight)
+                .onGloballyPositioned { coordinates ->
+                    val position = coordinates.positionInWindow()
+                    val size = coordinates.size
+                    onHeroArtworkBoundsChanged?.invoke(
+                        Rect(
+                            left = position.x,
+                            top = position.y,
+                            right = position.x + size.width,
+                            bottom = position.y + size.height,
+                        )
+                    )
+                }
+                .then(
+                    if (onHeroArtworkLongPress != null) {
+                        Modifier.combinedClickable(
+                            onClick = {},
+                            onLongClick = onHeroArtworkLongPress,
+                        )
+                    } else {
+                        Modifier
+                    }
+                )
         ) {
-            // Reference collection/header recording: the artwork itself is edge-to-edge and begins
-            // at window y=0. Only the lower edge joins the detail surface; the top system/navigation
-            // chrome is overlaid on the pixels instead of reserving an artwork inset.
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer { alpha = coverAlpha }
-                    .clip(RoundedCornerShape(ReferenceHeroArtworkGeometry.cornerRadius))
-                    .onGloballyPositioned { coordinates ->
-                        val position = coordinates.positionInWindow()
-                        val size = coordinates.size
-                        onHeroArtworkBoundsChanged?.invoke(
-                            Rect(
-                                left = position.x,
-                                top = position.y,
-                                right = position.x + size.width,
-                                bottom = position.y + size.height,
-                            )
+            // Extend the artwork draw rect upward by the signed edge amount E and recenter
+            // the CENTER_CROP shader by -E/2 instead of translating the entire image layer.
+            // With the header still top-anchored this makes the visible artwork height H+E, so the
+            // top never exposes empty pixels while the lower edge follows the rubber-band pull.
+            // Measure only the artwork raster taller; the shared/header geometry remains H.
+            Layout(
+                modifier = Modifier.fillMaxSize(),
+                content = {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { alpha = coverAlpha }
+                            .clip(RoundedCornerShape(ReferenceHeroArtworkGeometry.cornerRadius))
+                    ) {
+                        CrossfadeAlbumArt(
+                            key = hero.coverKey,
+                            modifier = Modifier.fillMaxSize(),
+                            // CENTER_CROP on the taller draw rect preserves
+                            // top-=E plus shader -E/2 recentering without geometrically stretching
+                            // the bitmap pixels.
+                            contentScale = ContentScale.Crop,
+                            aspectPolicy = ArtworkAspectPolicy.KeepAspect,
+                            showPlaceholder = true,
+                            fadeMillis = 0,
+                            freezeBitmapUpdates = freezeArtworkUpdates || physicalSharedOwner
                         )
                     }
-                    .then(
-                        if (onHeroArtworkLongPress != null) {
-                            Modifier.combinedClickable(
-                                onClick = {},
-                                onLongClick = onHeroArtworkLongPress,
-                            )
-                        } else {
-                            Modifier
-                        }
-                    )
-            ) {
-                CrossfadeAlbumArt(
-                    key = hero.coverKey,
-                    modifier = Modifier.fillMaxSize(),
-                    // retained-view implementation keeps the same artwork scale type while the concrete retained artwork view
-                    // changes from list/grid SceneParams to scene_header. Raw's collection/list
-                    // provider is KeepAspect, so the terminal header must keep the same matrix too.
-                    contentScale = ContentScale.Fit,
-                    aspectPolicy = ArtworkAspectPolicy.KeepAspect,
-                    // Collection heroes are terminal artwork consumers too. If the representative
-                    // track has no embedded/sidecar image, show the same default artwork as the list.
-                    showPlaceholder = true,
-                    fadeMillis = 0,
-                    freezeBitmapUpdates = freezeArtworkUpdates || physicalSharedOwner
+                },
+            ) { measurables, constraints ->
+                val baseWidth = constraints.maxWidth.coerceAtLeast(constraints.minWidth)
+                val baseHeight = constraints.maxHeight.coerceAtLeast(constraints.minHeight)
+                val overscanPx = listEdgeOvershootProvider()
+                    .coerceAtLeast(0f)
+                    .roundToInt()
+                val visualHeight = (baseHeight + overscanPx).coerceAtLeast(baseHeight)
+                val artwork = measurables.single().measure(
+                    Constraints.fixed(baseWidth, visualHeight)
                 )
+                layout(baseWidth, baseHeight) {
+                    artwork.place(0, 0)
+                }
+            }
 
+            if (publishSharedAnchor) {
                 CollectionSharedCoverAnchor(
                     scene = detailScene,
                     elementId = hero.sharedElementId,
@@ -427,7 +732,9 @@ private fun CollectionHeroHeader(
                     modifier = Modifier.fillMaxSize()
                 )
             }
+        }
 
+        if (showBackButton) {
             IconButton(
                 onClick = {
                     if (coverVisible) {
@@ -440,92 +747,169 @@ private fun CollectionHeroHeader(
                 },
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(start = 12.dp, top = 12.dp)
+                    .padding(start = 12.dp, top = statusBarTop + 8.dp)
+                    .then(headerEdgeChildMotion(statusBarTop + 8.dp))
             ) {
                 Icon(
                     imageVector = MiuixIcons.Regular.Back,
                     contentDescription = stringResource(R.string.common_back),
-                    tint = onBg
+                    tint = Color.White
                 )
             }
         }
 
+        // Header bounds expressed as dp and anchored from
+        // the holder bottom so only the status-bar extension changes when insets differ.
+        Text(
+            text = hero.title,
+            color = onBg,
+            fontSize = 16.5.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .offset(x = titleLeft, y = titleTop)
+                .width(titleWidth)
+                .height(titleHeight)
+                .then(headerEdgeChildMotion(titleTop))
+                .then(
+                    sharedChildMotion(
+                        sourceBounds = headerMotion?.listEndpoint?.titleBoundsInWindow,
+                        targetLeft = titleLeft,
+                        targetTop = titleTop,
+                        sourceSceneScale = 0.9f,
+                        fallbackStartOffsetY = 12.dp,
+                    )
+                ),
+        )
+
+        Text(
+            text = hero.subtitle,
+            color = onBgVariant,
+            fontSize = 14.5.sp,
+            fontWeight = FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .offset(x = subtitleLeft, y = subtitleTop)
+                .width(subtitleWidth)
+                .height(subtitleHeight)
+                .then(headerEdgeChildMotion(subtitleTop))
+                .then(
+                    sharedChildMotion(
+                        sourceBounds = headerMotion?.listEndpoint?.subtitleBoundsInWindow,
+                        targetLeft = subtitleLeft,
+                        targetTop = subtitleTop,
+                        sourceSceneScale = 0.9f,
+                        fallbackStartOffsetY = 12.dp,
+                    )
+                ),
+        )
+
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(CollectionHeroMetaHeight)
-                .padding(horizontal = 28.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                .offset(x = metaLeft, y = metaTop)
+                .height(metaHeight)
+                .then(headerEdgeChildMotion(metaTop))
+                .then(
+                    sharedChildMotion(
+                        sourceBounds = headerMotion?.listEndpoint?.metaBoundsInWindow,
+                        targetLeft = metaLeft,
+                        targetTop = metaTop,
+                        sourceSceneScale = 0.9f,
+                        fallbackStartOffsetY = 12.dp,
+                    )
+                ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = hero.title,
-                    color = onBg,
-                    fontSize = 26.sp,
-                    fontWeight = FontWeight.Black,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+            Icon(
+                imageVector = MiuixIcons.Regular.Music,
+                contentDescription = null,
+                tint = onBgVariant,
+                modifier = Modifier.size(12.dp),
+            )
+            Text(
+                text = hero.meta,
+                color = onBgVariant,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
 
-                Text(
-                    text = hero.subtitle,
-                    color = onBgVariant,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+        Row(
+            modifier = Modifier
+                .offset(x = actionLeft, y = actionTop)
+                .then(headerEdgeChildMotion(actionTop))
+                .then(
+                    sharedChildMotion(
+                        sourceBounds = null,
+                        targetLeft = actionLeft,
+                        targetTop = actionTop,
+                        sourceSceneScale = 0.75f,
+                        fallbackStartOffsetY = 12.dp,
+                    )
+                ),
+            horizontalArrangement = Arrangement.spacedBy(3.5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (showShuffleAction) {
+                CollectionHeroResourceActionBubble(
+                    iconRes = R.drawable.ic_shuffle_custom,
+                    contentDescription = stringResource(R.string.library_action_shuffle),
+                    onClick = onShuffle,
                 )
+            }
+            if (onPlay != null) {
+                CollectionHeroResourceActionBubble(
+                    iconRes = R.drawable.ic_play,
+                    contentDescription = stringResource(R.string.library_action_play),
+                    onClick = onPlay,
+                )
+            }
+            if (showSearchAction) {
+                CollectionHeroActionBubble(
+                    imageVector = MiuixIcons.Regular.Search,
+                    contentDescription = stringResource(R.string.library_action_search),
+                    onClick = onSearch,
+                )
+            }
+            if (onSelect != null) {
+                CollectionHeroTextActionBubble(
+                    text = stringResource(R.string.library_action_select),
+                    contentDescription = stringResource(R.string.library_action_select),
+                    onClick = onSelect,
+                )
+            }
+            if (onBiography != null) {
+                CollectionHeroTextActionBubble(
+                    text = stringResource(R.string.artist_biography_button),
+                    contentDescription = stringResource(R.string.artist_biography_action),
+                    onClick = onBiography,
+                )
+            }
+        }
 
-                Row(
-                    modifier = Modifier.padding(top = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(9.dp)
-                ) {
-                    CollectionHeroResourceActionBubble(
-                        iconRes = R.drawable.ic_library_more,
-                        contentDescription = stringResource(R.string.common_more_operations),
-                        onClick = onMore
-                    )
-                    CollectionHeroResourceActionBubble(
-                        iconRes = R.drawable.ic_shuffle_custom,
-                        contentDescription = stringResource(R.string.library_action_shuffle),
-                        onClick = onShuffle
-                    )
-                    CollectionHeroActionBubble(
-                        imageVector = MiuixIcons.Regular.Search,
-                        contentDescription = stringResource(R.string.library_action_search),
-                        onClick = onSearch
-                    )
-                    if (onBiography != null) {
-                        CollectionHeroTextActionBubble(
-                            text = stringResource(R.string.artist_biography_button),
-                            contentDescription = stringResource(R.string.artist_biography_action),
-                            onClick = onBiography,
+        if (showMoreAction) {
+            CollectionHeroMenuActionBubble(
+                iconRes = R.drawable.ic_library_more,
+                contentDescription = stringResource(R.string.common_more_operations),
+                onClick = onMore,
+                modifier = Modifier
+                    .offset(x = menuLeft, y = menuTop)
+                    .then(headerEdgeChildMotion(menuTop))
+                    .then(
+                        sharedChildMotion(
+                            sourceBounds = null,
+                            targetLeft = menuLeft,
+                            targetTop = menuTop,
+                            sourceSceneScale = 0.75f,
+                            fallbackStartOffsetY = 8.dp,
                         )
-                    }
-                }
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                Icon(
-                    imageVector = MiuixIcons.Regular.Music,
-                    contentDescription = null,
-                    tint = onBgVariant,
-                    modifier = Modifier.size(16.dp)
-                )
-
-                Text(
-                    text = hero.meta,
-                    color = onBgVariant,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+                    ),
+            )
         }
     }
 }
@@ -629,23 +1013,19 @@ private fun CollectionHeroActionBubble(
     contentDescription: String,
     onClick: () -> Unit
 ) {
-    val scheme = MiuixTheme.colorScheme
-    val staticForeground = usesReferenceStaticForeground()
-    val bubbleBackground = if (staticForeground) Color.Black.copy(alpha = 0.26f) else scheme.surfaceContainerHigh.copy(alpha = 0.72f)
-    val iconColor = if (staticForeground) Color.White else scheme.onBackground
     Box(
         modifier = Modifier
-            .size(38.dp)
-            .clip(CircleShape)
-            .background(bubbleBackground)
+            .size(width = 54.dp, height = 36.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(Color.Black.copy(alpha = 200f / 255f))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Icon(
             imageVector = imageVector,
             contentDescription = contentDescription,
-            tint = iconColor,
-            modifier = Modifier.size(21.dp)
+            tint = Color.White,
+            modifier = Modifier.size(24.dp)
         )
     }
 }
@@ -656,23 +1036,43 @@ private fun CollectionHeroResourceActionBubble(
     contentDescription: String,
     onClick: () -> Unit
 ) {
-    val scheme = MiuixTheme.colorScheme
-    val staticForeground = usesReferenceStaticForeground()
-    val bubbleBackground = if (staticForeground) Color.Black.copy(alpha = 0.26f) else scheme.surfaceContainerHigh.copy(alpha = 0.72f)
-    val iconColor = if (staticForeground) Color.White else scheme.onBackground
     Box(
         modifier = Modifier
-            .size(38.dp)
-            .clip(CircleShape)
-            .background(bubbleBackground)
+            .size(width = 54.dp, height = 36.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(Color.Black.copy(alpha = 200f / 255f))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Image(
             painter = painterResource(iconRes),
             contentDescription = contentDescription,
-            colorFilter = ColorFilter.tint(iconColor),
-            modifier = Modifier.size(21.dp)
+            colorFilter = ColorFilter.tint(Color.White),
+            modifier = Modifier.size(24.dp)
+        )
+    }
+}
+
+@Composable
+private fun CollectionHeroMenuActionBubble(
+    iconRes: Int,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(Color.Black.copy(alpha = 200f / 255f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            painter = painterResource(iconRes),
+            contentDescription = contentDescription,
+            colorFilter = ColorFilter.tint(Color.White),
+            modifier = Modifier.size(24.dp),
         )
     }
 }
@@ -683,28 +1083,20 @@ private fun CollectionHeroTextActionBubble(
     contentDescription: String,
     onClick: () -> Unit,
 ) {
-    val scheme = MiuixTheme.colorScheme
-    val staticForeground = usesReferenceStaticForeground()
-    val bubbleBackground = if (staticForeground) {
-        Color.Black.copy(alpha = 0.26f)
-    } else {
-        scheme.surfaceContainerHigh.copy(alpha = 0.72f)
-    }
-    val contentColor = if (staticForeground) Color.White else scheme.onBackground
     Box(
         modifier = Modifier
-            .height(38.dp)
-            .clip(RoundedCornerShape(19.dp))
-            .background(bubbleBackground)
+            .height(36.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(Color.Black.copy(alpha = 200f / 255f))
             .clickable(onClick = onClick)
-            .padding(horizontal = 13.dp),
+            .padding(horizontal = 15.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = text,
-            color = contentColor,
+            color = Color.White,
             fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
+            fontWeight = FontWeight.Normal,
             maxLines = 1,
         )
     }

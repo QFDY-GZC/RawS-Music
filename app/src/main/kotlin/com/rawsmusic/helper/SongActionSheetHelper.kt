@@ -1,9 +1,11 @@
 package com.rawsmusic.helper
 
 import android.content.Context
+import com.rawsmusic.core.ui.widget.player.PlayerFavoriteSuccessRuntime
 import android.widget.Toast
 import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.common.ui.AppNoticeIcon
+import com.rawsmusic.core.common.ui.AppNoticeAnimation
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.togetherWith
@@ -59,7 +61,9 @@ import androidx.lifecycle.LifecycleCoroutineScope
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.UserPlaylist
+import com.rawsmusic.core.common.model.playlistIdentityKey
 import com.rawsmusic.core.ui.widget.ActivityOverlayBackOwner
+import com.rawsmusic.core.ui.widget.player.PlayerPlaylistBackOwner
 import com.rawsmusic.core.ui.widget.predictiveBottomSheetMotion
 import com.rawsmusic.core.ui.widget.predictiveBottomSheetScrim
 import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
@@ -109,6 +113,9 @@ class SongActionSheetHelper(
     var isCreatingPlaylist by mutableStateOf(false)
         private set
 
+    var isRemovingFromPlaylists by mutableStateOf(false)
+        private set
+
     var hasCustomCover by mutableStateOf(false)
     private var pendingPlaylistSong: AudioFile? = null
     private var pendingPlaylistSongs: List<AudioFile> = emptyList()
@@ -135,7 +142,7 @@ class SongActionSheetHelper(
     }
 
     fun hidePlaylistPicker() {
-        if (!isPlaylistPickerShowing) return
+        if (!isPlaylistPickerShowing || isAddingToPlaylists) return
         isPlaylistPickerShowing = false
         pendingPlaylistSong = null
         pendingPlaylistSongs = emptyList()
@@ -149,6 +156,7 @@ class SongActionSheetHelper(
     fun addToPlaylist() {
         val song = getPlayerController()?.currentSong?.value ?: return
         val playlistStore = PlaylistStore.getInstance(context)
+        isRemovingFromPlaylists = false
         pendingPlaylistSong = song
         pendingPlaylistSongs = emptyList()
         playlistChoices = playlistStore.playlists.value
@@ -163,6 +171,7 @@ class SongActionSheetHelper(
 
     fun showPlaylistPickerForSongs(songs: List<AudioFile>) {
         val playlistStore = PlaylistStore.getInstance(context)
+        isRemovingFromPlaylists = false
         pendingPlaylistSongs = songs
         pendingPlaylistSong = songs.firstOrNull()
         playlistChoices = playlistStore.playlists.value
@@ -175,20 +184,34 @@ class SongActionSheetHelper(
         observePlaylistChoicesWhilePickerVisible(playlistStore)
     }
 
+    fun showPlayerPlaylistPicker(song: AudioFile) {
+        if (isPlaylistPickerShowing) return
+        val store = PlaylistStore.getInstance(context)
+        val key = song.playlistIdentityKey()
+        val memberships = store.playlists.value.filter { playlist -> playlist.songs.any { it.key == key } }
+        showPlaylistPickerForSongs(listOf(song))
+        isRemovingFromPlaylists = memberships.isNotEmpty()
+        if (isRemovingFromPlaylists) playlistChoices = memberships
+    }
+
     private fun observePlaylistChoicesWhilePickerVisible(playlistStore: PlaylistStore) {
         if (playlistChoicesObserverStarted) return
         playlistChoicesObserverStarted = true
         getCoroutineScope().launch {
             playlistStore.playlists.collect { playlists ->
                 if (!isPlaylistPickerShowing) return@collect
-                playlistChoices = playlists
-                val liveIds = playlists.asSequence().map { it.id }.toSet()
+                val key = pendingPlaylistSong?.playlistIdentityKey()
+                playlistChoices = if (isRemovingFromPlaylists) playlists.filter { playlist ->
+                    playlist.songs.any { it.key == key }
+                } else playlists
+                val liveIds = playlistChoices.asSequence().map { it.id }.toSet()
                 selectedPlaylistIds = selectedPlaylistIds.intersect(liveIds)
             }
         }
     }
 
     fun startCreatePlaylist() {
+        if (isRemovingFromPlaylists || isAddingToPlaylists) return
         isCreatingPlaylist = true
     }
 
@@ -205,17 +228,22 @@ class SongActionSheetHelper(
         if (songs.isEmpty()) return
         val playlistStore = PlaylistStore.getInstance(context)
         getCoroutineScope().launch {
-            val playlist = playlistStore.createPlaylist(trimmed)
-            if (playlist != null) {
-                playlistStore.addSongsToPlaylist(playlist.id, songs)
+            val result = runCatching {
+                val playlist = playlistStore.createPlaylist(trimmed)
+                val added = if (playlist != null) playlistStore.addSongsToPlaylistAndReportAddedKeys(playlist.id, songs) else emptySet()
+                playlist to added
             }
+            result.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
+            val playlist = result.getOrNull()?.first
+            val addedKeys = result.getOrNull()?.second.orEmpty()
             withContext(Dispatchers.Main) {
+                songs.singleOrNull()?.playlistIdentityKey()?.takeIf { it in addedKeys }
+                    ?.let(PlayerFavoriteSuccessRuntime::publishAdded)
                 hidePlaylistPicker()
                 if (playlist != null) {
-                    AppNoticeBus.post(
-                        message = context.getString(R.string.ui_playlist_added, playlist.name),
-                        icon = AppNoticeIcon.PLAYLIST,
-                    )
+                    playlistSongChangeMessage(context, songs.distinctBy { it.playlistIdentityKey() }
+                        .filter { it.playlistIdentityKey() in addedKeys }.map { it.title }, playlist.name, false)
+                        ?.let { AppNoticeBus.post(it, AppNoticeIcon.PLAYLIST, AppNoticeAnimation.FAVORITE) }
                 } else {
                     AppNoticeBus.error(context.getString(R.string.ui_playlist_create_failed))
                 }
@@ -224,6 +252,7 @@ class SongActionSheetHelper(
     }
 
     fun selectPlaylist(playlist: UserPlaylist) {
+        if (isAddingToPlaylists) return
         selectedPlaylistIds = if (playlist.id in selectedPlaylistIds) {
             selectedPlaylistIds - playlist.id
         } else {
@@ -240,36 +269,54 @@ class SongActionSheetHelper(
         }
         if (songs.isEmpty()) return
         val playlistStore = PlaylistStore.getInstance(context)
+        val removing = isRemovingFromPlaylists
+        val songKey = songs.first().playlistIdentityKey()
+        val removalIds = if (removing) playerPlaylistRemovalTargets(
+            songKey, selectedPlaylistIds,
+            playlistStore.playlists.value.asSequence().map { it.id to it.songs.map { stored -> stored.key } },
+        ).toSet() else emptySet()
         isAddingToPlaylists = true
         getCoroutineScope().launch {
             var succeeded = 0
             var failed = 0
+            val addedKeys = mutableSetOf<String>()
+            val messages = mutableListOf<String>()
             selected.forEach { playlist ->
-                runCatching { playlistStore.addSongsToPlaylist(playlist.id, songs) }
+                runCatching {
+                    if (removing) {
+                        if (playlist.id in removalIds && playlistStore.removeSongFromPlaylist(playlist.id, songKey)) {
+                            playlistSongChangeMessage(context, listOf(songs.first().title), playlist.name, true)?.let(messages::add)
+                        }
+                    } else {
+                        val changed = playlistStore.addSongsToPlaylistAndReportAddedKeys(playlist.id, songs)
+                        addedKeys.addAll(changed)
+                        playlistSongChangeMessage(context, songs.distinctBy { it.playlistIdentityKey() }
+                            .filter { it.playlistIdentityKey() in changed }.map { it.title }, playlist.name, false)?.let(messages::add)
+                    }
+                }
                     .onSuccess { succeeded++ }
-                    .onFailure { failed++ }
+                    .onFailure { failure ->
+                        if (failure is kotlinx.coroutines.CancellationException) throw failure
+                        failed++
+                    }
             }
             withContext(Dispatchers.Main) {
                 isAddingToPlaylists = false
+                if (!removing && songs.size == 1 && songKey in addedKeys) {
+                    PlayerFavoriteSuccessRuntime.publishAdded(songKey)
+                }
                 if (succeeded > 0) {
                     hidePlaylistPicker()
                 }
-                val message = when {
-                    succeeded > 0 && failed == 0 -> context.resources.getQuantityString(
-                        R.plurals.ui_playlist_added_multiple,
-                        succeeded,
-                        succeeded,
-                    )
-                    succeeded > 0 -> context.getString(R.string.ui_playlist_added_partial, succeeded, failed)
-                    else -> context.getString(R.string.ui_playlist_add_failed)
-                }
-                if (failed > 0) {
-                    AppNoticeBus.error(message)
-                } else {
+                if (messages.isNotEmpty()) {
+                    if (failed > 0) messages.add(context.getString(R.string.notice_playlist_partial_failure))
                     AppNoticeBus.post(
-                        message = message,
+                        message = messages.joinToString("\n"),
                         icon = AppNoticeIcon.PLAYLIST,
+                        animation = if (removing) AppNoticeAnimation.DELETE else AppNoticeAnimation.FAVORITE,
                     )
+                } else if (failed > 0) {
+                    AppNoticeBus.error(context.getString(if (removing) R.string.ui_playlist_remove_failed else R.string.ui_playlist_add_failed))
                 }
             }
         }
@@ -339,6 +386,8 @@ private fun PlaylistPickerOverlay(
         onDismissRequest = helper::hidePlaylistPicker,
     )
     ActivityOverlayBackOwner(active = visible)
+    // Own back immediately, including the one prepared frame before the sheet is mounted.
+    if (visible) PlayerPlaylistBackOwner()
     var newPlaylistName by remember(visible) { mutableStateOf("") }
 
     AnimatedVisibility(
@@ -347,6 +396,7 @@ private fun PlaylistPickerOverlay(
         exit = fadeOut(tween(200)),
         modifier = modifier.fillMaxSize()
     ) {
+        PlayerPlaylistBackOwner()
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.BottomCenter
@@ -426,6 +476,8 @@ private fun PlaylistPickerOverlay(
                             Text(
                                 text = if (creatingPlaylist) {
                                     stringResource(R.string.ui_create_playlist_title)
+                                } else if (helper.isRemovingFromPlaylists) {
+                                    stringResource(R.string.ui_playlist_remove_title)
                                 } else {
                                     stringResource(R.string.ui_playlist_picker_title)
                                 },
@@ -437,7 +489,7 @@ private fun PlaylistPickerOverlay(
                             if (!creatingPlaylist) {
                                 Text(
                                     text = stringResource(
-                                        R.string.ui_playlist_add_selected,
+                                        if (helper.isRemovingFromPlaylists) R.string.ui_playlist_remove_selected_summary else R.string.ui_playlist_add_selected,
                                         helper.selectedPlaylistIds.size,
                                     ),
                                     color = scheme.onSurfaceVariantSummary,
@@ -515,18 +567,20 @@ private fun PlaylistPickerOverlay(
                             )
                         }
                     } else {
-                        PlaylistPickerRow(
-                            title = stringResource(R.string.ui_create_playlist_title),
-                            subtitle = stringResource(R.string.ui_playlist_created_summary),
-                            iconRes = R.drawable.ic_add_circle,
-                            accent = scheme.primary,
-                            createAction = true,
-                            onClick = {
-                                newPlaylistName = ""
-                                helper.startCreatePlaylist()
-                            }
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
+                        if (!helper.isRemovingFromPlaylists) {
+                            PlaylistPickerRow(
+                                title = stringResource(R.string.ui_create_playlist_title),
+                                subtitle = stringResource(R.string.ui_playlist_created_summary),
+                                iconRes = R.drawable.ic_add_circle,
+                                accent = scheme.primary,
+                                createAction = true,
+                                onClick = {
+                                    newPlaylistName = ""
+                                    helper.startCreatePlaylist()
+                                }
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
                         LazyColumn(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -556,7 +610,7 @@ private fun PlaylistPickerOverlay(
                             val addEnabled = helper.selectedPlaylistIds.isNotEmpty() && !helper.isAddingToPlaylists
                             PlaylistPickerActionButton(
                                 text = stringResource(
-                                    R.string.ui_playlist_add_selected,
+                                    if (helper.isRemovingFromPlaylists) R.string.ui_playlist_remove_selected else R.string.ui_playlist_add_selected,
                                     helper.selectedPlaylistIds.size,
                                 ),
                                 icon = {

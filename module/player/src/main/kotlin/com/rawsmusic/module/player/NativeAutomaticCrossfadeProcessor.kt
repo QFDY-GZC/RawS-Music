@@ -44,8 +44,11 @@ internal class NativeAutomaticCrossfadeProcessor private constructor(
             handle: Long,
             durationMs: Int,
             pivotMs: Int,
+            gentleMs: Int,
         )
         @JvmStatic private external fun nativeRetime(handle: Long, durationMs: Int)
+        @JvmStatic private external fun nativeOutgoingGain(handle: Long): Float
+        @JvmStatic private external fun nativeIncomingGain(handle: Long): Float
         @JvmStatic private external fun nativeClear(handle: Long)
         @JvmStatic private external fun nativeProcess(
             handle: Long,
@@ -61,16 +64,23 @@ internal class NativeAutomaticCrossfadeProcessor private constructor(
     }
 
     override val isNativeBacked: Boolean = true
+    @Volatile private var hasRendered = false
+    override val outgoingGain: Float
+        get() = if (handle != 0L && hasRendered) nativeOutgoingGain(handle).coerceIn(0f, 1f) else 1f
+    override val incomingGain: Float
+        get() = if (handle != 0L && hasRendered) nativeIncomingGain(handle).coerceIn(0f, 1f) else 0f
     @Volatile private var armed = false
 
     override fun start(plan: AutoTransitionStartPlan, sampleRate: Int): Boolean {
         val h = handle
         if (h == 0L || sampleRate <= 0 || plan.handoverMs <= 0) return false
+        hasRendered = false
         return try {
             nativeArm(
                 h,
                 (plan.preRollMs + plan.handoverMs).coerceAtLeast(1),
                 plan.pivotMs.coerceAtLeast(1),
+                plan.preRollMs.coerceAtLeast(0),
             )
             armed = true
             true
@@ -96,6 +106,7 @@ internal class NativeAutomaticCrossfadeProcessor private constructor(
     override fun reset(reason: String) {
         val h = handle
         armed = false
+        hasRendered = false
         if (h == 0L) return
         try {
             nativeClear(h)
@@ -137,6 +148,7 @@ internal class NativeAutomaticCrossfadeProcessor private constructor(
             frameSize,
             format,
         )
+        hasRendered = true
         val completed = packed and COMPLETED_FLAG != 0L
         val active = packed and ACTIVE_FLAG != 0L
         val retimed = packed and RETIMED_FLAG != 0L

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    android:versionName="1.0.0-release">
+    android:versionName="1.0.13-release">
 
     <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur,com.xzakota.hyper.notification.focus" />
 
@@ -41,6 +41,7 @@
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <queries>
+        <package android:name="com.xiaomi.xmsf" />
         <package android:name="com.miui.weather2" />
         <package android:name="com.coloros.weather2" />
         <package android:name="com.vivo.weather" />
@@ -58,6 +59,9 @@
         <intent>
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="audio/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT_TREE" />
         </intent>
     </queries>
 
@@ -92,7 +96,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:enableOnBackInvokedCallback="true"
-            android:screenOrientation="portrait"
+            android:screenOrientation="user"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|keyboardHidden"
             android:windowSoftInputMode="adjustResize"
             android:launchMode="singleTop">
@@ -140,6 +144,7 @@
 
         <!-- 设置子页面 Activity（SettingsActivity + f90 模式） -->
         <activity android:name=".ui.settings.SettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
+        <activity android:name=".ui.settings.HdrSettingsActivity" android:exported="false" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.transcode.AudioTranscodeActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.AudioSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />
         <activity android:name=".ui.settings.DvcSettingsActivity" android:theme="@style/SettingsActivityTheme" android:launchMode="singleTop" android:enableOnBackInvokedCallback="true" />

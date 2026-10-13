@@ -2,6 +2,19 @@ package com.rawsmusic.ui.settings
 
 import android.content.Intent
 import android.os.Build
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -11,10 +24,17 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -24,15 +44,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -40,22 +70,36 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.rawsmusic.R
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -74,12 +118,32 @@ import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.rawsmusic.core.ui.scene.pages.CouiSettingsScaffold
+import com.rawsmusic.core.ui.scene.pages.ProgressiveTopBlur
+import com.rawsmusic.core.ui.scene.pages.settingsTopBlurSource
+import com.rawsmusic.core.ui.scene.pages.settingsBlurViewportHeight
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.rememberHazeState
+import com.rawsmusic.core.ui.scene.pages.WithoutPlatformOverscroll
+import com.rawsmusic.core.ui.scene.pages.couiOverscrollOffset
+import com.rawsmusic.core.ui.scene.pages.rememberCouiSpringOverscrollState
+import com.rawsmusic.core.ui.scene.pages.rememberCouiFlingBehavior
+import com.rawsmusic.core.ui.systemui.rawStableStatusBarTopPadding
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import com.rawsmusic.core.ui.widget.background.CustomMediaBackgroundState
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.SettingsSurfaceStyle
 import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
-import java.io.File
+import com.rawsmusic.core.ui.theme.rawGlobalFontFamily
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 internal val LocalSettingsBackdrop = staticCompositionLocalOf<Backdrop?> { null }
 
@@ -129,23 +193,22 @@ internal data class ThemeColors(
 internal fun appFontFamily(): FontFamily {
     val runtimeVersion = RawThemeRuntimeState.version
     val path = AppPreferences.UI.customFontPath
-    return remember(path, runtimeVersion) {
-        if (path.isBlank()) {
-            FontFamily.Default
-        } else {
-            runCatching {
-                // Keep the file registered as its source face. A LoadedFontFamily(Typeface)
-                // bypasses normal weight matching on a number of Compose paths; a file-backed
-                // Normal face lets the theme/requested FontWeight synthesize the actual weight.
-                FontFamily(Font(File(path), FontWeight.Normal))
-            }.getOrDefault(FontFamily.Default)
+    val globalWeight = AppPreferences.UI.fontWeight.coerceIn(100, 900)
+    return remember(path, runtimeVersion, globalWeight) {
+        runCatching {
+            rawGlobalFontFamily(
+                path = path,
+                globalWeight = globalWeight,
+                allowOutOfRange = AppPreferences.UI.experimentalFontWeightEnabled,
+            )
         }
+            .getOrDefault(FontFamily.Default)
     }
 }
 
 /**
  * 设置页面模板。
- * 使用 Miuix SmallTopAppBar。
+ * 顶栏对齐 ColorOS 设置：透明 AppBar、内容滚入顶栏下方、渐变模糊层随滚动淡入。
  */
 @Composable
 internal fun SettingsPage(
@@ -165,39 +228,17 @@ internal fun SettingsPage(
     val resolvedPageBackground = if (
         customSettingsBackground || surfaceStyle != SettingsSurfaceStyle.SOLID
     ) Color.Transparent else pageBackground
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(resolvedPageBackground)
-    ) {
-        SmallTopAppBar(
-            title = title,
-            color = resolvedPageBackground,
-            titleColor = MiuixTheme.colorScheme.onBackground,
-            navigationIcon = {
-                if (onBack != null) {
-                    top.yukonga.miuix.kmp.basic.IconButton(onClick = onBack) {
-                        top.yukonga.miuix.kmp.basic.Icon(
-                            imageVector = MiuixIcons.Regular.Back,
-                            contentDescription = stringResource(R.string.settings_back),
-                            tint = MiuixTheme.colorScheme.onSurface
-                        )
-                    }
-                }
-            }
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp)
-        ) {
-            Spacer(modifier = Modifier.height(8.dp))
-            content()
-            Spacer(modifier = Modifier.height(180.dp))
-        }
-    }
+    CouiSettingsScaffold(
+        title = title,
+        onBack = onBack,
+        background = resolvedPageBackground,
+        titleColor = MiuixTheme.colorScheme.onBackground,
+        // COUI would fall back to the window colour here; transparent pages (custom media / glass
+        // surfaces) keep only the blur so the custom background stays visible under the bar.
+        rampColor = resolvedPageBackground,
+        backgroundBackdrop = LocalSettingsBackdrop.current,
+        content = content,
+    )
 }
 
 @Composable
@@ -222,6 +263,7 @@ internal fun SettingsActionRow(
  * 使用 Miuix 组件。
  */
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 fun LiquidGlassSettingsScreen(
     onNavigateToLyrics: () -> Unit,
     onNavigateToAppearance: () -> Unit,
@@ -240,7 +282,8 @@ fun LiquidGlassSettingsScreen(
     onWebDavBackup: () -> Unit,
     onNavigateToLogViewer: () -> Unit,
     onNavigateToAbout: () -> Unit = {},
-    onNavigateToScanSettings: () -> Unit = {}
+    onNavigateToScanSettings: () -> Unit = {},
+    onNavigateToHdr: () -> Unit = {}
 ) {
     val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
     val pageBackground = if (isDark) Color(0xFF101014) else Color(0xFFF4F4F7)
@@ -254,7 +297,47 @@ fun LiquidGlassSettingsScreen(
     val resolvedPageBackground = if (
         customSettingsBackground || surfaceStyle != SettingsSurfaceStyle.SOLID
     ) Color.Transparent else pageBackground
-    var searchQuery by remember { mutableStateOf("") }
+    // SettingsCollapsableAppBarLayout saves MODE_STATE_KEY: it is the search mode here, so the
+    // query (and with it the collapsed chrome + result panel) survives a configuration change.
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var searchActive by rememberSaveable { mutableStateOf(false) }
+    val searchProgress by animateFloatAsState(
+        if (searchActive) 1f else 0f,
+        spring(dampingRatio = 1f, stiffness = SettingsSearchMotion.stiffness),
+        label = "SettingsSearchMode",
+    )
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val searchFocus = remember { FocusRequester() }
+    val searchPrefs = remember(context) { context.getSharedPreferences("settings_search", android.content.Context.MODE_PRIVATE) }
+    var recentQueries by remember {
+        mutableStateOf(runCatching {
+            val array = org.json.JSONArray(searchPrefs.getString("recent", "[]"))
+            List(array.length().coerceAtMost(6)) { array.getString(it) }
+        }.getOrDefault(emptyList()))
+    }
+    fun recordSearch() {
+        recentQueries = updateSettingsSearchHistory(recentQueries, searchQuery)
+        searchPrefs.edit().putString("recent", org.json.JSONArray(recentQueries).toString()).apply()
+    }
+    fun leaveSearch() {
+        recordSearch()
+        searchActive = false
+        searchQuery = ""
+        focusManager.clearFocus(force = true)
+        keyboard?.hide()
+    }
+    fun removeHistory(query: String? = null) {
+        recentQueries = if (query == null) emptyList() else recentQueries.filterNot { it == query }
+        searchPrefs.edit().putString("recent", org.json.JSONArray(recentQueries).toString()).apply()
+    }
+    BackHandler(enabled = searchActive) { leaveSearch() }
+    LaunchedEffect(searchActive) {
+        if (searchActive) {
+            searchFocus.requestFocus()
+            keyboard?.show()
+        }
+    }
 
     val playbackSectionTitle = stringResource(R.string.settings_section_playback_audio)
     val interfaceSectionTitle = stringResource(R.string.settings_section_interface_display)
@@ -373,8 +456,16 @@ fun LiquidGlassSettingsScreen(
                     onClick = onNavigateToAlbumArt
                 ),
                 SettingsRootItem(
-                    title = stringResource(R.string.settings_global_font_title),
-                    summary = stringResource(R.string.settings_global_font_summary),
+                    title = stringResource(com.rawsmusic.core.ui.R.string.settings_hdr_title),
+                    summary = stringResource(com.rawsmusic.core.ui.R.string.settings_hdr_summary),
+                    keywords = "HDR 高动态范围 display highlight",
+                    iconRes = R.drawable.ic_settings_appearance,
+                    tone = SettingsRootIconTone.Appearance,
+                    onClick = onNavigateToHdr
+                ),
+                SettingsRootItem(
+                    title = stringResource(R.string.settings_font_settings_title),
+                    summary = stringResource(R.string.settings_font_settings_summary),
                     keywords = stringResource(R.string.settings_global_font_keywords),
                     iconRes = R.drawable.ic_settings_font,
                     tone = SettingsRootIconTone.Font,
@@ -459,16 +550,20 @@ fun LiquidGlassSettingsScreen(
                 iconVector = item.iconVector,
                 tone = item.tone,
                 depth = 0,
+                destination = if (item.title == context.getString(com.rawsmusic.core.ui.R.string.settings_hdr_title))
+                    HdrSettingsActivity::class.java.name else item.tone.destination.name,
                 onClick = item.onClick,
             )
         }
     }
-    val rootsByTone = rootItems.associateBy(SettingsSearchItem::tone)
+    // HDR shares the appearance colour, but must not replace the appearance owning route.
+    val rootsByTone = rootItems.groupBy(SettingsSearchItem::tone).mapValues { it.value.first() }
     fun childSearchItem(
         tone: SettingsRootIconTone,
         title: String,
         summary: String? = null,
         keywords: String = "",
+        destination: Class<*>? = null,
         onClick: (() -> Unit)? = null,
     ): SettingsSearchItem {
         val root = requireNotNull(rootsByTone[tone])
@@ -476,12 +571,13 @@ fun LiquidGlassSettingsScreen(
             sectionTitle = root.sectionTitle,
             parentTitle = root.title,
             title = title,
-            summary = summary ?: root.summary,
+            summary = summary.orEmpty(),
             keywords = keywords,
             iconRes = root.iconRes,
             iconVector = root.iconVector,
             tone = root.tone,
             depth = 1,
+            destination = (destination ?: tone.destination).name,
             onClick = onClick ?: root.onClick,
         )
     }
@@ -494,6 +590,7 @@ fun LiquidGlassSettingsScreen(
             stringResource(R.string.settings_audio_focus_title),
             stringResource(R.string.settings_audio_focus_summary),
             "audio focus 音频焦点 抢占 duck",
+            destination = AudioFocusSettingsActivity::class.java,
             onClick = { openChildSettings(AudioFocusSettingsActivity::class.java) },
         ),
         childSearchItem(
@@ -501,6 +598,7 @@ fun LiquidGlassSettingsScreen(
             stringResource(R.string.settings_audio_dvc),
             stringResource(R.string.settings_audio_dvc_desc),
             "DVC direct volume control 直接音量",
+            destination = DvcSettingsActivity::class.java,
             onClick = { openChildSettings(DvcSettingsActivity::class.java) },
         ),
         childSearchItem(
@@ -593,6 +691,7 @@ fun LiquidGlassSettingsScreen(
             stringResource(R.string.settings_effects_peq_title),
             stringResource(R.string.settings_effects_peq_desc),
             "PEQ parametric EQ 参数均衡器",
+            destination = PEQActivity::class.java,
             onClick = { openChildSettings(PEQActivity::class.java) },
         ),
         childSearchItem(
@@ -778,6 +877,7 @@ fun LiquidGlassSettingsScreen(
             stringResource(R.string.settings_bottom_navigation_title),
             stringResource(R.string.settings_bottom_navigation_summary),
             "bottom navigation 底部导航 导航栏",
+            destination = BottomNavigationSettingsActivity::class.java,
             onClick = { openChildSettings(BottomNavigationSettingsActivity::class.java) },
         ),
         childSearchItem(
@@ -785,6 +885,7 @@ fun LiquidGlassSettingsScreen(
             stringResource(R.string.settings_mini_player_karaoke_effect),
             stringResource(R.string.settings_mini_player_karaoke_effect_desc),
             "mini player karaoke word lyrics 播放栏 逐字 歌词 特效",
+            destination = BottomNavigationSettingsActivity::class.java,
             onClick = { openChildSettings(BottomNavigationSettingsActivity::class.java) },
         ),
         childSearchItem(
@@ -825,6 +926,7 @@ fun LiquidGlassSettingsScreen(
             stringResource(R.string.settings_lyric_management_title),
             stringResource(R.string.settings_lyric_management_summary),
             "lyrics source plugin 歌词源 插件",
+            destination = LyricManagementActivity::class.java,
             onClick = { openChildSettings(LyricManagementActivity::class.java) },
         ),
         childSearchItem(
@@ -832,20 +934,15 @@ fun LiquidGlassSettingsScreen(
             stringResource(R.string.settings_lyric_color_section),
             stringResource(R.string.settings_lyric_color_scope_summary),
             "lyric color rainbow album artwork preset custom 歌词 颜色 彩虹 专辑图 预设 自定义",
+            destination = LyricManagementActivity::class.java,
             onClick = { openChildSettings(LyricManagementActivity::class.java) },
-        ),
-        childSearchItem(
-            SettingsRootIconTone.Lyrics,
-            stringResource(R.string.settings_lyric_font_title),
-            stringResource(R.string.settings_lyric_font_summary),
-            "lyric font 歌词字体 字重",
-            onClick = { openChildSettings(LyricFontSettingsActivity::class.java) },
         ),
         childSearchItem(
             SettingsRootIconTone.Lyrics,
             stringResource(R.string.settings_status_bar_lyric_title),
             stringResource(R.string.settings_status_bar_lyric_summary),
             "status bar desktop lyric 状态栏 悬浮歌词",
+            destination = StatusBarLyricActivity::class.java,
             onClick = { openChildSettings(StatusBarLyricActivity::class.java) },
         ),
         childSearchItem(
@@ -853,6 +950,7 @@ fun LiquidGlassSettingsScreen(
             stringResource(R.string.settings_system_lyric_delivery_title),
             stringResource(R.string.settings_system_lyric_delivery_summary),
             "system lyric delivery Flyme Xiaomi 三星 歌词输出",
+            destination = SystemLyricDeliveryActivity::class.java,
             onClick = { openChildSettings(SystemLyricDeliveryActivity::class.java) },
         ),
 
@@ -918,8 +1016,24 @@ fun LiquidGlassSettingsScreen(
         ),
     )
 
-    val searchItems = rootItems + childItems
-    val filteredItems = if (searchQuery.isBlank()) {
+    val searchLocale = LocalConfiguration.current.locales.toLanguageTags()
+    val indexedLabels = remember(context, searchLocale) {
+        settingsSearchIndex.map { it to context.getString(it.titleRes) }
+    }
+    val indexedItems = remember(context, searchLocale) { indexedLabels
+        .filterNot { (entry, label) -> rootItems.any { it.title == label && it.destination == entry.destination.name } }
+        .map { (entry, label) ->
+        val tone = SettingsRootIconTone.valueOf(entry.tone)
+        val item = childSearchItem(tone, label, summary = "", destination = entry.destination,
+            onClick = { openChildSettings(entry.destination) })
+        if (entry.destination == HdrSettingsActivity::class.java) {
+            item.copy(parentTitle = context.getString(com.rawsmusic.core.ui.R.string.settings_hdr_title), keywords = "HDR")
+        } else item
+    } }
+    val searchItems = remember(context, searchLocale) { (rootItems + childItems + indexedItems)
+        .distinctBy { it.destination to normalizeSettingsSearchText(it.title) }
+    }
+    val filteredItems = remember(searchQuery, searchItems) { if (searchQuery.isBlank()) {
         emptyList()
     } else {
         searchItems
@@ -929,60 +1043,310 @@ fun LiquidGlassSettingsScreen(
                     .thenByDescending(SettingsSearchItem::depth)
                     .thenBy(SettingsSearchItem::title)
             )
+    } }
+    val resultGroups = remember(filteredItems) { filteredItems.groupBy(SettingsSearchItem::destination).entries.toList() }
+    var expandedGroups by remember(searchQuery) { mutableStateOf(emptySet<String>()) }
+    // Record settled successful searches as well as explicit submit/result/cancel. Avoid
+    // writing every keystroke, and don't fill history with incomplete intermediate queries.
+    LaunchedEffect(searchActive, searchQuery) {
+        if (searchActive && searchQuery.isNotBlank()) {
+            kotlinx.coroutines.delay(600)
+            recordSearch()
+        }
     }
 
-    Column(
+    val homeScrollState = rememberScrollState()
+    val searchResultScrollState = rememberLazyListState()
+    LaunchedEffect(searchActive) {
+        if (searchActive) homeScrollState.stopScroll()
+    }
+    LaunchedEffect(searchActive, searchQuery) {
+        if (searchActive) searchResultScrollState.scrollToItem(0)
+    }
+    val topBlurState = rememberHazeState()
+    val searchPageBackdrop = rememberLayerBackdrop()
+    val windowBackdrop = LocalSettingsBackdrop.current
+    val density = LocalDensity.current
+    val title = stringResource(R.string.settings_main_title)
+    val searchHint = stringResource(R.string.settings_search_hint)
+    val statusBarTop = rawStableStatusBarTopPadding()
+    val homeOverscroll = rememberCouiSpringOverscrollState()
+    val homeCollapsePx = with(density) { SettingsHomeHeaderMotion.COLLAPSE_RANGE_DP.dp.toPx() }
+    // --- AppBar offset: nested-scroll consumption + COUISpringForce ---
+    // COUIAppBarLayout.BaseBehavior splits the two directions, and that split is what the gesture
+    // feels like in the reference (see SettingsHomeHeaderMotion.pre/postScrollConsumption):
+    //  * collapsing is entirely the AppBar's, in the *pre*-scroll phase, clamped to the 116dp range —
+    //    a small drag only moves the AppBar, the list never leaves the top, so releasing below the
+    //    snap threshold animates the AppBar back and the whole screen ends up where it started;
+    //  * expanding is only what the list could not consume, i.e. the *post*-scroll leftover once the
+    //    list is back at its top. Inside a scrolled list a downward drag therefore scrolls the list
+    //    and the "设置" title only fades in when the list is home.
+    // Logical AppBar offset (px, <= 0), saved/restored like OFFSET_STATE_KEY.
+    val headerTarget = rememberSaveable { mutableFloatStateOf(0f) }
+    // Displayed offset: the spring below follows the target; starts where the target was restored.
+    val headerDisplay = remember { mutableFloatStateOf(headerTarget.floatValue) }
+    // True while the release snap drives the bar with the attach spring (animateOffsetWithDuration).
+    val headerSnapping = remember { mutableStateOf(false) }
+    // COUISpringForce velocity (px/s), kept while the spring is retargeted. A plain array: it is
+    // never read during composition.
+    val headerVelocity = remember { floatArrayOf(0f) }
+    val homeRangePx = homeCollapsePx.roundToInt()
+    val headerConnection = remember(homeCollapsePx) {
+        object : NestedScrollConnection {
+            /** Moves the bar by [consumed] px (negative = collapse) and reports it as consumed. */
+            private fun move(consumed: Float): Offset {
+                if (consumed == 0f) return Offset.Zero
+                headerTarget.floatValue += consumed
+                // A new gesture owns the bar again (scroll(...) picks the follow spring).
+                headerSnapping.value = false
+                return Offset(0f, consumed)
+            }
+
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset = move(
+                SettingsHomeHeaderMotion.preScrollConsumption(
+                    availableY = available.y,
+                    offsetPx = headerTarget.floatValue,
+                    rangePx = homeCollapsePx,
+                )
+            )
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource,
+            ): Offset = move(
+                SettingsHomeHeaderMotion.postScrollConsumption(
+                    availableY = available.y,
+                    offsetPx = headerTarget.floatValue,
+                    rangePx = homeCollapsePx,
+                )
+            )
+        }
+    }
+    LaunchedEffect(homeScrollState, searchActive) {
+        if (searchActive) return@LaunchedEffect
+        // onStopNestedScroll → snapToChildIfNeeded, evaluated on the *AppBar's own* offset:
+        //  * contentInScreen(list) while mAutoExpand is on -> mShouldSnapToBottom, i.e. the base
+        //    offset reports 0 once and the snap always resolves to "expanded";
+        //  * otherwise calculateSnapOffset uses the AppBar's child edges (0 / -116dp) with the
+        //    mid-point rule (integer division) — the "gesture threshold" — and moves only the AppBar
+        //    (the list keeps the position the finger left), driven by the attach spring (0.25/0).
+        snapshotFlow { homeScrollState.isScrollInProgress }.collectLatest { scrolling ->
+            if (scrolling) return@collectLatest
+            val offset = headerTarget.floatValue
+            val snapOffset = when {
+                homeScrollState.maxValue <= 0 -> 0f
+                offset <= -homeRangePx || offset >= 0f -> return@collectLatest
+                offset < -homeRangePx / 2 -> -homeRangePx.toFloat()
+                else -> 0f
+            }
+            if (snapOffset == offset && abs(headerDisplay.floatValue - snapOffset) < 0.01f) {
+                return@collectLatest
+            }
+            headerSnapping.value = true
+            headerTarget.floatValue = snapOffset
+        }
+    }
+    // One spring for the follow and the release snap (COUISpringForce.getAcceleration:
+    // a = -omega^2 * (x - target) - 2 * zeta * omega * v, and zeta = 1 because every
+    // COUICollapsableAppBarLayoutParams bounce is 0). Animatable.animateTo cannot be retargeted
+    // per frame: a new call cancels the running animation and Compose resets its velocity to 0
+    // (Animatable.kt: "once the animation ends, its velocity will be reset to 0"), which restarted
+    // the bar from rest on every scroll frame and made the title lag the gesture by tens of dp.
+    LaunchedEffect(searchActive) {
+        if (searchActive) return@LaunchedEffect
+        var last = 0L
+        var idle = true
+        while (true) {
+            if (idle) {
+                snapshotFlow { headerTarget.floatValue to headerDisplay.floatValue }
+                    .first { (target, x) -> abs(target - x) > 0.01f }
+                idle = false
+                last = 0L
+            } else {
+                val now = withFrameNanos { it }
+                val x = headerDisplay.floatValue
+                val target = headerTarget.floatValue
+                var v = headerVelocity[0]
+                if (last != 0L) {
+                    val dt = ((now - last) / 1_000_000_000f).coerceIn(0.001f, 0.032f)
+                    val stiffness = when {
+                        headerSnapping.value -> SettingsHomeHeaderMotion.SnapStiffness
+                        target < x -> SettingsHomeHeaderMotion.CollapseFollowStiffness
+                        else -> SettingsHomeHeaderMotion.ExpandFollowStiffness
+                    }
+                    // RK4, like COUI's own CouiPhysicsState.rk4 / CouiSpringForce: the explicit Euler
+                    // step is only marginally stable for the stiff expand spring (omega ~ 63 rad/s at
+                    // a 32 ms frame), which would ring or overshoot the target.
+                    val h = dt.toDouble()
+                    val kd = stiffness.toDouble()
+                    val c = 2.0 * sqrt(kd)                     // zeta = 1, every COUI bounce is 0
+                    val xd = x.toDouble()
+                    val vd = v.toDouble()
+                    val td = target.toDouble()
+                    val a1 = -kd * (xd - td) - c * vd
+                    val x2 = xd + vd * h * 0.5
+                    val v2 = vd + a1 * h * 0.5
+                    val a2 = -kd * (x2 - td) - c * v2
+                    val x3 = xd + v2 * h * 0.5
+                    val v3 = vd + a2 * h * 0.5
+                    val a3 = -kd * (x3 - td) - c * v3
+                    val x4 = xd + v3 * h
+                    val v4 = vd + a3 * h
+                    val a4 = -kd * (x4 - td) - c * v4
+                    val rk4Weight = 1.0 / 6.0
+                    // Clamped to the AppBar's own range: the reference can never report an offset
+                    // outside [0, -116dp], and a display that went positive would render the large
+                    // title (its alpha is 1 - |offset| / 64dp) with the chrome pushed down.
+                    val next = (xd + (vd + 2.0 * (v2 + v3) + v4) * rk4Weight * h)
+                        .toFloat()
+                        .coerceIn(-homeCollapsePx, 0f)
+                    v = (vd + (a1 + 2.0 * (a2 + a3) + a4) * rk4Weight * h).toFloat()
+                    headerDisplay.floatValue = next
+                    headerVelocity[0] = v
+                    if (abs(target - next) < 0.05f && abs(v) < 1.5f) {
+                        headerDisplay.floatValue = target
+                        headerVelocity[0] = 0f
+                        headerSnapping.value = false
+                        idle = true
+                    }
+                }
+                last = now
+            }
+        }
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(resolvedPageBackground)
     ) {
-        SmallTopAppBar(
-            title = stringResource(R.string.settings_main_title),
-            color = resolvedPageBackground,
-            titleColor = MiuixTheme.colorScheme.onBackground,
-            navigationIcon = {}
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp)
-        ) {
-            TextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = stringResource(R.string.settings_search_hint)
-            )
+        // Capture a fixed, full-screen viewport, including its fill. Recording inside the
+        // scrolling column made the sampling origin scroll and excluded the status-bar area.
+        Box(Modifier.fillMaxSize()
+            .then(if (Build.VERSION.SDK_INT >= 33 && isBackdropSupported)
+                Modifier.layerBackdrop(searchPageBackdrop) else Modifier)
+            .then(if (isBackdropSupported) Modifier.settingsTopBlurSource(topBlurState, windowBackdrop) else Modifier)
+            .background(resolvedPageBackground)) {
+        // Keep the homepage mounted: exiting search must not restore its scroll on a later frame.
+        Box(Modifier.fillMaxSize().graphicsLayer {
+            alpha = SettingsSearchMotion.at(searchProgress, searchActive).homeAlpha
+        }) {
+            WithoutPlatformOverscroll {
+                Column(Modifier.fillMaxSize()
+                    .nestedScroll(homeOverscroll.connection)
+                    .nestedScroll(headerConnection)
+                    .couiOverscrollOffset(homeOverscroll)
+                    .verticalScroll(homeScrollState, enabled = !searchActive,
+                        flingBehavior = rememberCouiFlingBehavior(homeOverscroll))) {
+                    Column(Modifier.offset { IntOffset(0, headerDisplay.floatValue.roundToInt()) }) {
+                        Spacer(Modifier.height(statusBarTop))
+                        Spacer(Modifier.height(SettingsHomeHeaderMotion.COLLAPSE_RANGE_DP.dp))
+                        Spacer(Modifier.height(SettingsHomeHeaderMotion.SEARCH_BAR_HEIGHT_DP.dp))
+                        sections.forEach { section ->
+                            Column(Modifier.padding(horizontal = 12.dp)) {
+                                SmallTitle(text = section.title)
+                                SettingsCardGroup {
+                                    Column {
+                                        section.items.forEach { item -> SettingsRootEntry(item, isDark) }
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(180.dp))
+                    }
+                }
+            }
         }
-
-        if (searchQuery.isNotBlank() && filteredItems.isNotEmpty()) {
-            Column(
+        if (searchActive || searchProgress > 0f) {
+        Box(Modifier.fillMaxSize().graphicsLayer {
+            alpha = searchProgress
+            translationY = (with(density) { statusBarTop.toPx() } + homeCollapsePx + headerDisplay.floatValue) * (1f - searchProgress)
+        }.background(resolvedPageBackground).clickable(
+            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+            indication = null,
+        ) { keyboard?.hide() }) {
+        if (searchQuery.isBlank() || filteredItems.isNotEmpty()) {
+            LazyColumn(
+                state = searchResultScrollState,
+                contentPadding = PaddingValues(bottom = 24.dp),
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .statusBarsPadding()
                     .padding(horizontal = 12.dp)
             ) {
-                SmallTitle(text = stringResource(R.string.settings_search_results))
-                SettingsCardGroup {
-                    Column {
-                        filteredItems.forEach { result ->
+                item(key = "search-top") { Spacer(modifier = Modifier.height(64.dp)) }
+                if (searchQuery.isBlank()) {
+                    if (recentQueries.isNotEmpty()) {
+                        item(key = "search-history") {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.weight(1f)) {
+                        SmallTitle(text = stringResource(R.string.settings_search_recent_title))
+                            }
+                            Text(stringResource(R.string.settings_search_clear_history),
+                                color = MiuixTheme.colorScheme.primary,
+                                modifier = Modifier.clickable { removeHistory() }.padding(16.dp))
+                        }
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp)) {
+                            recentQueries.forEach { query ->
+                                Row(Modifier.clip(RoundedCornerShape(50))
+                                    .background(MiuixTheme.colorScheme.onBackground.copy(alpha = 0.06f)),
+                                    verticalAlignment = Alignment.CenterVertically) {
+                                    Text(query, maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        color = MiuixTheme.colorScheme.onBackground,
+                                        modifier = Modifier.weight(1f, fill = false).clickable {
+                                            searchQuery = query
+                                        }.padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp))
+                                    Icon(Icons.Default.Close,
+                                        contentDescription = stringResource(R.string.settings_search_remove_history, query),
+                                        tint = MiuixTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                                        modifier = Modifier.clickable { removeHistory(query) }
+                                            .padding(end = 12.dp, start = 4.dp).size(18.dp))
+                                }
+                            }
+                        }
+                        }
+                    }
+                } else {
+                    resultGroups.forEach { (destination, results) ->
+                        val owner = (rootItems + childItems).firstOrNull { it.destination == destination }
+                        item(key = "heading:$destination") {
+                            SmallTitle(text = "${owner?.title ?: results.first().parentTitle ?: results.first().title} · ${results.size}")
+                        }
+                        val expanded = destination in expandedGroups
+                        items(if (expanded) results else results.take(3),
+                            key = { "$destination:${normalizeSettingsSearchText(it.title)}" }) { result ->
+                            SettingsCardGroup {
                             SettingsSearchResultEntry(
                                 result = result,
                                 isDark = isDark,
                                 onClick = {
+                                    recordSearch()
+                                    keyboard?.hide()
                                     result.onClick()
-                                    searchQuery = ""
                                 },
                             )
+                            }
+                        }
+                        if (results.size > 3) {
+                            item(key = "expand:$destination") {
+                                Text(text = if (expanded) stringResource(R.string.settings_search_collapse_group)
+                                    else stringResource(R.string.settings_search_expand_group, results.size - 3),
+                                    color = MiuixTheme.colorScheme.primary,
+                                    modifier = Modifier.fillMaxWidth().clickable {
+                                        expandedGroups = if (expanded) expandedGroups - destination else expandedGroups + destination
+                                    }.padding(horizontal = 20.dp, vertical = 12.dp))
+                            }
                         }
                     }
                 }
-                Spacer(modifier = Modifier.height(16.dp))
             }
-        } else if (searchQuery.isNotBlank()) {
+        } else {
             Box(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().statusBarsPadding(),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -991,28 +1355,767 @@ fun LiquidGlassSettingsScreen(
                     fontSize = 14.sp
                 )
             }
-        } else {
-            Column(
+        }
+        }
+
+        }
+        }
+        SettingsHomeSearchChrome(
+            title = title,
+            query = searchQuery,
+            onQueryChange = { searchQuery = it },
+            hint = searchHint,
+            headerOffsetPx = { headerDisplay.floatValue },
+            contentScrollPx = { homeScrollState.value.toFloat() + homeOverscroll.scrollY },
+            searchActive = searchActive,
+            searchProgress = searchProgress,
+            onEnterSearch = { searchActive = true },
+            onLeaveSearch = { leaveSearch() },
+            onSubmitSearch = { recordSearch(); keyboard?.hide() },
+            searchFocus = searchFocus,
+            isDark = isDark,
+            hazeState = topBlurState,
+            materialBackdrop = searchPageBackdrop,
+            statusBarTop = statusBarTop,
+        )
+    }
+}
+
+/**
+ * SettingsCollapsingToolbarLayout large title. [headerOffsetPx] is the displayed AppBar offset
+ * (≤ 0, spring-followed); the collapsing toolbar sits right below the status-bar padding.
+ */
+@Composable
+private fun SettingsHomeTitle(
+    title: String,
+    headerOffsetPx: () -> Float,
+    statusBarTopPx: Float,
+    searchProgress: Float,
+    searchActive: Boolean,
+) {
+    val density = LocalDensity.current
+    var textHeightPx by remember { mutableIntStateOf(0) }
+    Box(
+        modifier = Modifier
+            .offset { IntOffset(0, (statusBarTopPx + headerOffsetPx()).roundToInt()) }
+            .fillMaxWidth()
+            .height(SettingsHomeHeaderMotion.COLLAPSE_RANGE_DP.dp)
+            .padding(start = 24.dp, bottom = SettingsHomeHeaderMotion.TITLE_MARGIN_BOTTOM_DP.dp),
+        contentAlignment = Alignment.BottomStart,
+    ) {
+        Text(
+            text = title,
+            fontSize = 40.sp,
+            fontWeight = FontWeight.SemiBold,
+            fontFamily = appFontFamily(),
+            color = MiuixTheme.colorScheme.onBackground,
+            modifier = Modifier
+                .onSizeChanged { textHeightPx = it.height }
+                .graphicsLayer {
+                    val scrollPx = -headerOffsetPx()
+                    val motion = SettingsHomeHeaderMotion.at(scrollPx / density.density)
+                    // COUICollapsingTextHelper, in collapsing-toolbar coordinates: the expanded
+                    // anchor sits at the bottom (margin 18dp). The collapsed anchor is *constant*:
+                    // COUICollapsingToolbarLayout.updateCollapsedBounds bakes it once per layout as the
+                    // pinned toolbar's slot + getMaxOffsetForPinChild, which reads the toolbar's
+                    // ViewOffsetHelper.getLayoutTop() (the layout position, not the live pin offset),
+                    // and the offset listener never requests layout — so it must not follow the scroll.
+                    // Both text sizes are 40sp, so the anchor uses the unscaled height; Settings then
+                    // scales the drawn text separately.
+                    val h = textHeightPx.toFloat()
+                    val expandedTop = (SettingsHomeHeaderMotion.COLLAPSE_RANGE_DP -
+                        SettingsHomeHeaderMotion.TITLE_MARGIN_BOTTOM_DP) * density.density - h
+                    val pinPx = SettingsHomeHeaderMotion.TITLE_RANGE_DP * density.density
+                    val collapsedTop = pinPx +
+                        (SettingsHomeHeaderMotion.TOOLBAR_HEIGHT_DP * density.density - h) / 2f +
+                        SettingsHomeHeaderMotion.TITLE_MARGIN_CENTER_OFFSET_DP * density.density
+                    // TitleTransform belongs to the text, not an alpha layer around the
+                    // AppBar. An outer offscreen layer clips the offset title at its bounds.
+                    val search = SettingsSearchMotion.at(searchProgress, searchActive)
+                    translationY = (collapsedTop - expandedTop) * motion.titlePositionFraction + search.titleOffsetPx
+                    alpha = motion.titleAlpha * search.homeAlpha
+                    scaleX = motion.titleScale * search.titleScale
+                    scaleY = scaleX
+                    // canvas.scale(scale, scale, drawX, drawY): pivot at the text's top-left.
+                    transformOrigin = TransformOrigin(0f, 0f)
+                },
+        )
+    }
+}
+
+@Composable
+private fun SettingsHomeSearchChrome(
+    title: String,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    hint: String,
+    headerOffsetPx: () -> Float,
+    contentScrollPx: () -> Float,
+    searchActive: Boolean,
+    searchProgress: Float,
+    onEnterSearch: () -> Unit,
+    onLeaveSearch: () -> Unit,
+    onSubmitSearch: () -> Unit,
+    searchFocus: FocusRequester,
+    isDark: Boolean,
+    hazeState: HazeState,
+    materialBackdrop: Backdrop,
+    statusBarTop: androidx.compose.ui.unit.Dp,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val collapsePx = with(density) { SettingsHomeHeaderMotion.COLLAPSE_RANGE_DP.dp.toPx() }
+    val statusTopPx = with(density) { statusBarTop.toPx() }
+    // Displayed AppBar offset (the header view chases the list with a spring). COUIAppBarLayout
+    // dispatches offsets to *every* listener from that same per-frame spring animation
+    // (COUIViewOffsetHelper.OnAnimateUpdateListener -> BaseBehavior -> appBar.onOffsetChanged(frame)),
+    // so the overlay alpha, the extra height and the search-bar shadow all follow the displayed
+    // offset — the logical scroll target is only what the nested scroll consumes against.
+    val headerPx = SettingsSearchMotion.headerOffset(headerOffsetPx(), collapsePx, searchProgress)
+    val displayedPx = -headerPx
+    val motion = SettingsHomeHeaderMotion.at(displayedPx / density.density)
+    // AppBarBlurOverlayBehavior.resolveScrollDistancePx: the |AppBar offset| while it is non-zero,
+    // otherwise the content scroll plus the rubber band (mAccumulatedContentScrollPx +
+    // COUIRecyclerView.getScrollY()). A list that cannot move the bar therefore still fades the
+    // overlay in while it is being overscrolled.
+    val barOffsetPx = displayedPx
+    val contentPx = contentScrollPx()
+    val blurDistancePx = if (barOffsetPx > 0f) barOffsetPx else contentPx
+    val normalBlurAlpha = SettingsHomeHeaderMotion.blurAlpha(blurDistancePx / density.density)
+    // HomepageImpl.applySearchEditBlur forces alpha on entry; animToNormal releases it on exit.
+    val blurAlpha = if (searchActive) 1f else normalBlurAlpha
+    val barProgress by animateFloatAsState(
+        if (searchActive) 1f else 0f,
+        spring(dampingRatio = SettingsSearchMotion.barDampingRatio,
+            stiffness = SettingsSearchMotion.barStiffness, visibilityThreshold = 0.000001f),
+        label = "SettingsSearchCapsule",
+    )
+    val cancelProgress by animateFloatAsState(
+        if (searchActive) 1f else 0f,
+        spring(dampingRatio = SettingsSearchMotion.barDampingRatio,
+            stiffness = SettingsSearchMotion.barStiffness, visibilityThreshold = 0.000001f),
+        label = "SettingsSearchCancel",
+    )
+    // AppBarBlurOverlayView spans the whole AppBar — status-bar padding + 116dp collapsing toolbar
+    // + 52dp search bar — moved by the AppBar offset, plus homepage_appbar_blur_extra_height while
+    // the AppBar reports isCollapsed() (the *title* collapsed, |offset| >= 64dp, not 116dp).
+    // Background RenderEffect operates over the visible sampling band. Keep that band's
+    // origin at the window top: moving a full-height Compose mask offscreen instead leaves
+    // the search row in its sharp tail once the large title has collapsed.
+    val overlayHeight = statusBarTop +
+        (SettingsHomeHeaderMotion.COLLAPSE_RANGE_DP + SettingsHomeHeaderMotion.SEARCH_BAR_HEIGHT_DP +
+            if (motion.collapsed) SettingsHomeHeaderMotion.BLUR_COLLAPSED_EXTRA_DP else 0f).dp
+    // Only the already-composited header pixels are recorded here. Never record the
+    // search material itself, which would feed its own tint back into the next frame.
+    val searchBlurBackdrop = rememberLayerBackdrop()
+    val searchBackdrop = rememberCombinedBackdrop(materialBackdrop,searchBlurBackdrop)
+    Box(modifier = modifier.fillMaxWidth()) {
+        if (isBackdropSupported) {
+            ProgressiveTopBlur(
+                hazeState = hazeState,
+                radius = 30.dp,
+                tintColor = MiuixTheme.colorScheme.background,
+                tintAlpha = if (isDark) 0.20f else 0.24f,
                 modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp)
-            ) {
-                Spacer(modifier = Modifier.height(8.dp))
-                sections.forEach { section ->
-                    SmallTitle(text = section.title)
-                    SettingsCardGroup {
-                        Column {
-                            section.items.forEach { item ->
-                                SettingsRootEntry(item = item, isDark = isDark)
+                    .fillMaxWidth()
+                    .layerBackdrop(searchBlurBackdrop)
+                    .height(with(density) {
+                        settingsBlurViewportHeight(overlayHeight.toPx(), headerPx).toDp()
+                    })
+                    .graphicsLayer { alpha = blurAlpha },
+            )
+        }
+
+        if (searchProgress < 1f) {
+            // SettingsCollapsingToolbarLayout: part of the AppBar, moved by the AppBar offset
+            // (clamped to the 116dp scroll range) and never by list overscroll.
+            SettingsHomeTitle(
+                title = title,
+                headerOffsetPx = headerOffsetPx,
+                statusBarTopPx = statusTopPx,
+                searchProgress = searchProgress,
+                searchActive = searchActive,
+            )
+        }
+
+        // SearchViewAnimate (exitUntilCollapsed): top = statusBar + 116dp + offset, so it ends
+        // pinned right under the status bar. 52dp row, 40dp capsule, 16dp horizontal padding.
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(0, (statusTopPx + collapsePx + headerPx).roundToInt()) }
+                .fillMaxWidth()
+                .height(SettingsHomeHeaderMotion.SEARCH_BAR_HEIGHT_DP.dp)
+                .padding(horizontal = 16.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            val shape = RoundedCornerShape(50)
+            // COUISearchBar hint / icon colour: couiColorLabelSecondary / couiColorSecondNeutral.
+            val secondaryColor = if (isDark) Color(0x8AFFFFFF) else Color(0x8A000000)
+            val contentColor = MiuixTheme.colorScheme.onBackground
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val frameworkSurface = remember(context) { CouiSearchBarSurface.resolve(context) }
+            val materialColor = if (isBackdropSupported) {
+                // The fixed progressive layer already draws the pixels behind this capsule.
+                // Do not redraw the sharp page or sample/blur the header a second time.
+                if (isDark) Color(0xFF262626).copy(alpha = 0.65f)
+                else Color(0xFFF5F5F5).copy(alpha = 0.32f)
+            } else {
+                // Material version without blur: solid ?attr/couiColorBar.
+                if (isDark) Color(0xFF1E1E1E) else Color(0xFFFAFAFA)
+            }
+            val cancelWidth = remember { mutableIntStateOf(0) }
+            val cancelTranslationDirection = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1f else 1f
+            val sharedMaterial = searchMaterialModifier(cancelWidth.intValue,barProgress,cancelProgress,
+                materialColor,if (isBackdropSupported) searchBackdrop else null,isDark,
+                decorateSearch = !frameworkSurface.stroke)
+            // The backdrop's offscreen rectangular clip belongs to its sampling layer only.
+            // Wrapping the Layout also clips the sibling View's capsule drop shadow to the
+            // row bounds, leaving a straight-edged grey rectangle on light backgrounds.
+            Box(Modifier.matchParentSize().then(sharedMaterial))
+            // measureFunctionalButton: text-sized, capped at 152dp. The capsule reserves the
+            // measured width + 12dp; cancel is a sibling, never part of EditText's decoration.
+            Layout(content = {
+            Box {
+            if (frameworkSurface.available) {
+                CouiSearchBarBackground(
+                    surface = frameworkSurface,
+                    // HomepageImpl's AppBar offset listener drives COUISearchBar.updateDropShadow with
+                    // the displayed offset (per spring frame), not with the scroll target.
+                    fraction = { displayedPx / collapsePx },
+                    isDark = isDark,
+                    modifier = Modifier.fillMaxWidth().height(40.dp),
+                )
+            }
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSubmitSearch() }),
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(
+                    color = contentColor,
+                    fontSize = 15.sp,
+                    fontFamily = appFontFamily(),
+                ),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(contentColor),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(40.dp)
+                    .focusRequester(searchFocus)
+                    .onFocusChanged { if (it.isFocused && !searchActive) onEnterSearch() }
+                    .clip(shape),
+                decorationBox = { innerTextField ->
+                    Row(
+                        // Inner search icon: 4dp start gap + 36dp slot (8dp padding, 20dp glyph),
+                        // so the text starts at coui_search_view_background_start_gap (40dp).
+                        modifier = Modifier.fillMaxSize().padding(start = 4.dp, end = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            modifier = Modifier.size(36.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = null,
+                                tint = secondaryColor,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        Box(modifier = Modifier.weight(1f)) {
+                            if (query.isEmpty()) {
+                                Text(
+                                    text = hint,
+                                    fontSize = 15.sp,
+                                    fontFamily = appFontFamily(),
+                                    color = secondaryColor,
+                                    maxLines = 1,
+                                )
+                            }
+                            innerTextField()
+                        }
+                        if (query.isNotEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clickable { onQueryChange("") },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = null,
+                                    tint = secondaryColor,
+                                    modifier = Modifier.size(20.dp),
+                                )
                             }
                         }
                     }
+                },
+            )
+            }
+            Box(modifier = Modifier.graphicsLayer {
+                // Keep the spring's subpixel motion in the layer, not integer placement.
+                // The shared surface uses exactly the same displacement.
+                translationX = cancelTranslationDirection * SettingsSearchMaterial.cancelTranslation(cancelProgress)
+                alpha = SettingsSearchMotion.cancelAlpha(cancelProgress)
+                scaleX = SettingsSearchMotion.cancelScale(cancelProgress)
+                scaleY = scaleX
+                // COUISearchBar.updateBlurWithAnimationProgress: physical px, DECAL, not dp.
+                val radius = 30f * (1f - cancelProgress).coerceAtLeast(0f)
+                renderEffect = if (Build.VERSION.SDK_INT >= 31 && radius > 0.01f)
+                    android.graphics.RenderEffect.createBlurEffect(radius, radius, android.graphics.Shader.TileMode.DECAL)
+                        .asComposeRenderEffect() else null
+            }.clickable(enabled = searchActive, onClick = onLeaveSearch)) {
+            // The functional cancel button is not SearchBarBackgroundView: its surface is
+            // already drawn by sharedMaterial. Do not attach the search bar's scroll shadow.
+            Text(
+                text = stringResource(android.R.string.cancel),
+                fontSize = 14.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                fontFamily = appFontFamily(),
+                color = contentColor.copy(alpha = contentColor.alpha * cancelProgress.coerceIn(0f, 1f)),
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.height(40.dp).padding(horizontal = 16.dp)
+                    .wrapContentHeight(Alignment.CenterVertically),
+            )
+            }
+            }, modifier = Modifier.fillMaxWidth()) { measurables, constraints ->
+                val button = measurables[1].measure(Constraints(
+                    maxWidth = minOf(152.dp.roundToPx(), constraints.maxWidth),
+                    maxHeight = constraints.maxHeight,
+                ))
+                if (cancelWidth.intValue != button.width) cancelWidth.intValue = button.width
+                val capsuleWidth = SettingsSearchMaterial.searchWidth(
+                    constraints.maxWidth, button.width, 12.dp.roundToPx(), barProgress,
+                )
+                val capsule = measurables[0].measure(Constraints.fixed(capsuleWidth, 40.dp.roundToPx()))
+                layout(constraints.maxWidth, constraints.maxHeight) {
+                    // Material-version branch of m9779e: translate from capsule edge to final
+                    // button position. placeRelative also mirrors the same geometry in RTL.
+                    button.placeRelative(
+                        constraints.maxWidth - button.width,
+                        (constraints.maxHeight - button.height) / 2,
+                    )
+                    capsule.placeRelative(0, (constraints.maxHeight - capsule.height) / 2)
                 }
-                Spacer(modifier = Modifier.height(180.dp))
             }
         }
     }
+}
+
+/**
+ * Which parts of SearchBarBackgroundView the platform renders on this device.
+ * - blur: COUIMaterialEffect.canApplyBackgroundRenderEffect() (OplusBuild SDK 33.34+, animation
+ *   level not low) and COUIMaterialStateManager.MATERIAL_BLUR_ENABLE
+ *   (Settings.System system_material_blur_enable == 1, not in low power / super power save).
+ * - stroke: MATERIAL_STROKE_ENABLE (materialVersionCheck() 40.2+ and
+ *   Settings.System system_material_stroke_enable == 1).
+ * - caustic: MATERIAL_CAUSTIC_SHADOW_ENABLE (stroke and the app feature
+ *   com.oplus.appcompat.texture_effect.Enable) → COUISearchBar.isCausticShadowEnable().
+ * - elevation: ShadowUtils.checkOPlusViewElevationSDK() (34.2+).
+ * - smoothCorner: RoundCornerUtil.getSmoothStyleType() == 1.
+ */
+private class CouiSearchBarSurface(
+    val blur: Boolean,
+    val stroke: Boolean,
+    val caustic: Boolean,
+    val elevation: Boolean,
+    val smoothCorner: Boolean,
+) {
+    val available: Boolean get() = blur || stroke || caustic || elevation
+
+    companion object {
+        fun resolve(context: android.content.Context): CouiSearchBarSurface {
+            if (!CouiOplus.present) return CouiSearchBarSurface(false, false, false, false, false)
+            val resolver = context.contentResolver
+            val animLevel = CouiOplus.systemPropInt("persist.sys.oplus.anim_level", 3)
+            // COUIMaterialStateManager.isLowAnimationLevel(): !(1 <= level < 3).
+            val lowAnimation = animLevel !in 1 until 3
+            val lowPower = runCatching {
+                android.provider.Settings.Global.getInt(resolver, "low_power", 0) == 1
+            }.getOrDefault(false)
+            val superPowerSave = runCatching {
+                android.provider.Settings.System.getInt(resolver, "super_powersave_mode_state", 0) == 1
+            }.getOrDefault(false)
+            val blurSetting = runCatching {
+                android.provider.Settings.System.getInt(resolver, "system_material_blur_enable", 0) == 1
+            }.getOrDefault(false)
+            val strokeSetting = runCatching {
+                android.provider.Settings.System.getInt(resolver, "system_material_stroke_enable", 0) == 1
+            }.getOrDefault(false)
+            val stroke = CouiOplus.checkSubSdk(40, 2) && strokeSetting
+            val feature = CouiOplus.appFeatureBoolean(resolver, "com.oplus.appcompat.texture_effect.Enable")
+            // getSmoothStyleType() == 1: 37.1+ and isSmoothRoundRectOn() (version 34+, anim_level < 3
+            // or upgrade_anim_level < 3, default_smooth_weight / 100 != 2).
+            val upgradeLevel = CouiOplus.systemPropInt("persist.sys.oplus.upgrade_anim_level", 3)
+            val weight = CouiOplus.systemPropInt("persist.sys.oplus.default_smooth_weight", 170) / 100f
+            val smooth = CouiOplus.checkSubSdk(37, 1) && CouiOplus.sdk.first >= 34 &&
+                (animLevel < 3 || upgradeLevel < 3) && weight != 2f
+            return CouiSearchBarSurface(
+                blur = CouiOplus.checkSubSdk(33, 34) && !lowAnimation && blurSetting &&
+                    !lowPower && !superPowerSave,
+                stroke = stroke,
+                caustic = stroke && feature,
+                elevation = CouiOplus.checkSubSdk(34, 2),
+                smoothCorner = smooth,
+            )
+        }
+    }
+}
+
+/**
+ * HomepageImpl$2 offset listener driving COUISearchBar.updateDropShadow. Per offset change (skipped
+ * when |offset| / totalScrollRange equals mScrollFraction):
+ * fraction > 0.5 → updateDropShadow(fraction); setNoShadowInNormalState(false)
+ * otherwise      → updateDropShadow(0);        setNoShadowInNormalState(true)
+ * updateDropShadow clamps to [0, 1] and, while mNoShadowInNormalState is still set, remaps with
+ * remapShadowProgress (p ≤ 0.8 → 0, else (p − 0.8) / 0.2). HomepageImpl sets the flag to true
+ * when the search bar is set up.
+ */
+private class SearchBarDropShadow {
+    private var scrollFraction = 0f
+    private var noShadowInNormalState = true
+    var progress = 0f
+        private set
+
+    fun onOffsetChanged(fraction: Float) {
+        if (scrollFraction == fraction) return
+        scrollFraction = fraction
+        if (fraction > 0.5f) {
+            updateDropShadow(fraction)
+            noShadowInNormalState = false
+        } else {
+            updateDropShadow(0f)
+            noShadowInNormalState = true
+        }
+    }
+
+    private fun updateDropShadow(value: Float) {
+        val p = value.coerceIn(0f, 1f)
+        progress = if (noShadowInNormalState) {
+            if (p <= 0.8f) 0f else (p - 0.8f) / 0.19999999f
+        } else {
+            p
+        }
+    }
+}
+
+/**
+ * SearchBarBackgroundView's platform decorations (normal state, material type 0).
+ * The TOP_BAR background colour layers are drawn in Compose over the AppBar recording;
+ * this View supplies TYPE_FRAMEWORK_CAPSULE_1 stroke:
+ *   OplusMaterialEdgeParams(1, 2.2dp, 0.2 / night 0.6, 0) and OplusMaterialShadowParams(1,
+ *   1.15 / night 1.0, 0.1 / night 0.01, 1.0); clipToOutline off; OplusMaterialCornerParams(60, 1)
+ *   with radius h / 2. Outline: the smooth round rect path, or a round rect of radius h / 2.
+ * - updateDropShadow: caustic → setCausticShadow (ShadowUtils level 6 + caustic colour / layout /
+ *   params), otherwise clearCausticShadow + updateViewShadow (ShadowUtils level 3a).
+ */
+@Composable
+private fun CouiSearchBarBackground(
+    surface: CouiSearchBarSurface,
+    fraction: () -> Float,
+    isDark: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val dropShadow = remember { SearchBarDropShadow() }
+    androidx.compose.ui.viewinterop.AndroidView(
+        factory = { context -> CouiSearchBarBackgroundView(context, surface) },
+        modifier = modifier,
+        update = { view ->
+            view.setNight(isDark)
+            dropShadow.onOffsetChanged(fraction())
+            view.updateDropShadow(dropShadow.progress)
+        },
+)
+}
+
+private class CouiSearchBarBackgroundView(
+    context: android.content.Context,
+    private val surface: CouiSearchBarSurface,
+) : android.view.View(context) {
+    private val smoothPath = android.graphics.Path()
+    private val smoothRect = android.graphics.RectF()
+    private var night: Boolean? = null
+    private var shadowProgress = -1f
+
+    init {
+        outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: android.view.View, outline: android.graphics.Outline) {
+                if (surface.blur && !smoothPath.isEmpty) {
+                    outline.setPath(smoothPath)
+                } else {
+                    outline.setRoundRect(0, 0, view.width, view.height, view.height / 2f)
+                }
+            }
+        }
+        clipToOutline = !surface.blur
+        // UIUtil.setViewShadowClippingEnabled(this, true), OplusBuild SDK 40.2+.
+        if (CouiOplus.checkSubSdk(40, 2)) CouiOplus.setShadowClippingEnabled(this, true)
+        // The platform draws this view's shadow while its parent draws it; the interop holder is
+        // exactly the capsule's size, so it must not clip it.
+        addOnAttachStateChangeListener(object : android.view.View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: android.view.View) {
+                (v.parent as? android.view.ViewGroup)?.apply {
+                    clipChildren = false
+                    clipToPadding = false
+                }
+            }
+
+            override fun onViewDetachedFromWindow(v: android.view.View) = Unit
+        })
+    }
+
+    fun setNight(isNight: Boolean) {
+        if (night == isNight) return
+        night = isNight
+        applyMaterialSurface()
+        if (shadowProgress >= 0f) applyDropShadow(shadowProgress)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // updateSmoothRoundPath: radius = height / 2 over the background bounds.
+        smoothPath.reset()
+        smoothRect.set(0f, 0f, w.toFloat(), h.toFloat())
+        val radius = h / 2f
+        if (!(surface.smoothCorner && CouiOplus.addSmoothRoundRect(smoothPath, smoothRect, radius))) {
+            smoothPath.reset()
+            smoothPath.addRoundRect(smoothRect, radius, radius, android.graphics.Path.Direction.CW)
+        }
+        invalidateOutline()
+        applyMaterialSurface()
+    }
+
+    private fun applyMaterialSurface() {
+        val isNight = night ?: return
+        if (width == 0 || height == 0) return
+        // Compose draws the background material from the composited AppBar scene. This View
+        // owns only the platform edge/corner/shadow, avoiding a second raw background sample.
+        if (surface.stroke) {
+            CouiOplus.setEdgeParams(
+                this,
+                type = 1,
+                width = android.util.TypedValue.applyDimension(
+                    android.util.TypedValue.COMPLEX_UNIT_DIP, 2.2f, resources.displayMetrics,
+                ),
+                alpha = if (isNight) 0.6f else 0.2f,
+                angle = 0f,
+            )
+            CouiOplus.setMaterialShadowParams(
+                this,
+                type = 1,
+                fadeScale = if (isNight) 1.0f else 1.15f,
+                fadeIn = if (isNight) 0.01f else 0.1f,
+                fadeOut = 1.0f,
+            )
+        }
+        if (surface.blur) CouiOplus.setCornerParams(this, height / 2f)
+    }
+
+    fun updateDropShadow(progress: Float) {
+        if (progress == shadowProgress) return
+        shadowProgress = progress
+        applyDropShadow(progress)
+    }
+
+    private fun applyDropShadow(progress: Float) {
+        val isNight = night ?: return
+        val metrics = resources.displayMetrics
+        if (surface.caustic) {
+            // setCausticShadow(view, p).
+            if (surface.elevation) {
+                // ShadowUtils level 6: coui_shadow_*_caustic_upper.
+                setElevationFromOplusView(
+                    elevation = dimensionPixelSize(16f, metrics) * progress,
+                    alpha = 30,
+                    lightY = dimensionPixelSize(-160f, metrics),
+                    lightZ = dimensionPixelSize(0f, metrics),
+                    lightR = dimensionPixelSize(800f, metrics),
+                    blurR = dimensionPixelSize(0f, metrics),
+                )
+            }
+            if (CouiOplus.checkSubSdk(40, 12)) {
+                // coui_caustic_color_1: #2EFFFFFF, night #33FFFFFF; alpha scaled by p.
+                val caustic = if (isNight) 0x33FFFFFF else 0x2EFFFFFF
+                val a = (android.graphics.Color.alpha(caustic) * progress).toInt()
+                CouiOplus.setOutlineCausticShadowColor(this, android.graphics.Color.argb(a, 255, 255, 255))
+                // coui_caustic_layout_{l,t,r,b}_level2 = 0, 0, 0, 4.9dp (getDimensionPixelOffset).
+                CouiOplus.setOutlineCausticShadowLayout(this, 0, 0, 0, (4.9f * metrics.density).toInt())
+                // coui_caustic_layout_sdf_level2 = 9.23dp; the other arguments are the defaults
+                // of setOutlineCausticShadowParams (0.6, 0.6, 18, 0.45, 0.6).
+                CouiOplus.setOutlineCausticShadowParams(
+                    this, (9.23f * metrics.density).toInt().toFloat(), 0.6f, 0.6f, 18f, 0.45f, 0.6f,
+                )
+            }
+        } else {
+            if (CouiOplus.checkSubSdk(40, 12)) CouiOplus.setOutlineCausticShadowColor(this, 0)
+            if (surface.elevation) {
+                // ShadowUtils level 3a.
+                setElevationFromOplusView(
+                    elevation = dimensionPixelSize(100f, metrics) * progress,
+                    alpha = if (isNight) 68 else 34,
+                    lightY = dimensionPixelSize(if (isNight) -240f else -200f, metrics),
+                    lightZ = dimensionPixelSize(10000f, metrics),
+                    lightR = dimensionPixelSize(2000f, metrics),
+                    blurR = dimensionPixelSize(0f, metrics),
+                )
+            }
+        }
+    }
+
+    /** ShadowUtils.setElevationToViewFromOPlusView. */
+    private fun setElevationFromOplusView(elevation: Float, alpha: Int, lightY: Int, lightZ: Int, lightR: Int, blurR: Int) {
+        val color = android.graphics.Color.argb(alpha, 0, 0, 0)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            outlineAmbientShadowColor = color
+            outlineSpotShadowColor = color
+        }
+        this.elevation = elevation
+        CouiOplus.setOverrideLightSourceGeometry(
+            this, -1f, lightY.toFloat(), lightZ.toFloat(), lightR.toFloat(), blurR.toFloat(),
+        )
+    }
+
+    /** TypedValue.complexToDimensionPixelSize for a dp value. */
+    private fun dimensionPixelSize(dp: Float, metrics: android.util.DisplayMetrics): Int {
+        val f = dp * metrics.density
+        val res = if (f >= 0f) (f + 0.5f).toInt() else (f - 0.5f).toInt()
+        if (res != 0) return res
+        if (dp == 0f) return 0
+        return if (dp > 0f) 1 else -1
+    }
+}
+
+/** Reflection bridge to the app-visible (whitelisted) oplus framework APIs that COUI calls. */
+private object CouiOplus {
+    private fun cls(name: String): Class<*>? = runCatching { Class.forName(name) }.getOrNull()
+    private val float = Float::class.javaPrimitiveType!!
+    private val int = Int::class.javaPrimitiveType!!
+    private val view = android.view.View::class.java
+
+    val present: Boolean by lazy { cls("com.oplus.os.OplusBuild") != null }
+
+    /** OplusBuild.VERSION.SDK_VERSION / SDK_SUB_VERSION. */
+    val sdk: Pair<Int, Int> by lazy {
+        val version = cls("com.oplus.os.OplusBuild\$VERSION")
+        val major = runCatching { version!!.getField("SDK_VERSION").getInt(null) }.getOrDefault(0)
+        val sub = runCatching { version!!.getField("SDK_SUB_VERSION").getInt(null) }.getOrDefault(0)
+        major to sub
+    }
+
+    /** COUIVersionUtil.checkOPlusViewSubSDK. */
+    fun checkSubSdk(major: Int, sub: Int): Boolean {
+        val (version, subVersion) = sdk
+        return version > major || (version == major && subVersion >= sub)
+    }
+
+    fun systemPropInt(key: String, default: Int): Int = runCatching {
+        val value = cls("android.os.SystemProperties")!!.getMethod("get", String::class.java)
+            .invoke(null, key) as String
+        if (value.isEmpty()) default else value.trim().toInt()
+    }.getOrDefault(default)
+
+    /** AppFeatureProviderUtils.getBoolean(resolver, name, false). */
+    fun appFeatureBoolean(resolver: android.content.ContentResolver, name: String): Boolean = runCatching {
+        val uri = android.net.Uri.parse(
+            "content://com.oplus.customize.coreapp.configmanager.configprovider.AppFeatureProvider/app_feature",
+        )
+        resolver.query(uri, null, "featurename=?", arrayOf(name), null)?.use { cursor ->
+            if (!cursor.moveToFirst()) return@use false
+            val value = cursor.getString(cursor.getColumnIndexOrThrow("parameters")) ?: return@use false
+            value.substringAfter("boolean:", "").trim().equals("true", ignoreCase = true)
+        } ?: false
+    }.getOrDefault(false)
+
+    private val oplusView by lazy { cls("com.oplus.view.OplusView") }
+    private val oplusViewCtor by lazy { runCatching { oplusView!!.getConstructor(view) }.getOrNull() }
+    private val overrideLight by lazy {
+        runCatching {
+            oplusView!!.getMethod("setOverrideLightSourceGeometry", float, float, float, float, float)
+        }.getOrNull()
+    }
+    private val shadowClipping by lazy {
+        runCatching {
+            oplusView!!.getMethod("setShadowClippingEnabled", view, Boolean::class.javaPrimitiveType)
+        }.getOrNull()
+    }
+    private val renderEffect by lazy {
+        runCatching {
+            cls("com.oplus.view.OplusViewBackgroundRenderEffect")!!
+                .getMethod("setBackgroundRenderEffect", android.graphics.RenderEffect::class.java, view)
+        }.getOrNull()
+    }
+    private val materialUtil by lazy { cls("com.oplus.view.material.OplusMaterialUtil") }
+    private val edgeParams by lazy { cls("com.oplus.view.material.OplusMaterialEdgeParams") }
+    private val shadowParams by lazy { cls("com.oplus.view.material.OplusMaterialShadowParams") }
+    private val cornerParams by lazy { cls("com.oplus.view.material.OplusMaterialCornerParams") }
+    private val pathAdapter by lazy { cls("com.oplus.graphics.OplusPathAdapter") }
+
+    fun setOverrideLightSourceGeometry(target: android.view.View, x: Float, y: Float, z: Float, r: Float, blur: Float) {
+        runCatching { overrideLight!!.invoke(oplusViewCtor!!.newInstance(target), x, y, z, r, blur) }
+    }
+
+    fun setShadowClippingEnabled(target: android.view.View, enabled: Boolean) {
+        runCatching { shadowClipping!!.invoke(null, target, enabled) }
+    }
+
+    fun setBackgroundRenderEffect(effect: Any?, target: android.view.View) {
+        runCatching { renderEffect!!.invoke(null, effect, target) }
+    }
+
+    fun setEdgeParams(target: android.view.View, type: Int, width: Float, alpha: Float, angle: Float) {
+        runCatching {
+            val params = edgeParams!!.getConstructor(int, float, float, float).newInstance(type, width, alpha, angle)
+            materialUtil!!.getMethod("setEdgeParams", view, edgeParams).invoke(null, target, params)
+        }
+    }
+
+    fun setMaterialShadowParams(target: android.view.View, type: Int, fadeScale: Float, fadeIn: Float, fadeOut: Float) {
+        runCatching {
+            val params = shadowParams!!.getConstructor(int, float, float, float)
+                .newInstance(type, fadeScale, fadeIn, fadeOut)
+            materialUtil!!.getMethod("setShadowParams", view, shadowParams).invoke(null, target, params)
+        }
+    }
+
+    fun setCornerParams(target: android.view.View, radius: Float) {
+        runCatching {
+            val params = cornerParams!!.getConstructor(float, float).newInstance(60f, 1f)
+            cornerParams!!.getMethod("setRadius", float).invoke(params, radius)
+            materialUtil!!.getMethod("setCornerParams", view, cornerParams).invoke(null, target, params)
+        }
+    }
+
+    fun setOutlineCausticShadowColor(target: android.view.View, color: Int) {
+        runCatching {
+            materialUtil!!.getMethod("setOutlineCausticShadowColor", view, int).invoke(null, target, color)
+        }
+    }
+
+    fun setOutlineCausticShadowLayout(target: android.view.View, l: Int, t: Int, r: Int, b: Int) {
+        runCatching {
+            materialUtil!!.getMethod("setOutlineCausticShadowLayout", view, int, int, int, int)
+                .invoke(null, target, l, t, r, b)
+        }
+    }
+
+    fun setOutlineCausticShadowParams(target: android.view.View, a: Float, b: Float, c: Float, d: Float, e: Float, f: Float) {
+        runCatching {
+            materialUtil!!.getMethod("setOutlineCausticShadowParams", view, float, float, float, float, float, float)
+                .invoke(null, target, a, b, c, d, e, f)
+        }
+    }
+
+    /** new OplusPathAdapter(path, 1).addSmoothRoundRect(rect, r, r, 1f, CCW). */
+    fun addSmoothRoundRect(path: android.graphics.Path, rect: android.graphics.RectF, radius: Float): Boolean = runCatching {
+        val adapter = pathAdapter!!.getConstructor(android.graphics.Path::class.java, int).newInstance(path, 1)
+        pathAdapter!!.getMethod(
+            "addSmoothRoundRect", android.graphics.RectF::class.java, float, float, float,
+            android.graphics.Path.Direction::class.java,
+        ).invoke(adapter, rect, radius, radius, 1f, android.graphics.Path.Direction.CCW)
+        true
+    }.getOrDefault(false)
 }
 
 private data class SettingsRootSection(
@@ -1052,6 +2155,27 @@ private enum class SettingsRootIconTone(
     Backup(Color(0xFF3D759F), Color(0xFF7EB4D8)),
     Log(Color(0xFF64758C), Color(0xFFA7B5C7)),
     About(Color(0xFF6E7180), Color(0xFFB3B5C0));
+
+    val destination: Class<*> get() = when (this) {
+        Audio -> AudioSettingsActivity::class.java
+        Transcode -> com.rawsmusic.ui.transcode.AudioTranscodeActivity::class.java
+        Transition -> TransitionSettingsActivity::class.java
+        Shuffle -> ShuffleSettingsActivity::class.java
+        Effects -> AudioEffectsActivity::class.java
+        Ai -> AiSeparationActivity::class.java
+        Usb -> UsbDacSettingsActivity::class.java
+        Hardware -> HardwareDeviceControlActivity::class.java
+        Appearance -> AppearanceActivity::class.java
+        Player -> PlayerInterfaceActivity::class.java
+        AlbumArt -> AlbumArtActivity::class.java
+        Font -> GlobalFontSettingsActivity::class.java
+        Personalization -> PersonalizationSettingsActivity::class.java
+        Lyrics -> LyricSettingsActivity::class.java
+        Scan -> ScanSettingsActivity::class.java
+        Backup -> WebDavBackupActivity::class.java
+        Log -> LogViewerActivity::class.java
+        About -> AboutActivity::class.java
+    }
 
     fun resolve(isDark: Boolean): Color = if (isDark) dark else light
 }
@@ -1103,6 +2227,7 @@ private data class SettingsSearchItem(
     val iconVector: ImageVector? = null,
     val tone: SettingsRootIconTone,
     val depth: Int,
+    val destination: String,
     val onClick: () -> Unit,
 )
 
@@ -1329,47 +2454,13 @@ private fun matchesSettingsSearchQuery(
     query: String,
     item: SettingsSearchItem,
 ): Boolean {
-    val tokens = normalizeSettingsSearchText(query)
-        .split(' ')
-        .filter(String::isNotBlank)
-    if (tokens.isEmpty()) return false
-
-    val searchableText = normalizeSettingsSearchText(
-        buildString {
-            append(item.sectionTitle)
-            append(' ')
-            append(item.parentTitle.orEmpty())
-            append(' ')
-            append(item.title)
-            append(' ')
-            append(item.summary)
-            append(' ')
-            append(item.keywords)
-        }
-    )
-    return tokens.all(searchableText::contains)
+    return SettingsSearchText("${item.sectionTitle} ${item.parentTitle.orEmpty()}",
+        item.title, item.summary, item.keywords).matches(query)
 }
 
 private fun settingsSearchScore(query: String, item: SettingsSearchItem): Int {
-    val normalizedQuery = normalizeSettingsSearchText(query)
-    val normalizedTitle = normalizeSettingsSearchText(item.title)
-    val normalizedParent = normalizeSettingsSearchText(item.parentTitle.orEmpty())
-    val normalizedKeywords = normalizeSettingsSearchText(item.keywords)
-    return when {
-        normalizedTitle == normalizedQuery -> 0
-        normalizedTitle.startsWith(normalizedQuery) -> 1
-        normalizedTitle.contains(normalizedQuery) -> 2
-        normalizedKeywords.contains(normalizedQuery) -> 3
-        normalizedParent.contains(normalizedQuery) -> 4
-        else -> 5
-    }
-}
-
-private fun normalizeSettingsSearchText(value: String): String {
-    return value
-        .lowercase()
-        .replace(Regex("[\\s,，。;；:/\\\\|·_\\-]+"), " ")
-        .trim()
+    return SettingsSearchText("${item.sectionTitle} ${item.parentTitle.orEmpty()}",
+        item.title, item.summary, item.keywords).score(query)
 }
 
 @Composable

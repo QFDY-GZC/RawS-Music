@@ -32,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -222,13 +223,14 @@ fun RawAlphabetIndex(
     onSelect: (letter: String, index: Int) -> Unit,
     allowSceneOverlay: Boolean = true,
     scrollActiveProvider: (() -> Boolean)? = null,
+    sceneId: String? = null,
 ) {
     val alphabetIndexHidden by PersonalizationPreferences.alphabetIndexHidden.collectAsState()
     val sceneChrome = LocalSceneChromeAlpha.current
     val externalAlphaProvider = LocalExternalAlphabetIndexAlphaProvider.current
     val overlayRegistry = LocalAlphabetIndexOverlayRegistry.current
     val providerScene = LocalReferenceLibraryProviderScene.current
-    val providerSceneId = providerScene?.name.orEmpty()
+    val providerSceneId = sceneId?.takeIf { it.isNotBlank() } ?: providerScene?.name.orEmpty()
     val providerRegistry = LocalReferenceLibraryProviderRegistry.current
     val resolvedScrollActiveProvider = scrollActiveProvider ?: remember(providerRegistry, providerScene) {
         {
@@ -237,9 +239,15 @@ fun RawAlphabetIndex(
     }
     if (alphabetIndexHidden) return
 
-    val scrollAlpha = remember { Animatable(0f) }
-    LaunchedEffect(resolvedScrollActiveProvider) {
-        snapshotFlow { resolvedScrollActiveProvider.invoke() }
+    val latestScrollActiveProvider by rememberUpdatedState(resolvedScrollActiveProvider)
+    val latestTopSelect by rememberUpdatedState(onTopSelect)
+    val latestSelect by rememberUpdatedState(onSelect)
+    val stableScrollActiveProvider = remember { { latestScrollActiveProvider.invoke() } }
+    val stableTopSelect = if (onTopSelect != null) remember { { latestTopSelect?.invoke(); Unit } } else null
+    val stableSelect = remember { { letter: String, index: Int -> latestSelect(letter, index) } }
+    val scrollAlpha = remember(providerSceneId) { Animatable(0f) }
+    LaunchedEffect(providerSceneId) {
+        snapshotFlow { latestScrollActiveProvider.invoke() }
             .distinctUntilChanged()
             .collectLatest { scrolling ->
                 if (scrolling) {
@@ -263,8 +271,8 @@ fun RawAlphabetIndex(
     // keeping the rail in the page-local Compose subtree can therefore place its pixels behind the
     // persistent AndroidView even though semantics/input still exist. Whenever a scene overlay
     // registry is available, publish the rail there and keep this local copy measured only.
-    val detached = allowSceneOverlay && overlayRegistry != null
-    if (allowSceneOverlay && overlayRegistry != null) {
+    val detached = allowSceneOverlay && overlayRegistry != null && providerSceneId.isNotBlank()
+    if (detached && overlayRegistry != null) {
         SideEffect {
             overlayRegistry.publish(
                 AlphabetIndexOverlayEntry(
@@ -274,9 +282,9 @@ fun RawAlphabetIndex(
                     modifier = modifier,
                     enabled = enabled,
                     minCellHeightDp = minCellHeightDp,
-                    scrollActiveProvider = resolvedScrollActiveProvider,
-                    onTopSelect = onTopSelect,
-                    onSelect = onSelect,
+                    scrollActiveProvider = stableScrollActiveProvider,
+                    onTopSelect = stableTopSelect,
+                    onSelect = stableSelect,
                 )
             )
         }

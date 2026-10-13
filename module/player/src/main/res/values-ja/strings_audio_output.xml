@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="audio_output_desc_opensl">互換性を重視した従来型出力</string>
+    <string name="audio_output_desc_aaudio">低遅延出力。Android 8.1 以降で推奨</string>
+    <string name="audio_output_desc_direct">システムミキサーを回避し、高サンプルレートで直接出力</string>
+    <string name="audio_output_desc_audiotrack">システムミックスによる高互換 PCM 出力。最大 48 kHz / 24-bit / ステレオ</string>
+    <string name="audio_device_unknown">不明</string>
+    <string name="audio_device_none">出力デバイスなし</string>
+    <string name="audio_device_speaker">スピーカー</string>
+    <string name="audio_device_earpiece">受話口</string>
+    <string name="audio_device_wired_headset">有線ヘッドセット</string>
+    <string name="audio_device_wired_headphones">有線ヘッドホン</string>
+    <string name="audio_device_bluetooth_a2dp">Bluetooth A2DP</string>
+    <string name="audio_device_bluetooth_sco">Bluetooth SCO</string>
+    <string name="audio_device_usb_audio">USB オーディオ</string>
+    <string name="audio_device_usb_headset">USB ヘッドセット</string>
+    <string name="audio_device_usb_accessory">USB アクセサリ</string>
+    <string name="audio_device_line_analog">アナログライン</string>
+    <string name="audio_device_line_digital">デジタルライン</string>
+    <string name="audio_device_hearing_aid">補聴器</string>
+    <string name="audio_device_generic">デバイス（%1$d）</string>
+    <string name="audio_sco_off">オフ</string>
+    <string name="audio_sco_auto">自動検出</string>
+    <string name="audio_sco_force">常に有効</string>
+    <string name="audio_sco_desc_off">Bluetooth 通話音声チャンネルを使用しません</string>
+    <string name="audio_sco_desc_auto">Bluetooth 音楽再生に対応していないデバイスでのみ自動的に切り替えます</string>
+    <string name="audio_sco_desc_force">常に Bluetooth 通話音声チャンネルから出力します</string>
+</resources>

@@ -2,13 +2,14 @@ package com.rawsmusic.core.ui.theme
 
 import android.content.Context
 import android.content.Intent
-import android.content.res.Configuration
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -16,19 +17,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFontFamilyResolver
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.font.createFontFamilyResolver
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
+import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.prefs.UIPreferences
 import com.rawsmusic.core.ui.scene.pages.PageColors
+import com.rawsmusic.core.ui.widget.flow.RawBackgroundStyle
+import com.rawsmusic.core.ui.widget.flow.RawFlowTuningState
 import com.rawsmusic.module.data.prefs.AppPreferences
-import java.io.File
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
@@ -68,22 +69,15 @@ fun RawSMusicTheme(
     content: @Composable () -> Unit
 ) {
     val runtimeVersion = RawThemeRuntimeState.version
-    val globalFontFamily = remember(runtimeVersion) {
-        AppPreferences.UI.customFontPath
-            .takeIf { it.isNotBlank() }
-            ?.let { path ->
-                runCatching {
-                    // Register the selected file as its source face and let Compose resolve the
-                    // requested TextStyle weight. Wrapping a preloaded Android Typeface here
-                    // freezes many text paths to that one face and makes the global weight offset
-                    // appear to do nothing.
-                    FontFamily(Font(File(path), FontWeight.Normal))
-                }.getOrNull()
-            }
-            ?: FontFamily.Default
-    }
     val globalFontWeight = remember(runtimeVersion) {
         AppPreferences.UI.fontWeight.coerceIn(100, 900)
+    }
+    val globalFontFamily = remember(runtimeVersion, globalFontWeight) {
+        rawGlobalFontFamily(
+            path = AppPreferences.UI.customFontPath,
+            globalWeight = globalFontWeight,
+            allowOutOfRange = AppPreferences.UI.experimentalFontWeightEnabled,
+        )
     }
     val globalFontItalic = remember(runtimeVersion) {
         AppPreferences.UI.fontItalic
@@ -94,14 +88,9 @@ fun RawSMusicTheme(
     val globalLetterSpacingEm = remember(runtimeVersion) {
         AppPreferences.UI.fontLetterSpacingEm.coerceIn(-0.05f, 0.20f)
     }
-    // Android 12+ applies fontWeightAdjustment inside the platform font resolver, including
-    // Text calls that explicitly request Bold/Medium/SemiBold. Older releases retain the
-    // typography-level fallback.
-    val typographyFontWeight = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        400
-    } else {
-        globalFontWeight
-    }
+    // The custom AndroidFont family maps semantic weights to the user's physical weight offset.
+    // Keep typography itself at its original semantic hierarchy on every API level.
+    val typographyFontWeight = 400
     val miuixTextStyles = remember(
         runtimeVersion,
         globalFontFamily,
@@ -134,10 +123,22 @@ fun RawSMusicTheme(
         ThemeManager.getCurrentTheme()
     }
 
-    val isDark = when (activeThemeMode) {
+    val baseIsDark = when (activeThemeMode) {
         ThemeManager.ThemeMode.DARK -> true
         ThemeManager.ThemeMode.LIGHT -> false
         ThemeManager.ThemeMode.SYSTEM -> isSystemInDarkTheme()
+    }
+    val context = LocalContext.current.applicationContext
+    // Album-derived backgrounds are intentionally treated as a dark foreground surface.
+    // This reuses the existing dark theme palette at the single theme root, so all normal
+    // theme-aware text/widgets switch to light foregrounds together instead of being patched
+    // one component at a time. Leaving ALBUM_COLOR immediately restores the user's real theme.
+    // ThemeManager.isDarkMode() applies the same rule to View/native-text owners outside Compose.
+    val albumColorThemeActive = ThemeManager.albumColorForcesDark(context)
+    val isDark = if (albumColorThemeActive) {
+        true
+    } else {
+        baseIsDark
     }
 
     val colorThemeMode = remember(runtimeVersion, key) {
@@ -176,12 +177,13 @@ fun RawSMusicTheme(
                 divider = cs.onSurfaceVariantSummary.copy(alpha = if (isDark) 0.20f else 0.14f)
             )
             RawSystemBars(background = pageBg, isDark = isDark)
-            GlobalFontScope(globalFontScale, globalFontWeight, materialTypography, content)
+            GlobalFontScope(globalFontScale, materialTypography, content)
         }
     } else {
         RawMonetTheme(
             isDark = isDark,
             colorThemeMode = colorThemeMode,
+            forceDarkPalette = albumColorThemeActive,
             applySystemBars = true
         ) {
             val monet = RawMonet
@@ -222,7 +224,7 @@ fun RawSMusicTheme(
                     accent = monet.accent,
                     divider = monet.divider
                 )
-                GlobalFontScope(globalFontScale, globalFontWeight, materialTypography, content)
+                GlobalFontScope(globalFontScale, materialTypography, content)
             }
         }
     }
@@ -231,35 +233,34 @@ fun RawSMusicTheme(
 @Composable
 private fun GlobalFontScope(
     scale: Float,
-    fontWeight: Int,
     typography: Typography,
     content: @Composable () -> Unit
 ) {
-    val context = LocalContext.current
     val density = LocalDensity.current
-    val platformFontResolver = LocalFontFamilyResolver.current
-    val scaledDensity = remember(density.density, density.fontScale, scale) {
-        Density(
-            density = density.density,
-            fontScale = density.fontScale * scale
+    val inheritedTextStyle = LocalTextStyle.current
+    val globalBareTextStyle = remember(inheritedTextStyle, typography) {
+        inheritedTextStyle.merge(
+            TextStyle(
+                fontFamily = typography.bodyMedium.fontFamily,
+                fontStyle = typography.bodyMedium.fontStyle,
+                letterSpacing = typography.bodyMedium.letterSpacing,
+            )
         )
     }
-    val weightedFontResolver = remember(context, platformFontResolver, fontWeight) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val configuration = Configuration(context.resources.configuration)
-            val systemAdjustment = configuration.fontWeightAdjustment
-                .takeUnless { it == Configuration.FONT_WEIGHT_ADJUSTMENT_UNDEFINED }
-                ?: 0
-            configuration.fontWeightAdjustment =
-                systemAdjustment + fontWeight.coerceIn(100, 900) - 400
-            createFontFamilyResolver(context.createConfigurationContext(configuration))
-        } else {
-            platformFontResolver
-        }
+    val scaledDensity = remember(density, scale) { density.withAppFontScale(scale) }
+    LaunchedEffect(density, scale) {
+        val platformSamplePx = with(density) { 16.sp.toPx() }
+        val appSamplePx = with(scaledDensity) { 16.sp.toPx() }
+        AppLogger.i(
+            "FontScale",
+            "apply api=${Build.VERSION.SDK_INT} device=${Build.MANUFACTURER}/${Build.MODEL} " +
+                "system=${density.fontScale} app=${(scale * 100f).toInt()}% " +
+                "effective=${scaledDensity.fontScale} sample16spPx=$platformSamplePx->$appSamplePx",
+        )
     }
     CompositionLocalProvider(
         LocalDensity provides scaledDensity,
-        LocalFontFamilyResolver provides weightedFontResolver,
+        LocalTextStyle provides globalBareTextStyle,
     ) {
         MaterialTheme(typography = typography, content = content)
     }

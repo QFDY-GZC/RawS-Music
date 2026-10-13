@@ -40,6 +40,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -57,10 +58,13 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.RenderEffect
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -71,7 +75,6 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -90,6 +93,7 @@ import com.rawsmusic.core.ui.widget.PlayerLyricsScrollDirection
 import com.rawsmusic.core.ui.widget.PlayerLyricsTransitionCoordinator
 import io.github.proify.lyricon.lyric.model.Song
 import io.github.proify.lyricon.lyric.model.interfaces.IRichLyricLine
+import com.rawsmusic.core.common.model.rubySyllables
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -99,7 +103,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.LyricFontManager
-import java.io.File
+import com.rawsmusic.core.ui.theme.rawFileFontFamily
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -107,18 +111,17 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-private val AM_LYRIC_BG_GEOMETRY_EASING = CubicBezierEasing(0.4f, 0.1f, 0.0f, 1.0f)
-private val AM_LYRIC_BG_ALPHA_OUT_EASING = CubicBezierEasing(0.39f, 0.575f, 0.565f, 1.0f)
-private const val AM_LYRIC_BG_HEIGHT_MS = 750
-private const val AM_LYRIC_BG_SCALE_MS = 500
-private const val AM_LYRIC_BG_ALPHA_OUT_MS = 250
-private const val AM_LYRIC_BG_ENTER_SCALE_DELAY_MS = 638 // round(750 * 0.85)
-private const val AM_LYRIC_BG_EXIT_HEIGHT_DELAY_MS = 50 // round(250 * 0.2)
+private val LYRIC_BG_GEOMETRY_EASING = CubicBezierEasing(0.4f, 0.1f, 0.0f, 1.0f)
+private val LYRIC_BG_ALPHA_OUT_EASING = CubicBezierEasing(0.39f, 0.575f, 0.565f, 1.0f)
+private const val LYRIC_BG_HEIGHT_MS = 750
+private const val LYRIC_BG_SCALE_MS = 500
+private const val LYRIC_BG_ALPHA_OUT_MS = 250
+private const val LYRIC_BG_ENTER_SCALE_DELAY_MS = 638 // round(750 * 0.85)
+private const val LYRIC_BG_EXIT_HEIGHT_DELAY_MS = 50 // round(250 * 0.2)
 
 private data class ReferenceLyricSceneStyle(
     val regularTextScale: Float,
     val activeTextScale: Float,
-    val horizontalInsetDeltaSp: Float,
     val regularVerticalMarginSp: Float,
     val activeVerticalMarginSp: Float,
 )
@@ -131,9 +134,6 @@ private fun ReferenceLyricSceneStyle(scalePercent: Int): ReferenceLyricSceneStyl
         ReferenceLyricSceneStyle(
             regularTextScale = 0.65f + 0.35f * fraction,
             activeTextScale = 0.85f + 0.25f * fraction,
-            // 41.5sp in the small scene and 17sp in the normal scene. The caller's normal
-            // inset is retained as the baseline so custom lyric-page margins still work.
-            horizontalInsetDeltaSp = 24.5f * (1f - fraction),
             regularVerticalMarginSp = 11f + 2f * fraction,
             activeVerticalMarginSp = 13f * fraction,
         )
@@ -142,7 +142,6 @@ private fun ReferenceLyricSceneStyle(scalePercent: Int): ReferenceLyricSceneStyl
         ReferenceLyricSceneStyle(
             regularTextScale = 1f + 0.2f * fraction,
             activeTextScale = 1.1f + 0.2f * fraction,
-            horizontalInsetDeltaSp = -3.5f * fraction,
             regularVerticalMarginSp = 13f + 4f * fraction,
             activeVerticalMarginSp = 13f * (1f - fraction),
         )
@@ -157,17 +156,17 @@ private fun ReferenceLyricSceneStyle.fontSizeSp(baseFontSizeSp: Int, active: Boo
 private fun ReferenceLyricSceneStyle.stableLayoutFontSizeSp(baseFontSizeSp: Int): Int =
     fontSizeSp(baseFontSizeSp, active = true)
 
-private fun ReferenceLyricSceneStyle.stableInactiveScale(): Float =
-    LyricSceneScalePolicy.inactiveHolderScale(
-        regularTextScale = regularTextScale,
-        activeTextScale = activeTextScale,
-    )
+private fun ReferenceLyricSceneStyle.stableInactiveScale(useAm: Boolean = true): Float =
+    if (useAm) LyricAmMotionSpec.INACTIVE_SCALE else
+        LyricSceneScalePolicy.inactiveHolderScale(regularTextScale, activeTextScale)
 
 private fun ReferenceLyricSceneStyle.horizontalPadding(base: Dp): Dp =
-    (base.value + horizontalInsetDeltaSp).coerceAtLeast(0f).dp
+    // Typography changes independently of the artwork/page alignment guide.
+    base
 
-private fun ReferenceLyricSceneStyle.verticalMargin(active: Boolean): Dp =
-    (if (active) activeVerticalMarginSp else regularVerticalMarginSp).dp
+private fun ReferenceLyricSceneStyle.verticalMargin(active: Boolean, useAm: Boolean = true): Dp =
+    (if (useAm) LyricAmMotionSpec.PARAGRAPH_SPACING_DP / 2f
+        else if (active) activeVerticalMarginSp else regularVerticalMarginSp).dp
 
 enum class LyricTextPosition(val value: Int) {
     Left(0),
@@ -247,6 +246,7 @@ fun ComposeLyricView(
     fontSizeSp: Int = 28,
     textPosition: LyricTextPosition = LyricTextPosition.Left,
     blurEnabled: Boolean = true,
+    relativeLineProgressEnabled: Boolean = AppPreferences.UI.lyricRelativeLineProgressEnabled,
     highlightAll: Boolean = false,
     karaokeGlowEnabled: Boolean = true,
     karaokeLiftEnabled: Boolean = true,
@@ -296,7 +296,10 @@ fun ComposeLyricView(
                 // Keep the selected file as its concrete source face. Labelling the very same
                 // file with the requested user weight prevents Compose from synthesizing or
                 // selecting a variable-font weight, making the slider visually inert.
-                FontFamily(Font(File(configuredFontPath), FontWeight.Normal))
+                rawFileFontFamily(
+                    path = configuredFontPath,
+                    allowOutOfRange = AppPreferences.LyricFont.experimentalFontWeightEnabled,
+                )
             }.getOrNull()
         }
     }
@@ -311,6 +314,7 @@ fun ComposeLyricView(
         (fontSizeSp * effectiveFontScale / 100f).roundToInt().coerceAtLeast(1)
     }
     val lines = remember(song) { song?.lyrics.orEmpty() }
+    val japaneseGlyphDocument = remember(lines) { isJapaneseLyricDocument(lines) }
     val interludes = remember(lines) { calculateLyricInterludes(lines) }
     val lyricTimeline = remember(lines, interludes) { LyricTimelineIndex(lines, interludes) }
     val renderableIndices = remember(lines) { visibleLyricLineIndices(lines) }
@@ -321,7 +325,9 @@ fun ComposeLyricView(
         positionMs = positionMs,
         // One shared Choreographer callback advances the lyric render clock. Active DrawModifierNode(s)
         // subscribe as lightweight listeners; the clock never publishes per-vsync Snapshot State.
-        isPlaying = isPlaying && karaokeLiftEnabled && frameAnimationActive,
+        // Highlight/glow motion is independent from the optional lyric-lift effect, so disabling
+        // lift must not demote the active timed line back to coarse player position callbacks.
+        isPlaying = isPlaying && frameAnimationActive,
         durationMs = song?.duration ?: 0L,
     )
     val playbackPositionMs = positionMs.coerceAtLeast(0L)
@@ -331,7 +337,10 @@ fun ComposeLyricView(
     // those semantics are unchanged. Ordinary karaoke motion reads the direct render clock only.
     val computedLayoutPlaybackState = lyricTimeline.layoutPlaybackStateAt(playbackPositionMs)
     val playbackState = remember(computedLayoutPlaybackState) { computedLayoutPlaybackState }
-    val anchorIndex = playbackState.anchorLineIndex
+    // Move the layout early; karaoke/highlight still consume the unshifted playback clock.
+    val upcomingLayout = if (isPlaying && compactTrailingPullEnabled && playbackState.activeInterlude == null)
+        lyricTimeline.layoutPlaybackStateAt(playbackPositionMs + LyricAmMotionSpec.HEADSTART_MS) else playbackState
+    val anchorIndex = upcomingLayout.anchorLineIndex
     val latestAnchorIndex = rememberUpdatedState(anchorIndex)
     val lyricPullField = rememberLyricPullFieldState(song)
     val lyricZoomState = rememberLyricZoomTransitionState(song)
@@ -342,7 +351,8 @@ fun ComposeLyricView(
             } == true
         }
     LyricMotionFrameRateHint(
-        enabled = lyricFloatMotionActive || lyricZoomState.active || lyricZoomState.settling,
+        enabled = lyricFloatMotionActive || (frameAnimationActive && lyricPullField.running) ||
+            lyricZoomState.active || lyricZoomState.settling,
     )
     var pendingManualSeekLineIndex by remember(song) { mutableIntStateOf(-1) }
     val compactWindowEnabled = maxPrimaryVisibleLines != Int.MAX_VALUE
@@ -436,7 +446,7 @@ fun ComposeLyricView(
     val zoomSnapshotInterlude = remember(lyricZoomState.sessionGeneration) { playbackState.activeInterlude }
     if (compactWindowEnabled) {
         val resolvedCompactLineSpacing = compactLineSpacing
-            ?: if (visibleLineIndices.size <= 3) 18.dp else 12.dp
+            ?: if (compactTrailingPullEnabled) 0.dp else if (visibleLineIndices.size <= 3) 18.dp else 12.dp
         val previousCompactAnchor = remember(song) { intArrayOf(anchorIndex) }
         val compactStackMotion = rememberLyricStackMotionState(song)
 
@@ -508,22 +518,12 @@ fun ComposeLyricView(
                 compactStackMotion.cancel()
                 return@LaunchedEffect
             }
-            if (transitionDistancePx > 0f) {
-                lyricPullField.setVisibleIndices(compactRenderLineIndices)
-                val frameTimeMs = withFrameNanos { it / 1_000_000L }
-                lyricPullField.beginForwardPull(
-                    anchorIndex = anchorIndex,
-                    pullDistancePx = transitionDistancePx,
-                    frameTimeMs = frameTimeMs,
-                )
-            } else {
-                lyricPullField.cancel()
-            }
-            val motion = lyricFollowMotion(
-                intervalMs = lyricAnchorIntervalMs(lines, previous, anchorIndex),
-                isInterlude = playbackState.activeInterlude != null,
-            )
-            compactStackMotion.beginTransition(transitionDistancePx, motion)
+            lyricPullField.setVisibleIndices(compactRenderLineIndices)
+            val frameTimeMs = withFrameNanos { it / 1_000_000L }
+            lyricPullField.beginTransition(anchorIndex, transitionDistancePx, frameTimeMs,
+                stagger = shouldPullFollowingLyrics(previous, anchorIndex, manualSeekTransition,
+                    isPlaying, false, playbackState.activeInterlude != null))
+
         }
 
         val latestCompactZoomCommit = rememberUpdatedState<suspend (Int) -> Unit> { targetScale ->
@@ -599,7 +599,7 @@ fun ComposeLyricView(
                 spacing = resolvedCompactLineSpacing,
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer { translationY = compactStackMotion.offsetPx }
+                    .graphicsLayer { translationY = if (compactTrailingPullEnabled) lyricPullField.stackOffsetPx else compactStackMotion.offsetPx }
             ) {
                         val activeInterlude = playbackState.activeInterlude
                 if (activeInterlude != null) {
@@ -629,7 +629,7 @@ fun ComposeLyricView(
                                 },
                                 positionState = null,
                                 positionFractionState = null,
-                                renderClock = lyricDirectRenderClock.takeIf { active && karaokeLiftEnabled },
+                                renderClock = lyricDirectRenderClock.takeIf { active },
                                 displayTranslation = displayTranslation,
                                 displayRoma = displayRoma,
                                 textColor = if (highlighted || highlightAll) textColor else dimColor,
@@ -642,6 +642,7 @@ fun ComposeLyricView(
                                 textPosition = resolvedPosition,
                                 karaokeGlowEnabled = karaokeGlowEnabled,
                                 karaokeLiftEnabled = karaokeLiftEnabled,
+                                relativeLineProgressEnabled = relativeLineProgressEnabled,
                                 primaryFontSizeRange = primaryFontSizeRange,
                                 secondaryFontSizeRange = secondaryFontSizeRange,
                                 horizontalPadding = lineHorizontalPadding,
@@ -657,6 +658,7 @@ fun ComposeLyricView(
                                         highlighted = highlighted,
                                         signedDistance = index - compactTransitionAnchorIndex,
                                         pivotFractionX = resolvedPosition.pivotFractionX,
+                                        contentHorizontalPadding = lineHorizontalPadding,
                                         blurEnabled = blurEnabled && !lyricZoomState.active,
                                         highlightAll = highlightAll,
                                         motionActive = lyricZoomState.active,
@@ -751,7 +753,6 @@ fun ComposeLyricView(
     // active row is also changing its karaoke paint; that is the source of the sticky, stepped
     // upward motion on device. We snap the list once, then carry the old screen position in this
     // layer and settle it from the absolute frame clock.
-    val fullStackMotion = rememberLyricStackMotionState(song)
     var listViewportHeightPx by remember(song) { mutableIntStateOf(0) }
     val anchoredBottomPadding = with(LocalDensity.current) {
         maxOf(
@@ -950,14 +951,13 @@ fun ComposeLyricView(
         if (userDragging) {
             userScrolling = true
             lyricPullField.cancel()
-            fullStackMotion.cancel()
         } else {
             kotlinx.coroutines.delay(1_800L)
             userScrolling = false
         }
     }
     LaunchedEffect(isPlaying, playbackState.activeInterlude) {
-        if (!isPlaying || playbackState.activeInterlude != null) {
+        if (playbackState.activeInterlude != null) {
             lyricPullField.cancel()
         }
     }
@@ -998,6 +998,8 @@ fun ComposeLyricView(
         displayItems.size,
         pendingAnchorTransition.sequence,
         listViewportHeightPx,
+        lyricPullField.geometryRevision,
+        displayRoma, displayTranslation, fontSizeSp,
     ) {
         if (lazyScrollTargetIndex < 0 || lyricInteractionActive || listViewportHeightPx <= 0) {
             return@LaunchedEffect
@@ -1017,10 +1019,8 @@ fun ComposeLyricView(
             viewportEndOffset = listState.layoutInfo.viewportEndOffset
         )
 
-        // Let the new active-row scene and dynamic trailing padding participate in one layout
-        // before measuring the movement. Marking a transition handled before this frame was the
-        // Step 20 regression: a stale geometry read could permanently consume the only request.
-        withFrameNanos { }
+        // Row geometry callbacks already come from a measured layout. Do not wait for another
+        // frame here: auxiliary height changes can otherwise cancel this effect every frame.
         val visibleItem = listState.layoutInfo.visibleItemsInfo.firstOrNull {
             it.index == lazyScrollTargetIndex
         }
@@ -1031,264 +1031,225 @@ fun ComposeLyricView(
             }
             lyricPullField.setVisibleIndices(visibleSourceIndices)
             val scrollDeltaPx = visibleItem.offset - targetOffset
-            val movementPx = abs(scrollDeltaPx)
-            val pullFollowingRows = pendingAnchorTransition.pullFollowingRows &&
-                pendingAnchorTransition.toIndex == anchorIndex &&
-                pendingAnchorTransition.fromIndex >= 0 &&
-                anchorIndex > pendingAnchorTransition.fromIndex &&
-                pendingAnchorTransition.sequence != lastPulledTransitionSequence &&
-                scrollDeltaPx > 0f
-            if (pullFollowingRows) {
-                val frameTimeMs = withFrameNanos { it / 1_000_000L }
-                if (lyricPullField.beginForwardPull(anchorIndex, movementPx, frameTimeMs)) {
-                    lastPulledTransitionSequence = pendingAnchorTransition.sequence
-                }
-            } else if (!lyricPullField.running) {
-                lyricPullField.cancel()
+            // The measured position is already close enough. Repeated subpixel corrections
+            // only restart target work and accumulate compensation without a visible scroll.
+            if (abs(scrollDeltaPx) <= LyricAnchorSpec.CORRECTION_THRESHOLD_PX) return@LaunchedEffect
+            val stagger = pendingAnchorTransition.pullFollowingRows &&
+                pendingAnchorTransition.sequence != lastPulledTransitionSequence
+            val frameTimeMs = System.nanoTime() / 1_000_000L
+            val consumedPx = listState.scrollBy(scrollDeltaPx)
+            if (lyricPullField.beginTransition(anchorIndex, consumedPx, frameTimeMs, stagger)) {
+                lastPulledTransitionSequence = pendingAnchorTransition.sequence
             }
-            // The list is moved to its logical target once. The visual compensation then settles
-            // on one graphics layer, while LyricPullField adds its independent positive offset to
-            // rows below the anchor. This preserves the Apple-style trailing wave without making
-            // LazyColumn and the row pull animate the same base position.
-            listState.scrollBy(scrollDeltaPx)
-            val motion = lyricFollowMotion(
-                intervalMs = lyricAnchorIntervalMs(
-                    lines,
-                    pendingAnchorTransition.fromIndex,
-                    anchorIndex,
-                ),
-                isInterlude = playbackState.activeInterlude != null,
-            )
-            fullStackMotion.beginTransition(scrollDeltaPx, motion)
         } else {
-            lyricPullField.cancel()
-            fullStackMotion.cancel()
-            listState.animateScrollToItem(
-                index = lazyScrollTargetIndex,
-                scrollOffset = -targetOffset.roundToInt()
-            )
+            if (lyricPullField.isJumpPending(anchorIndex)) return@LaunchedEffect
+            val estimate = lyricPullField.estimateCompactTransitionDistancePx(
+                pendingAnchorTransition.fromIndex, anchorIndex, renderableIndices, spacingPx = 0f)
+            val displacement = LyricJumpMotionSpec.displacement(estimate, viewportHeight.toFloat())
+            val stagger = pendingAnchorTransition.pullFollowingRows
+            lyricPullField.beginJumpTransition(anchorIndex, displacement,
+                System.nanoTime() / 1_000_000L, stagger)
+            // Commit destination layout on the next measure, with presentation compensation
+            // already in place. Incoming rows are rebound when their real visible range arrives.
+            listState.requestScrollToItem(lazyScrollTargetIndex, -targetOffset.roundToInt())
+            lastPulledTransitionSequence = pendingAnchorTransition.sequence
         }
+        // Geometry revisions feed the same target transaction. No second animation driver or
+        // forced two-frame correction loop may rewrite the trajectory after this handoff.
 
-        // Item measurement, translation/roma visibility and end-of-list clamping may settle one
-        // frame after the main animation. Re-read the real item rect and correct any residual; the
-        // transition is considered complete only after the requested line actually reaches the
-        // follow anchor.
-        repeat(LyricAnchorSpec.MAX_CORRECTION_PASSES) {
-            withFrameNanos { }
-            if (lyricInteractionActive || pendingAnchorTransition.toIndex != anchorIndex) {
-                lyricPullField.cancel()
-                return@LaunchedEffect
-            }
-            val currentTargetOffset = LyricAnchorSpec.targetOffsetPx(
-                viewportStartOffset = listState.layoutInfo.viewportStartOffset,
-                viewportEndOffset = listState.layoutInfo.viewportEndOffset
-            )
-            val currentItem = listState.layoutInfo.visibleItemsInfo.firstOrNull {
-                it.index == lazyScrollTargetIndex
-            } ?: return@repeat
-            val residualPx = currentItem.offset - currentTargetOffset
-            if (abs(residualPx) <= LyricAnchorSpec.CORRECTION_THRESHOLD_PX) {
-                return@LaunchedEffect
-            }
-            listState.scrollBy(residualPx)
-            fullStackMotion.beginTransition(
-                deltaPx = residualPx,
-                motion = LyricFollowMotion(
-                    dampingRatio = 1f,
-                    stiffness = 220f,
-                )
-            )
-        }
     }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .clipToBounds()
-            .then(lyricZoomModifier)
-            .then(doubleTapObserver)
-            .onSizeChanged {
-                listViewportHeightPx = it.height
-                lyricPullField.updateViewportHeight(it.height)
-            }
-            .onGloballyPositioned { coordinates ->
-                val bounds = coordinates.boundsInWindow()
-                lyricZoomState.updateViewportWindowBounds(bounds.top, bounds.bottom)
-            }
-            .then(
-                if (swipeRightGestureEnabled) {
-                    Modifier.observeLyricSwipeRight(
-                        onSwipeRight = onSwipeRight,
-                        onSwipeRightStart = onSwipeRightStart,
-                        onSwipeRightProgress = onSwipeRightProgress,
-                        onSwipeRightEnd = onSwipeRightEnd,
-                        density = gestureDensity
-                    )
-                } else {
-                    Modifier
-                }
-            )
-    ) {
-        LazyColumn(
-            state = listState,
-            userScrollEnabled = interactionEnabled,
-            modifier = Modifier
+    CompositionLocalProvider(LocalJapaneseLyricDocument provides japaneseGlyphDocument) {
+        Box(
+            modifier = modifier
                 .fillMaxSize()
-                .graphicsLayer { translationY = fullStackMotion.offsetPx },
-            contentPadding = PaddingValues(top = topPadding, bottom = anchoredBottomPadding),
-            verticalArrangement = Arrangement.spacedBy(0.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            if (scrollingHeader != null) {
-                item(key = "lyric-scrolling-header") {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        scrollingHeader()
-                        Spacer(Modifier.height(scrollingHeaderSpacing))
-                    }
+                .clipToBounds()
+                .then(lyricZoomModifier)
+                .then(doubleTapObserver)
+                .onSizeChanged {
+                    listViewportHeightPx = it.height
+                    lyricPullField.updateViewportHeight(it.height)
                 }
-            }
-            items(
-                count = displayItems.size,
-                key = { displayItems[it].key }
-            ) { itemIndex ->
-                when (val item = displayItems[itemIndex]) {
-                    is LyricDisplayItem.Interlude -> InstrumentalInterlude(
-                        interlude = item.value,
-                        positionMs = if (item.value == playbackState.activeInterlude) latestPlaybackPositionMs.value else Long.MIN_VALUE,
-                        active = item.value == playbackState.activeInterlude,
-                        color = textColor,
-                        textPosition = textPosition,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp)
-                    )
-                    is LyricDisplayItem.Line -> {
-                        val index = item.sourceIndex
-                        val line = lines[index]
-                        val active = playbackState.isActive(index)
-                        val highlighted = playbackState.isHighlighted(index)
-                        val resolvedPosition = line.resolvedTextPosition(textPosition, effectiveDuetLayout)
-                        ComposeLyricLine(
-                            line = line,
-                            active = active,
-                            highlighted = highlighted,
-                            positionMs = when {
-                                !active -> Long.MIN_VALUE
-                                lyricLineNeedsCompositionPosition(line) -> latestPlaybackPositionMs.value
-                                else -> line.begin
-                            },
-                            positionState = null,
-                            positionFractionState = null,
-                            renderClock = lyricDirectRenderClock.takeIf { active && karaokeLiftEnabled },
-                            displayTranslation = displayTranslation,
-                            displayRoma = displayRoma,
-                            textColor = if (highlighted || highlightAll) textColor else dimColor,
-                            dimColor = dimColor,
-                            secondaryColor = if (highlighted || highlightAll) secondaryColor else secondaryColor.copy(alpha = 0.58f),
-                            rainbowText = rainbowText,
-                            fontFamily = resolvedFontFamily,
-                            configuredFontWeight = configuredFontWeight,
-                            // Keep the measured row at its active-line size. The inactive
-                            // reduction is a graphics-layer scale, so a line handoff cannot
-                            // trigger a new Text/Layout measurement while the list is moving.
-                            fontSizeSp = lyricSceneStyle.stableLayoutFontSizeSp(fontSizeSp),
-                            textPosition = resolvedPosition,
-                            karaokeGlowEnabled = karaokeGlowEnabled,
-                            karaokeLiftEnabled = karaokeLiftEnabled,
-                            primaryFontSizeRange = primaryFontSizeRange,
-                            secondaryFontSizeRange = secondaryFontSizeRange,
-                            horizontalPadding = resolvedLineHorizontalPadding,
-                            verticalPadding = lyricSceneStyle.verticalMargin(active = true),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .onSizeChanged { size ->
-                                    lyricPullField.updateRowHeight(index, size.height)
-                                }
-                                .onGloballyPositioned { coordinates ->
-                                    val bounds = coordinates.boundsInWindow()
-                                    lyricZoomState.updateRowWindowBounds(index, bounds.top, bounds.bottom)
-                                }
-                                .lyricLineVisuals(
-                                    active = active,
-                                    highlighted = highlighted,
-                                    signedDistance = index - transitionAnchorIndex,
-                                    pivotFractionX = resolvedPosition.pivotFractionX,
-                                    blurEnabled = blurEnabled && !lyricInteractionActive,
-                                    highlightAll = highlightAll,
-                                    pullField = lyricPullField,
-                                    pullIndex = index,
-                                    pullEnabled = !lyricInteractionActive,
-                                    motionActive = lyricPullField.running || lyricZoomState.active,
-                                    inactiveScale = lyricSceneStyle.stableInactiveScale(),
-                                    zoomState = lyricZoomState,
-                                    zoomBaseFontSizeSp = fontSizeSp,
-                                    zoomPrimaryFontSizeRange = primaryFontSizeRange,
-                                )
-                                .clickable(enabled = interactionEnabled) {
-                                    pendingManualSeekLineIndex = index
-                                    userScrolling = false
-                                    if (index <= anchorIndex) lyricPullField.cancel()
-                                    scope.launch { onLineClick(line.begin) }
-                                }
+                .onGloballyPositioned { coordinates ->
+                    val bounds = coordinates.boundsInWindow()
+                    lyricZoomState.updateViewportWindowBounds(bounds.top, bounds.bottom)
+                }
+                .then(
+                    if (swipeRightGestureEnabled) {
+                        Modifier.observeLyricSwipeRight(
+                            onSwipeRight = onSwipeRight,
+                            onSwipeRightStart = onSwipeRightStart,
+                            onSwipeRightProgress = onSwipeRightProgress,
+                            onSwipeRightEnd = onSwipeRightEnd,
+                            density = gestureDensity
                         )
+                    } else {
+                        Modifier
+                    }
+                )
+        ) {
+            LazyColumn(
+                state = listState,
+                userScrollEnabled = interactionEnabled,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { translationY = lyricPullField.stackOffsetPx },
+                contentPadding = PaddingValues(top = topPadding, bottom = anchoredBottomPadding),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (scrollingHeader != null) {
+                    item(key = "lyric-scrolling-header") {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            scrollingHeader()
+                            Spacer(Modifier.height(scrollingHeaderSpacing))
+                        }
+                    }
+                }
+                items(
+                    count = displayItems.size,
+                    key = { displayItems[it].key }
+                ) { itemIndex ->
+                    when (val item = displayItems[itemIndex]) {
+                        is LyricDisplayItem.Interlude -> InstrumentalInterlude(
+                            interlude = item.value,
+                            positionMs = if (item.value == playbackState.activeInterlude) latestPlaybackPositionMs.value else Long.MIN_VALUE,
+                            active = item.value == playbackState.activeInterlude,
+                            color = textColor,
+                            textPosition = textPosition,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp)
+                        )
+                        is LyricDisplayItem.Line -> {
+                            val index = item.sourceIndex
+                            val line = lines[index]
+                            val active = playbackState.isActive(index)
+                            val highlighted = playbackState.isHighlighted(index)
+                            val resolvedPosition = line.resolvedTextPosition(textPosition, effectiveDuetLayout)
+                            ComposeLyricLine(
+                                line = line,
+                                active = active,
+                                highlighted = highlighted,
+                                positionMs = when {
+                                    !active -> Long.MIN_VALUE
+                                    lyricLineNeedsCompositionPosition(line) -> latestPlaybackPositionMs.value
+                                    else -> line.begin
+                                },
+                                positionState = null,
+                                positionFractionState = null,
+                                renderClock = lyricDirectRenderClock.takeIf { active },
+                                displayTranslation = displayTranslation,
+                                displayRoma = displayRoma,
+                                textColor = if (highlighted || highlightAll) textColor else dimColor,
+                                dimColor = dimColor,
+                                secondaryColor = if (highlighted || highlightAll) secondaryColor else secondaryColor.copy(alpha = 0.58f),
+                                rainbowText = rainbowText,
+                                fontFamily = resolvedFontFamily,
+                                configuredFontWeight = configuredFontWeight,
+                                // Keep the measured row at its active-line size. The inactive
+                                // reduction is a graphics-layer scale, so a line handoff cannot
+                                // trigger a new Text/Layout measurement while the list is moving.
+                                fontSizeSp = lyricSceneStyle.stableLayoutFontSizeSp(fontSizeSp),
+                                textPosition = resolvedPosition,
+                                karaokeGlowEnabled = karaokeGlowEnabled,
+                                karaokeLiftEnabled = karaokeLiftEnabled,
+                                relativeLineProgressEnabled = relativeLineProgressEnabled,
+                                primaryFontSizeRange = primaryFontSizeRange,
+                                secondaryFontSizeRange = secondaryFontSizeRange,
+                                horizontalPadding = resolvedLineHorizontalPadding,
+                                verticalPadding = lyricSceneStyle.verticalMargin(active = true, useAm = primaryFontSizeRange.last > 20),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .onSizeChanged { size ->
+                                        lyricPullField.updateRowHeight(index, size.height)
+                                    }
+                                    .onGloballyPositioned { coordinates ->
+                                        val bounds = coordinates.boundsInWindow()
+                                        lyricZoomState.updateRowWindowBounds(index, bounds.top, bounds.bottom)
+                                    }
+                                    .lyricLineVisuals(
+                                        active = active,
+                                        highlighted = highlighted,
+                                        signedDistance = index - transitionAnchorIndex,
+                                        pivotFractionX = resolvedPosition.pivotFractionX,
+                                        contentHorizontalPadding = resolvedLineHorizontalPadding,
+                                        blurEnabled = blurEnabled && !lyricInteractionActive,
+                                        highlightAll = highlightAll,
+                                        pullField = lyricPullField,
+                                        pullIndex = index,
+                                        pullEnabled = !lyricInteractionActive,
+                                        motionActive = lyricPullField.running || lyricZoomState.active,
+                                        inactiveScale = lyricSceneStyle.stableInactiveScale(useAm = primaryFontSizeRange.last > 20),
+                                        zoomState = lyricZoomState,
+                                        zoomBaseFontSizeSp = fontSizeSp,
+                                        zoomPrimaryFontSizeRange = primaryFontSizeRange,
+                                    )
+                                    .clickable(enabled = interactionEnabled) {
+                                        pendingManualSeekLineIndex = index
+                                        userScrolling = false
+                                        scope.launch { onLineClick(line.begin) }
+                                    }
+                            )
+                        }
                     }
                 }
             }
-        }
 
-        if (interactionEnabled && zoomGestureEnabled && !lyricZoomState.active) {
-            LyricZoomPrewarmScenes(
-                zoomState = lyricZoomState,
-                currentScalePercent = effectiveFontScale,
-                orderedLineIndices = renderableIndices,
-                displayItems = displayItems,
-                lines = lines,
-                anchorIndex = anchorIndex,
-                activeLineIndices = playbackState.activeLineIndicesList,
-                activeInterlude = playbackState.activeInterlude,
-                displayTranslation = displayTranslation,
-                displayRoma = displayRoma,
-                fontFamily = resolvedFontFamily,
-                baseFontSizeSp = fontSizeSp,
-                textPosition = textPosition,
-                duetLayout = effectiveDuetLayout,
-                primaryFontSizeRange = primaryFontSizeRange,
-                secondaryFontSizeRange = secondaryFontSizeRange,
-                lineHorizontalPadding = lineHorizontalPadding,
-                lineSpacing = 0.dp,
-                ReferenceSceneLayout = true,
-            )
-        }
+            if (interactionEnabled && zoomGestureEnabled && !lyricZoomState.active) {
+                LyricZoomPrewarmScenes(
+                    zoomState = lyricZoomState,
+                    currentScalePercent = effectiveFontScale,
+                    orderedLineIndices = renderableIndices,
+                    displayItems = displayItems,
+                    lines = lines,
+                    anchorIndex = anchorIndex,
+                    activeLineIndices = playbackState.activeLineIndicesList,
+                    activeInterlude = playbackState.activeInterlude,
+                    displayTranslation = displayTranslation,
+                    displayRoma = displayRoma,
+                    fontFamily = resolvedFontFamily,
+                    baseFontSizeSp = fontSizeSp,
+                    textPosition = textPosition,
+                    duetLayout = effectiveDuetLayout,
+                    primaryFontSizeRange = primaryFontSizeRange,
+                    secondaryFontSizeRange = secondaryFontSizeRange,
+                    lineHorizontalPadding = lineHorizontalPadding,
+                    lineSpacing = 0.dp,
+                    ReferenceSceneLayout = true,
+                )
+            }
 
-        if (lyricZoomState.active && !lyricZoomState.handoffPrepared) {
-            LyricZoomTransitionRows(
-                zoomState = lyricZoomState,
-                orderedLineIndices = renderableIndices,
-                displayItems = displayItems,
-                lines = lines,
-                anchorIndex = transitionAnchorIndex,
-                activeLineIndices = zoomSnapshotActiveLineIndices,
-                activeInterlude = zoomSnapshotInterlude,
-                positionMs = zoomSnapshotPositionMs,
-                displayTranslation = displayTranslation,
-                displayRoma = displayRoma,
-                textColor = textColor,
-                dimColor = dimColor,
-                secondaryColor = secondaryColor,
-                rainbowText = rainbowText,
-                fontFamily = resolvedFontFamily,
-                baseFontSizeSp = fontSizeSp,
-                textPosition = textPosition,
-                duetLayout = effectiveDuetLayout,
-                karaokeGlowEnabled = karaokeGlowEnabled,
-                karaokeLiftEnabled = karaokeLiftEnabled,
-                primaryFontSizeRange = primaryFontSizeRange,
-                secondaryFontSizeRange = secondaryFontSizeRange,
-                lineHorizontalPadding = lineHorizontalPadding,
-                lineSpacing = 0.dp,
-                ReferenceSceneLayout = true,
-                highlightAll = highlightAll,
-                sessionGeneration = lyricZoomState.sessionGeneration,
-                layoutGeneration = lyricZoomState.layoutGeneration,
-            )
+            if (lyricZoomState.active && !lyricZoomState.handoffPrepared) {
+                LyricZoomTransitionRows(
+                    zoomState = lyricZoomState,
+                    orderedLineIndices = renderableIndices,
+                    displayItems = displayItems,
+                    lines = lines,
+                    anchorIndex = transitionAnchorIndex,
+                    activeLineIndices = zoomSnapshotActiveLineIndices,
+                    activeInterlude = zoomSnapshotInterlude,
+                    positionMs = zoomSnapshotPositionMs,
+                    displayTranslation = displayTranslation,
+                    displayRoma = displayRoma,
+                    textColor = textColor,
+                    dimColor = dimColor,
+                    secondaryColor = secondaryColor,
+                    rainbowText = rainbowText,
+                    fontFamily = resolvedFontFamily,
+                    baseFontSizeSp = fontSizeSp,
+                    textPosition = textPosition,
+                    duetLayout = effectiveDuetLayout,
+                    karaokeGlowEnabled = karaokeGlowEnabled,
+                    karaokeLiftEnabled = karaokeLiftEnabled,
+                    primaryFontSizeRange = primaryFontSizeRange,
+                    secondaryFontSizeRange = secondaryFontSizeRange,
+                    lineHorizontalPadding = lineHorizontalPadding,
+                    lineSpacing = 0.dp,
+                    ReferenceSceneLayout = true,
+                    highlightAll = highlightAll,
+                    sessionGeneration = lyricZoomState.sessionGeneration,
+                    layoutGeneration = lyricZoomState.layoutGeneration,
+                )
+            }
         }
     }
 }
@@ -1389,6 +1350,7 @@ private fun ComposeLyricLine(
     textPosition: LyricTextPosition,
     karaokeGlowEnabled: Boolean,
     karaokeLiftEnabled: Boolean,
+    relativeLineProgressEnabled: Boolean = false,
     primaryFontSizeRange: IntRange,
     secondaryFontSizeRange: IntRange,
     horizontalPadding: Dp,
@@ -1397,7 +1359,7 @@ private fun ComposeLyricLine(
     modifier: Modifier = Modifier
 ) {
     val primarySize = fontSizeSp.coerceIn(primaryFontSizeRange.first, primaryFontSizeRange.last)
-    val primaryLineHeight = primarySize + 6
+    val primaryLineHeight = LyricAmMotionSpec.primaryLineHeight(primarySize, primaryFontSizeRange.last > 20)
     val secondarySize = (primarySize * 0.62f).toInt().coerceIn(
         secondaryFontSizeRange.first,
         secondaryFontSizeRange.last
@@ -1409,18 +1371,27 @@ private fun ComposeLyricLine(
     val displayedMain = if (backgroundOnly) backgroundText else mainText.ifBlank { "♪" }
     val mainWords = if (backgroundOnly) line.secondaryWords.orEmpty() else line.words.orEmpty()
     val align = textPosition.horizontalAlignment
+    val hasInlineRuby = remember(mainWords, displayRoma) {
+        displayRoma && mainWords.any { it.rubySyllables().isNotEmpty() }
+    }
     val textAlign = textPosition.textAlign
     val secondaryStyleModifier = Modifier.fillMaxWidth()
+    val rubyLaneHeight = if (hasInlineRuby) lyricRubyLaneHeightPx(primarySize, fontFamily) else 0
+    val leadingPadding = with(LocalDensity.current) {
+        LyricRubySpacingSpec.leadingPaddingPx(verticalPadding.roundToPx(), rubyLaneHeight).toDp()
+    }
 
     Column(
         modifier = modifier
-            .padding(horizontal = horizontalPadding, vertical = verticalPadding)
+            .padding(start = horizontalPadding, end = horizontalPadding,
+                top = leadingPadding, bottom = verticalPadding)
             .lyricRainbowMask(rainbowText),
         horizontalAlignment = align
     ) {
-        if (displayRoma && !line.roma.isNullOrBlank()) {
+        LyricAuxiliaryContent(visible = displayRoma && !hasInlineRuby && !line.roma.isNullOrBlank()) {
             Text(
                 text = line.roma.orEmpty(),
+                style = lyricGlyphTextStyle(line.roma.orEmpty(), inheritOriginal = false),
                 color = secondaryColor.copy(alpha = secondaryColor.alpha * 0.90f),
                 fontSize = secondarySize.sp,
                 lineHeight = secondaryLineHeight.sp,
@@ -1454,11 +1425,37 @@ private fun ComposeLyricLine(
                     fontFamily = fontFamily,
                     glowEnabled = active && karaokeGlowEnabled,
                     liftEnabled = active && karaokeLiftEnabled,
+                    showRuby = displayRoma,
                     modifier = Modifier.fillMaxWidth()
+                )
+            } else if (usesRelativeLineProgress(
+                    enabled = relativeLineProgressEnabled && mainText.isNotBlank(),
+                    active = active,
+                    timedWordCount = mainWords.size,
+                )) {
+                RelativeLyricLineText(
+                    text = displayedMain,
+                    beginMs = line.begin,
+                    endMs = line.end,
+                    clock = renderClock,
+                    fallbackPositionMs = positionMs,
+                    highlightColor = textColor,
+                    dimColor = dimColor,
+                    style = androidx.compose.ui.text.TextStyle(
+                        localeList = lyricGlyphLocales(displayedMain),
+                        fontSize = primarySize.sp,
+                        lineHeight = primaryLineHeight.sp,
+                        lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both),
+                        textAlign = textAlign,
+                        fontWeight = adjustedLyricFontWeight(FontWeight.Bold, configuredFontWeight),
+                        fontFamily = fontFamily,
+                    ),
                 )
             } else {
                 Text(
                     text = displayedMain,
+                    style = lyricGlyphTextStyle(displayedMain).copy(
+                        lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both)),
                     color = textColor,
                     fontSize = primarySize.sp,
                     lineHeight = primaryLineHeight.sp,
@@ -1470,10 +1467,11 @@ private fun ComposeLyricLine(
             }
         }
 
-        if (displayTranslation && !line.translation.isNullOrBlank()) {
+        LyricAuxiliaryContent(visible = displayTranslation && !line.translation.isNullOrBlank()) {
             Spacer(Modifier.height(6.dp))
             Text(
                 text = line.translation.orEmpty(),
+                style = lyricGlyphTextStyle(line.translation.orEmpty(), inheritOriginal = false),
                 color = secondaryColor,
                 fontSize = secondarySize.sp,
                 lineHeight = secondaryLineHeight.sp,
@@ -1502,14 +1500,14 @@ private fun ComposeLyricLine(
             val backgroundAlpha by animateFloatAsState(
                 targetValue = if (backgroundActive) 1f else 0f,
                 animationSpec = if (animateBackground) {
-                    tween(AM_LYRIC_BG_SCALE_MS, delayMillis = if (backgroundActive) {
-                        AM_LYRIC_BG_ENTER_SCALE_DELAY_MS
+                    tween(LYRIC_BG_SCALE_MS, delayMillis = if (backgroundActive) {
+                        LYRIC_BG_ENTER_SCALE_DELAY_MS
                     } else {
                         0
                     }, easing = if (backgroundActive) {
-                        AM_LYRIC_BG_GEOMETRY_EASING
+                        LYRIC_BG_GEOMETRY_EASING
                     } else {
-                        AM_LYRIC_BG_ALPHA_OUT_EASING
+                        LYRIC_BG_ALPHA_OUT_EASING
                     })
                 } else {
                     snap()
@@ -1519,7 +1517,7 @@ private fun ComposeLyricLine(
             val backgroundScale by animateFloatAsState(
                 targetValue = if (backgroundActive) 1f else 0.9f,
                 animationSpec = if (animateBackground) {
-                    tween(AM_LYRIC_BG_SCALE_MS, easing = AM_LYRIC_BG_GEOMETRY_EASING)
+                    tween(LYRIC_BG_SCALE_MS, easing = LYRIC_BG_GEOMETRY_EASING)
                 } else {
                     snap()
                 },
@@ -1542,6 +1540,7 @@ private fun ComposeLyricLine(
                         KaraokeTimedText(
                             text = backgroundText,
                             words = backgroundWords,
+                            showRuby = displayRoma,
                             lineEndMs = backgroundEnd,
                             positionMs = positionMs,
                             highlightColor = textColor.copy(alpha = 0.78f),
@@ -1561,6 +1560,7 @@ private fun ComposeLyricLine(
                     } else {
                         Text(
                             text = backgroundText,
+                            style = lyricGlyphTextStyle(backgroundText),
                             color = secondaryColor,
                             fontSize = secondarySize.sp,
                             lineHeight = secondaryLineHeight.sp,
@@ -1574,6 +1574,7 @@ private fun ComposeLyricLine(
                         Spacer(Modifier.height(3.dp))
                         Text(
                             text = line.backgroundTranslation.orEmpty(),
+                            style = lyricGlyphTextStyle(line.backgroundTranslation.orEmpty(), inheritOriginal = false),
                             color = secondaryColor.copy(alpha = secondaryColor.alpha * 0.84f),
                             fontSize = secondarySize.sp,
                             lineHeight = secondaryLineHeight.sp,
@@ -1592,6 +1593,21 @@ private fun ComposeLyricLine(
 private fun adjustedLyricFontWeight(base: FontWeight, configuredWeight: Int): FontWeight {
     val delta = configuredWeight.coerceIn(100, 900) - FontWeight.Normal.weight
     return FontWeight((base.weight + delta).coerceIn(100, 900))
+}
+
+@Composable
+private fun LyricAuxiliaryContent(visible: Boolean, content: @Composable () -> Unit) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = expandVertically(spring(dampingRatio = LyricAmMotionSpec.TRANSLATION_SHOW_DAMPING_RATIO,
+            stiffness = LyricAmMotionSpec.TRANSLATION_SHOW_STIFFNESS)) +
+            fadeIn(spring(dampingRatio = LyricAmMotionSpec.TRANSLATION_SHOW_DAMPING_RATIO,
+                stiffness = LyricAmMotionSpec.TRANSLATION_SHOW_STIFFNESS)),
+        exit = shrinkVertically(spring(dampingRatio = LyricAmMotionSpec.TRANSLATION_HIDE_DAMPING_RATIO,
+            stiffness = LyricAmMotionSpec.TRANSLATION_HIDE_STIFFNESS)) +
+            fadeOut(spring(dampingRatio = LyricAmMotionSpec.TRANSLATION_HIDE_DAMPING_RATIO,
+                stiffness = LyricAmMotionSpec.TRANSLATION_HIDE_STIFFNESS)),
+    ) { Column(Modifier.fillMaxWidth()) { content() } }
 }
 
 @Composable
@@ -1875,7 +1891,7 @@ private fun LyricZoomEndpointMeasureLayer(
                         secondaryFontSizeRange = secondaryFontSizeRange,
                         horizontalPadding = endpointHorizontalPadding,
                         verticalPadding = if (ReferenceSceneLayout) {
-                            endpointSceneStyle.verticalMargin(index in activeLineIndices)
+                            endpointSceneStyle.verticalMargin(index in activeLineIndices, useAm = primaryFontSizeRange.last > 20)
                         } else 0.dp,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1960,7 +1976,7 @@ private fun LyricZoomMeasureLine(
     modifier: Modifier = Modifier,
 ) {
     val primarySize = fontSizeSp.coerceIn(primaryFontSizeRange.first, primaryFontSizeRange.last)
-    val primaryLineHeight = primarySize + 6
+    val primaryLineHeight = LyricAmMotionSpec.primaryLineHeight(primarySize, primaryFontSizeRange.last > 20)
     val secondarySize = (primarySize * 0.62f).toInt().coerceIn(
         secondaryFontSizeRange.first,
         secondaryFontSizeRange.last,
@@ -1972,19 +1988,28 @@ private fun LyricZoomMeasureLine(
     val displayedMain = if (backgroundOnly) backgroundText else mainText.ifBlank { "♪" }
     val mainWords = if (backgroundOnly) line.secondaryWords.orEmpty() else line.words.orEmpty()
     val textAlign = textPosition.textAlign
+    val hasInlineRuby = remember(mainWords, displayRoma) {
+        displayRoma && mainWords.any { it.rubySyllables().isNotEmpty() }
+    }
     val align = textPosition.horizontalAlignment
     val transparent = Color.Transparent
 
     // This one-shot hidden layout mirrors ComposeLyricLine's wrapping rules. Timed lines keep the
     // same BaselineFlowRow while active and inactive so a playback-state change cannot alter line
     // breaks or hand the zoom transition a different row height.
+    val rubyLaneHeight = if (hasInlineRuby) lyricRubyLaneHeightPx(primarySize, fontFamily) else 0
+    val leadingPadding = with(LocalDensity.current) {
+        LyricRubySpacingSpec.leadingPaddingPx(verticalPadding.roundToPx(), rubyLaneHeight).toDp()
+    }
     Column(
-        modifier = modifier.padding(horizontal = horizontalPadding, vertical = verticalPadding),
+        modifier = modifier.padding(start = horizontalPadding, end = horizontalPadding,
+            top = leadingPadding, bottom = verticalPadding),
         horizontalAlignment = align,
     ) {
-        if (displayRoma && !line.roma.isNullOrBlank()) {
+        if (displayRoma && !hasInlineRuby && !line.roma.isNullOrBlank()) {
             Text(
                 text = line.roma.orEmpty(),
+                style = lyricGlyphTextStyle(line.roma.orEmpty(), inheritOriginal = false),
                 color = transparent,
                 fontSize = secondarySize.sp,
                 lineHeight = secondaryLineHeight.sp,
@@ -2009,11 +2034,14 @@ private fun LyricZoomMeasureLine(
                     textAlign = textAlign,
                     fontWeight = adjustedLyricFontWeight(FontWeight.Bold, configuredFontWeight),
                     fontFamily = fontFamily,
+                    showRuby = displayRoma,
                     modifier = Modifier.fillMaxWidth(),
                 )
             } else {
                 Text(
                     text = displayedMain,
+                    style = lyricGlyphTextStyle(displayedMain).copy(
+                        lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both)),
                     color = transparent,
                     fontSize = primarySize.sp,
                     lineHeight = primaryLineHeight.sp,
@@ -2029,6 +2057,7 @@ private fun LyricZoomMeasureLine(
             Spacer(Modifier.height(6.dp))
             Text(
                 text = line.translation.orEmpty(),
+                style = lyricGlyphTextStyle(line.translation.orEmpty(), inheritOriginal = false),
                 color = transparent,
                 fontSize = secondarySize.sp,
                 lineHeight = secondaryLineHeight.sp,
@@ -2050,6 +2079,7 @@ private fun LyricZoomMeasureLine(
                 KaraokeTimedMeasureText(
                     text = backgroundText,
                     words = backgroundWords,
+                    showRuby = displayRoma,
                     fontSize = secondarySize.sp,
                     lineHeight = secondaryLineHeight.sp,
                     textAlign = textAlign,
@@ -2060,6 +2090,7 @@ private fun LyricZoomMeasureLine(
             } else {
                 Text(
                     text = backgroundText,
+                    style = lyricGlyphTextStyle(backgroundText),
                     color = transparent,
                     fontSize = secondarySize.sp,
                     lineHeight = secondaryLineHeight.sp,
@@ -2073,6 +2104,7 @@ private fun LyricZoomMeasureLine(
                 Spacer(Modifier.height(3.dp))
                 Text(
                     text = line.backgroundTranslation.orEmpty(),
+                    style = lyricGlyphTextStyle(line.backgroundTranslation.orEmpty(), inheritOriginal = false),
                     color = transparent,
                     fontSize = secondarySize.sp,
                     lineHeight = secondaryLineHeight.sp,
@@ -2301,7 +2333,7 @@ private fun LyricZoomTargetOnlyScene(
                         primaryFontSizeRange = primaryFontSizeRange,
                         secondaryFontSizeRange = secondaryFontSizeRange,
                         horizontalPadding = horizontalPadding,
-                        verticalPadding = if (ReferenceSceneLayout) targetStyle.verticalMargin(active) else 0.dp,
+                        verticalPadding = if (ReferenceSceneLayout) targetStyle.verticalMargin(active, useAm = primaryFontSizeRange.last > 20) else 0.dp,
                         animateBackground = false,
                         modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
                     )
@@ -2335,7 +2367,11 @@ private fun LyricZoomTargetOnlyScene(
                     scaleX = transform.scale
                     scaleY = transform.scale
                     translationY = transform.translationYPx
-                    transformOrigin = TransformOrigin.Center
+                    val position = lines[index].resolvedTextPosition(textPosition, duetLayout)
+                    val insetFraction = (lineHorizontalPadding.toPx() / placeable.width.coerceAtLeast(1))
+                        .coerceIn(0f, .5f)
+                    transformOrigin = TransformOrigin(
+                        LyricSceneScalePolicy.contentPivot(position.pivotFractionX, insetFraction), .5f)
                     clip = false
                 }
             }
@@ -2349,6 +2385,7 @@ private fun Modifier.lyricLineVisuals(
     highlighted: Boolean = active,
     signedDistance: Int,
     pivotFractionX: Float,
+    contentHorizontalPadding: Dp = 0.dp,
     blurEnabled: Boolean,
     highlightAll: Boolean,
     pullField: LyricPullFieldState? = null,
@@ -2370,48 +2407,49 @@ private fun Modifier.lyricLineVisuals(
             distance == 2 -> 0.28f
             else -> 0.16f
         }
-    val animatedAlpha by animateFloatAsState(
+    val animatedAlpha = animateFloatAsState(
         targetValue = alphaTarget,
-        animationSpec = spring(dampingRatio = 0.88f, stiffness = 360f),
+        animationSpec = spring(dampingRatio = LyricAmMotionSpec.DAMPING_RATIO, stiffness = LyricAmMotionSpec.STIFFNESS),
         label = "lyricLineAlpha"
     )
     // Natural lyric handoff must keep the animated layer alive.  `motionActive` is also true
     // while the pull field is moving; bypassing this animation there makes the old line jump to
     // its compact scale on the exact frame that playback advances to the next line.
-    val alpha = if (zoomHandoffPrepared || zoomMotionActive) alphaTarget else animatedAlpha
-    val animatedScale by animateFloatAsState(
+    val animatedScale = animateFloatAsState(
         targetValue = if (visualActive) 1f else inactiveScale,
-        animationSpec = spring(dampingRatio = 0.82f, stiffness = 340f),
+        animationSpec = spring(dampingRatio = LyricAmMotionSpec.DAMPING_RATIO, stiffness = LyricAmMotionSpec.STIFFNESS),
         label = "lyricLineScale"
     )
-    val scale = if (zoomHandoffPrepared || zoomMotionActive) {
-        if (visualActive) 1f else inactiveScale
-    } else {
-        animatedScale
-    }
 
-    // Keep line-follow motion on local properties instead of relaying every animation
-    // frame through RecyclerView layout.  During RawSMusic's natural follow, keep the expensive
-    // blur effect completely out of the 550 ms pull/scroll window; alpha/scale and trailing pull
-    // remain GPU-layer properties. Manual scrolling already disables blur through blurEnabled.
-    val blurTarget = when {
-        !blurEnabled || highlightAll || visualActive || distance < 2 -> 0.dp
-        else -> (2f + distance.coerceAtMost(4)).dp
-    }
-    val animatedBlur by animateDpAsState(
+    // Keep line-follow motion on local layer properties. Natural handoff must not replace the
+    // configured depth blur with a sharp frame; manual interaction still disables it upstream.
+    val blurTarget = lyricDepthBlurTarget(
+        enabled = blurEnabled,
+        highlighted = visualActive,
+        distance = distance,
+        highlightAll = highlightAll,
+    )
+    val animatedBlur = animateDpAsState(
         targetValue = blurTarget,
-        animationSpec = spring(dampingRatio = 0.90f, stiffness = 360f),
+        animationSpec = spring(dampingRatio = LyricAmMotionSpec.DAMPING_RATIO, stiffness = LyricAmMotionSpec.STIFFNESS),
         label = "lyricLineBlur"
     )
-    val blurRadius = if (motionActive) {
-        0.dp
-    } else if (zoomHandoffPrepared) {
-        blurTarget
-    } else {
-        animatedBlur
-    }
+    val blurEffects = remember { LyricBlurEffectCache<RenderEffect> { radiusPx ->
+        BlurEffect(radiusPx, radiusPx, TileMode.Decal)
+    } }
 
     return graphicsLayer {
+        // Read spring values in the layer phase, not composition. A line handoff must not
+        // recompose every visible lyric/Text subtree at the display refresh rate.
+        val alpha = if (zoomHandoffPrepared || zoomMotionActive) alphaTarget else animatedAlpha.value
+        val scale = if (zoomHandoffPrepared || zoomMotionActive) {
+            if (visualActive) 1f else inactiveScale
+        } else animatedScale.value
+        val blurRadius = if (zoomHandoffPrepared) blurTarget else lyricDepthBlurForFrame(
+            animatedRadius = animatedBlur.value,
+            naturalFollowRunning = motionActive && !zoomMotionActive,
+            zoomActive = zoomMotionActive,
+        )
         // Natural pull remains a live layer animation. Zoom is different: once the measured
         // VirtualList-style overlay owns text, the hidden LazyColumn must stop subscribing to every
         // pointer frame or we update two complete lyric trees for no visible result. Geometry
@@ -2448,9 +2486,12 @@ private fun Modifier.lyricLineVisuals(
         scaleX = scale * liveZoomScale
         scaleY = scale * liveZoomScale
         translationY = trailingOffset + (liveZoomTransform?.translationYPx ?: 0f)
-        transformOrigin = TransformOrigin(pivotFractionX, 0.5f)
-        clip = false
-    }.blur(blurRadius)
+        val insetFraction = (contentHorizontalPadding.toPx() / size.width.coerceAtLeast(1f)).coerceIn(0f, 0.5f)
+        transformOrigin = TransformOrigin(
+            LyricSceneScalePolicy.contentPivot(pivotFractionX, insetFraction), 0.5f)
+        renderEffect = blurEffects.effect(blurRadius.toPx())
+        clip = blurRadius > 0.dp
+    }
 }
 
 private fun Modifier.lyricLayoutZoomGesture(

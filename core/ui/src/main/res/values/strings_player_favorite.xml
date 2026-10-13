@@ -1,0 +1,4 @@
+<resources>
+    <string name="player_more_add_to_playlist">Add to playlist</string>
+    <string name="player_more_remove_from_playlists">Remove this song from saved playlists</string>
+</resources>

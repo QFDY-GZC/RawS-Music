@@ -12,6 +12,19 @@ import org.junit.Test
 
 class PlayerQueueControlCoordinatorTest {
     @Test
+    fun previousButtonAfterThreeSecondsSelectsPreviousTrackWithoutSeekingCurrent() {
+        val harness = Harness()
+        harness.queue = PlayQueue(listOf(harness.a, harness.b, harness.c), 1)
+        harness.current = harness.b
+        harness.positionMs = 5_000L
+
+        assertEquals(harness.a, harness.coordinator.previous())
+        assertEquals(5_000L, harness.positionMs)
+        assertEquals(0, harness.queue.currentIndex)
+        assertEquals(harness.a, harness.current)
+    }
+
+    @Test
     fun sequentialNavigationKeepsRestartAndHistorySemantics() {
         val harness = Harness()
 
@@ -151,7 +164,7 @@ class PlayerQueueControlCoordinatorTest {
         assertTrue(harness.stopped)
     }
 
-    private class Harness {
+    internal class Harness {
         val a = audio(1, "a")
         val b = audio(2, "b")
         val c = audio(3, "c")

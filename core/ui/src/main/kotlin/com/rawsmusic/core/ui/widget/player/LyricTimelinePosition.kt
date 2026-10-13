@@ -49,6 +49,7 @@ internal fun rememberLyricTimelinePositionState(
         var lastSourcePosition = latestPosition
         var anchorPosition = lastSourcePosition
         var anchorFrameNs = 0L
+        var rate = com.rawsmusic.core.common.utils.LyricPlaybackTimeline.speed
         value = clampLyricPosition(lastSourcePosition, latestDuration)
 
         // A paused player has no render-time interpolation to perform. Returning here also
@@ -60,8 +61,10 @@ internal fun rememberLyricTimelinePositionState(
             val frameNs = withFrameNanos { it }
             val sourcePosition = latestPosition
             val sourceDuration = latestDuration
+            val currentRate = com.rawsmusic.core.common.utils.LyricPlaybackTimeline.speed
 
-            if (sourcePosition != lastSourcePosition) {
+            if (sourcePosition != lastSourcePosition || currentRate != rate) {
+                rate = currentRate
                 lastSourcePosition = sourcePosition
                 anchorPosition = sourcePosition
                 anchorFrameNs = frameNs
@@ -74,7 +77,7 @@ internal fun rememberLyricTimelinePositionState(
                 anchorFrameNs = frameNs
             }
             val elapsedMs = ((frameNs - anchorFrameNs) / 1_000_000L).coerceAtLeast(0L)
-            value = clampLyricPosition(anchorPosition + elapsedMs, sourceDuration)
+            value = clampLyricPosition(anchorPosition + (elapsedMs * rate).toLong(), sourceDuration)
         }
     }
 }

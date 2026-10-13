@@ -1,0 +1,9 @@
+<resources>
+    <string name="notice_playlist_added_song">Added “%1$s” to “%2$s”</string>
+    <string name="notice_playlist_added_songs">Added %1$d songs to “%2$s”</string>
+    <string name="notice_playlist_removed_song">Removed “%1$s” from “%2$s”</string>
+    <string name="notice_playlist_removed_songs">Removed %1$d songs from “%2$s”</string>
+    <string name="notice_playlist_deleted">Deleted playlist “%1$s”</string>
+    <string name="notice_playlist_delete_failed">Could not delete playlist. Please try again.</string>
+    <string name="notice_playlist_partial_failure">Some playlist changes failed.</string>
+</resources>

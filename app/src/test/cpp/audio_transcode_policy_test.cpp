@@ -62,5 +62,29 @@ int main() {
     assert(logicalDsdRateFromCodecByteRate(6144000) == 49152000);  // DSD1024/48
     assert(logicalDsdRateFromCodecByteRate(0) == 0);
 
+    // The reported FLAC has 12,347,412 samples followed by eight duplicate 1024-sample
+    // frames. Millisecond duration rounding must not define this boundary.
+    std::array<uint8_t, 34> streamInfo{};
+    streamInfo[13] = 0xf0;  // upper bits belong to the bit-depth field
+    streamInfo[14] = 0x00;
+    streamInfo[15] = 0xbc;
+    streamInfo[16] = 0x68;
+    streamInfo[17] = 0x14;
+    assert(declaredFlacSampleCount(streamInfo.data(), streamInfo.size()) == 12347412);
+    assert(declaredFlacSampleCount(nullptr, 34) == 0);
+    assert(declaredFlacSampleCount(streamInfo.data(), 33) == 0);
+    streamInfo[13] = 0xff;
+    assert(declaredFlacSampleCount(streamInfo.data(), streamInfo.size()) == 0xf00bc6814LL);
+    streamInfo.fill(0);
+    assert(declaredFlacSampleCount(streamInfo.data(), streamInfo.size()) == 0);
+
+    assert(boundedDecodedSampleCount(12346368, 1024, 12347412) == 1024);
+    assert(boundedDecodedSampleCount(12347392, 20, 12347412) == 20);
+    assert(boundedDecodedSampleCount(12347392, 1024, 12347412) == 20);
+    assert(boundedDecodedSampleCount(12347412, 1024, 12347412) == 0);
+    assert(boundedDecodedSampleCount(12348436, 1024, 12347412) == 0);
+    assert(boundedDecodedSampleCount(12347412, 1024, 0) == 1024);
+    assert(boundedDecodedSampleCount(0, 0, 12347412) == 0);
+
     return 0;
 }

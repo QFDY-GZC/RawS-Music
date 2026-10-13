@@ -5,14 +5,8 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.DisposableEffect
@@ -23,6 +17,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -30,17 +25,14 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.navigationevent.NavigationEventInfo
 import androidx.navigationevent.NavigationEvent
@@ -50,19 +42,20 @@ import androidx.navigationevent.compose.rememberNavigationEventState
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.FolderHierarchyNode
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.repository.sourceFolderDirectory
 import com.rawsmusic.core.ui.scene.CoverTransitionTarget
 import com.rawsmusic.core.ui.scene.LocalBottomChromeInsets
+import com.rawsmusic.core.ui.scene.LocalRawWindowLayoutProfile
 import com.rawsmusic.core.ui.scene.LocalSharedCoverRegistry
 import com.rawsmusic.core.ui.scene.LocalSharedTransitionSpec
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.scene.LocalReferenceLibraryTopChromeOverlayOnly
 import com.rawsmusic.core.ui.widget.virtuallist.LocalReferenceLibraryProviderPublicationOnly
+import com.rawsmusic.core.ui.widget.virtuallist.LocalReferenceLibraryProviderRegistry
 import com.rawsmusic.core.ui.scene.COLLECTION_HEADER_RADIUS_DP
 import com.rawsmusic.core.ui.scene.RetainedSceneItemTransform
 import com.rawsmusic.core.ui.scene.SharedCoverSnapshot
 import com.rawsmusic.core.ui.scene.SharedTransitionSpec
-import com.rawsmusic.core.ui.scene.SharedCoverOverlay
-import com.rawsmusic.core.ui.scene.awaitSharedActorReady
 import com.rawsmusic.core.ui.scene.awaitCollectionSharedPair
 import com.rawsmusic.core.ui.scene.collectionReleaseDuration
 import com.rawsmusic.core.ui.scene.collectionReleaseMotion
@@ -72,7 +65,6 @@ import com.rawsmusic.core.ui.scene.providerOwnsBack
 import com.rawsmusic.core.ui.scene.VirtualListAccelerateDecelerate
 import com.rawsmusic.core.ui.scene.VIRTUAL_LIST_COMMIT_MS
 import com.rawsmusic.core.ui.widget.virtuallist.RenderedPopulationReadiness
-import com.rawsmusic.core.ui.widget.bitmaps.CrossfadeAlbumArt
 import com.rawsmusic.core.ui.widget.index.RawAlphabetIndex
 import com.rawsmusic.core.ui.widget.index.rememberAdaptiveAlphabetIndexData
 import com.rawsmusic.core.ui.widget.virtuallist.ComposeGenericVirtualList
@@ -81,16 +73,17 @@ import com.rawsmusic.core.ui.widget.virtuallist.FolderVirtualListItem
 import com.rawsmusic.core.ui.widget.virtuallist.LocalVirtualListProviderNavigationFrame
 import com.rawsmusic.core.ui.widget.virtuallist.VirtualListProviderNavigationFrame
 import com.rawsmusic.core.ui.widget.virtuallist.VirtualListVisualItem
-import com.rawsmusic.core.ui.widget.virtuallist.RegisteredVirtualList
+import com.rawsmusic.core.ui.widget.virtuallist.ReferenceRegisteredVirtualList
 import com.rawsmusic.core.ui.widget.virtuallist.SongVirtualListItem
 import com.rawsmusic.core.ui.widget.virtuallist.copyForRetainedProvider
+import com.rawsmusic.core.ui.widget.virtuallist.formatVirtualListDuration
 import com.rawsmusic.core.ui.widget.virtuallist.retainedMappedList
 import com.rawsmusic.core.ui.widget.virtuallist.toVirtualListAudioFile
+import com.rawsmusic.core.ui.systemui.rawStableStatusBarTopPadding
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.cos
-import kotlin.math.roundToInt
 
 private const val REFERENCE_FOLDER_HIERARCHY_NAV_MS = VIRTUAL_LIST_COMMIT_MS
 private const val ROOT_HIERARCHY_KEY = "__folder_hierarchy_root__"
@@ -120,7 +113,7 @@ class FolderHierarchyPageState(initialPath: String? = null) {
             nodesByPath = hierarchy.associateBy { it.path },
             childrenByParent = hierarchy.groupBy { it.parentId }
                 .mapValues { (_, children) -> children.sortedBy { it.name.lowercase() } },
-            directSongsByFolder = songs.groupBy { it.path.substringBeforeLast('/', "").trimEnd('/') },
+            directSongsByFolder = songs.groupBy { sourceFolderDirectory(it.path) },
         ).also {
             indexedSongs = songs
             indexedHierarchy = hierarchy
@@ -139,35 +132,11 @@ internal data class FolderHierarchyPageIndex(
 
 private val ReferenceAccelerateDecelerateEasing = VirtualListAccelerateDecelerate
 
-internal data class FolderHierarchyCoverEndpoint(
-    val left: Float,
-    val top: Float,
-    val right: Float,
-    val bottom: Float,
-    val radiusDp: Float,
-    val coverKey: String,
-    val folderId: Long,
-    val promotedBitmap: android.graphics.Bitmap? = null,
-) {
-    val width: Float get() = (right - left).coerceAtLeast(1f)
-    val height: Float get() = (bottom - top).coerceAtLeast(1f)
-
-    fun unscaledAround(scale: Float, pivotX: Float, pivotY: Float): FolderHierarchyCoverEndpoint {
-        val safeScale = scale.coerceIn(0.5f, 1.5f)
-        if (kotlin.math.abs(safeScale - 1f) < 0.0001f) return this
-        return copy(
-            left = pivotX + (left - pivotX) / safeScale,
-            top = pivotY + (top - pivotY) / safeScale,
-            right = pivotX + (right - pivotX) / safeScale,
-            bottom = pivotY + (bottom - pivotY) / safeScale,
-        )
-    }
-}
 
 internal data class FolderHierarchyTransition(
     val serial: Int,
     val direction: FolderHierarchyDirection,
-    val retainedProvider: RegisteredVirtualList,
+    val retainedProvider: ReferenceRegisteredVirtualList,
     val sourcePath: String?,
     val targetPath: String?,
     val interactive: Boolean,
@@ -175,11 +144,13 @@ internal data class FolderHierarchyTransition(
     val sharedFolderPath: String? = null,
     val sharedElementId: String = "",
     val sourceCover: FolderHierarchyCoverEndpoint? = null,
-    val sourceHeroCover: FolderHierarchyCoverEndpoint? = null,
+    /** Exact physical/window-space source when the click came from an attached VirtualList holder. */
+    val sourceSharedSnapshot: SharedCoverSnapshot? = null,
     // null = target preparation still open; true/false is frozen before motion begins.
     // This prevents a late layout callback from creating a shared actor halfway through PivotTransition.
     val sharedEligible: Boolean? = null,
-    val targetCover: FolderHierarchyCoverEndpoint? = null,
+    /** ItemToHeader/HeaderToItem pivots the item-side LayoutRes at holder y + height. */
+    val itemPivotY: Float? = null,
     val readyForMotion: Boolean = false,
     val gestureDirection: Float = 1f,
     val contentGesture: Boolean = false,
@@ -204,6 +175,9 @@ private fun FolderHierarchyCoverEndpoint.toSharedSnapshot(elementId: String): Sh
     SharedCoverSnapshot(
         sceneId = NavScene.FOLDER_HIERARCHY.name,
         elementId = elementId,
+        // Folder hierarchy endpoints are always published in window coordinates.  The previous
+        // implementation mixed boundsInRoot() values from the hero with window coordinates from
+        // list holders, which made shared-element interpolation start/end from different spaces.
         boundsInWindow = Rect(left, top, right, bottom),
         coverKey = coverKey,
         radiusDp = radiusDp,
@@ -213,25 +187,42 @@ private fun FolderHierarchyCoverEndpoint.toSharedSnapshot(elementId: String): Sh
 /**
  * retained-layout Folders Hierarchy.
  *
- * One ComposeVirtualList remains mounted for the whole hierarchy session. Entering a child first
- * snapshots the visible provider/layout into RETAINED, publishes the child into CURRENT, then runs
- * mode-4-style PivotTransition over those two LayoutRes roles. Folder artwork is a local shared item:
- * row cover -> child hero on forward, child hero -> remembered parent row on back.
+ * One physical VirtualList remains mounted for the whole hierarchy session.  ItemToHeader forward
+ * publishes parent/source as RETAINED and child/destination as CURRENT; HeaderToItem back keeps the
+ * child/header source CURRENT and prepares the parent/destination in RETAINED.  The shared artwork
+ * is the concrete physical holder promoted from the folder item, parked at the hierarchy header
+ * between levels, then reactivated and returned to the matching parent-row slot on Back.  If that
+ * concrete holder relationship cannot be established, navigation falls back to GenericPivot.
  */
 @Composable
 fun FolderHierarchyPage(
     songs: List<AudioFile>,
-    hierarchy: List<FolderHierarchyNode>,
     onBack: () -> Unit,
     onPlayQueue: (List<AudioFile>, Int) -> Unit,
     onShuffle: (List<AudioFile>) -> Unit,
+    onSearch: () -> Unit = {},
     virtualListState: ComposeVirtualListState,
     initialPath: String? = null,
     pageState: FolderHierarchyPageState = remember { FolderHierarchyPageState(initialPath) },
     predictiveBackEnabled: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
+    // Same provider-metadata owner as Folders/Albums/Artists: LibrarySceneGroupingWarmup builds the
+    // hierarchy from the published song snapshot before navigation (prewarmRootProviders), so the
+    // first composition already has the authoritative rows instead of waiting on a second
+    // repository flow that may still be empty during a cold-start entry.
+    val hierarchy by produceState(
+        initialValue = LibrarySceneGroupingWarmup.folderHierarchy(songs),
+        key1 = songs,
+    ) {
+        value = LibrarySceneGroupingWarmup.loadFolderHierarchy(songs)
+    }
     var currentPath by pageState.pathState
+    // Do not getOrCreate() here. Like every other root page, only ComposeVirtualList creates the
+    // registry record together with its first publication. An earlier empty record (state == null)
+    // made ProviderPreflight treat this scene as already bound and the fixed body rendered an empty
+    // list on the first cold visit. Navigation reads the published record lazily.
+    val providerRegistry = LocalReferenceLibraryProviderRegistry.current
     val publicationOnly = LocalReferenceLibraryProviderPublicationOnly.current ||
         LocalReferenceLibraryTopChromeOverlayOnly.current
     val ownsHierarchyInput = predictiveBackEnabled && !publicationOnly
@@ -245,11 +236,16 @@ fun FolderHierarchyPage(
     // This is layout publication metadata, not UI state. Reading it in a click/back callback avoids
     // one recomposition just to mirror LibraryListScaffold's stable top inset.
     val currentContentTopPadding = remember { arrayOf(0.dp) }
+    val currentScaffoldTopPadding = remember { arrayOf(0.dp) }
     val currentHeroOuterHeight = remember { arrayOf(0.dp) }
+    val currentHeroCoverHeight = remember { arrayOf(0.dp) }
     val lastClickedCoverTarget = remember { arrayOfNulls<CoverTransitionTarget>(1) }
     var currentHeroEndpoint by pageState.heroEndpointState
     var pageOriginLeft by remember { mutableFloatStateOf(0f) }
     var pageOriginTop by remember { mutableFloatStateOf(0f) }
+    // Pivot geometry only. Deliberately not BoxWithConstraints: its SubcomposeLayout deferred the
+    // list publication to layout, so ProviderPreflight could not bind this scene like the others.
+    var pageSizePx by remember { mutableStateOf(IntSize.Zero) }
     var transitionProgress by pageState.progressState
     var pendingInteractiveProgress by remember { mutableFloatStateOf(0f) }
     var transition by pageState.transitionState
@@ -287,14 +283,47 @@ fun FolderHierarchyPage(
             directSongs.forEach { add(SongVirtualListItem(it)) }
         }
     }
+
+    fun rowsForPath(path: String?): List<VirtualListVisualItem> {
+        val node = path?.let(nodesByPath::get)
+        val children = childrenByParent[node?.id ?: 0L].orEmpty()
+        val levelSongs = if (path == null) {
+            emptyList()
+        } else {
+            directSongsByFolder[path].orEmpty().sortedBy { it.displayName.lowercase() }
+        }
+        return buildList(children.size + levelSongs.size) {
+            children.forEach { child ->
+                add(
+                    FolderVirtualListItem(
+                        path = child.path,
+                        name = child.name,
+                        parentName = child.parentLabel,
+                        cover = child.coverKey,
+                        songCount = child.hierarchicalSongCount,
+                        totalDurationMs = child.hierarchicalDurationMs,
+                        folderId = child.id,
+                        parentFolderId = child.parentId,
+                        childFolderCount = child.childFolderCount,
+                        showFolderGlyph = true,
+                    )
+                )
+            }
+            levelSongs.forEach { add(SongVirtualListItem(it)) }
+        }
+    }
     val subtreeSongs = remember(currentPath, songs) {
         val path = currentPath
         if (path == null) songs else songs.filter { song ->
-            val dir = song.path.substringBeforeLast('/', "").trimEnd('/')
+            val dir = sourceFolderDirectory(song.path)
             dir == path || dir.startsWith("$path/")
         }
     }
-    val title = currentNode?.name ?: stringResource(com.rawsmusic.core.ui.R.string.library_title_folder_hierarchy)
+    val chromePath = if (transition != null) transition?.sourcePath else currentPath
+    val chromeNode = chromePath?.let(nodesByPath::get)
+    val chromeChildren = childrenByParent[chromeNode?.id ?: 0L].orEmpty()
+    val chromeDirectSongCount = if (chromePath == null) 0 else directSongsByFolder[chromePath].orEmpty().size
+    val title = chromeNode?.name ?: stringResource(com.rawsmusic.core.ui.R.string.library_title_folder_hierarchy)
     val alphabetIndexData = rememberAdaptiveAlphabetIndexData(currentRows) { it.title }
 
     LaunchedEffect(hierarchy, currentPath, publicationOnly) {
@@ -310,20 +339,51 @@ fun FolderHierarchyPage(
     fun retainedProvider(
         rows: List<VirtualListVisualItem>,
         sourceNode: FolderHierarchyNode?,
-    ): RegisteredVirtualList {
+        scrollY: Float = virtualListState.viewportScrollY,
+        topPadding: Dp = currentContentTopPadding[0],
+    ): ReferenceRegisteredVirtualList {
         val retainedRows = rows.toList()
-        return RegisteredVirtualList(NavScene.FOLDER_HIERARCHY).apply {
+        return ReferenceRegisteredVirtualList(
+            NavScene.FOLDER_HIERARCHY,
+            physicalPoolIdentity = providerRegistry?.get(NavScene.FOLDER_HIERARCHY)
+                ?.nestedPhysicalIdentity(sourceNode?.path.orEmpty()) ?: Any(),
+        ).apply {
             this.songs = retainedMappedList(retainedRows) { it.toVirtualListAudioFile() }
-            state = virtualListState.copyForRetainedProvider()
+            state = virtualListState.copyForRetainedProvider().also { retainedState ->
+                retainedState.viewportScrollY = scrollY
+            }
             // Critical: Reference retains the complete layout record. Losing this inset made Raw's
             // retained hierarchy population jump upward on frame zero before PivotTransition began.
-            contentTopPadding = currentContentTopPadding[0]
+            contentTopPadding = topPadding
             persistentHeaderHeight = if (sourceNode != null) currentHeroOuterHeight[0] else 0.dp
             persistentHeaderVisibilityHeight = persistentHeaderHeight
-            persistentHeaderSceneItemVisibilityHeight = persistentHeaderHeight
+            persistentHeaderSceneItemVisibilityHeight = if (sourceNode != null) currentHeroCoverHeight[0] else 0.dp
             persistentHeaderSceneItemId = sourceNode?.let { "cover:folder:${it.id}" }.orEmpty()
             virtualListEdgeEnabled = sourceNode != null
             sharedCoverSceneId = NavScene.FOLDER_HIERARCHY.name
+            if (sourceNode != null) {
+                val sourceElementId = "cover:folder:${sourceNode.id}"
+                persistentHeaderContent = { _, coverVisible ->
+                    val sharedSpec = LocalSharedTransitionSpec.current
+                    val sharedOwner = sharedSpec.active &&
+                        sharedSpec.ownedElementId == sourceElementId &&
+                        sharedSpec.sharedCoverOverlayOwnsAnchor
+                    FolderHierarchyHeroHeader(
+                        node = sourceNode,
+                        coverHeight = currentHeroCoverHeight[0],
+                        coverVisible = coverVisible,
+                        hideForShared = sharedOwner || coverRegistry.isPhysicalPromotedElement(sourceElementId) ||
+                            coverRegistry.isPhysicalStashedElement(sourceElementId),
+                        freezeArtworkUpdates = true,
+                        onBack = {},
+                        onShuffle = {},
+                        onSearch = {},
+                        // RETAINED owns its own LayoutRes/header geometry. Only CURRENT publishes
+                        // the destination endpoint used to prepare the next shared transaction.
+                        onCoverEndpointChanged = {},
+                    )
+                }
+            }
             sharedCoverElementIdProvider = { _, index ->
                 retainedRows.getOrNull(index)?.sharedCoverElementId.orEmpty()
             }
@@ -336,13 +396,30 @@ fun FolderHierarchyPage(
         direction: FolderHierarchyDirection,
         interactive: Boolean = false,
         clickedCover: FolderHierarchyCoverEndpoint? = null,
+        clickedSharedSnapshot: SharedCoverSnapshot? = null,
         gestureDirection: Float = 1f,
         contentGesture: Boolean = false,
     ) {
         if (transition != null || targetPath == currentPath) return
         val sourceNode = currentNode
         scrollByPath[currentLevelKey(currentPath)] = virtualListState.viewportScrollY
-        val oldProvider = retainedProvider(currentRows, sourceNode)
+        val retainedProviderForTransition = when (direction) {
+            FolderHierarchyDirection.FORWARD -> retainedProvider(
+                rows = currentRows,
+                sourceNode = sourceNode,
+                scrollY = virtualListState.viewportScrollY,
+                topPadding = currentContentTopPadding[0],
+            )
+            FolderHierarchyDirection.BACK -> {
+                val targetNode = targetPath?.let(nodesByPath::get)
+                retainedProvider(
+                    rows = rowsForPath(targetPath),
+                    sourceNode = targetNode,
+                    scrollY = scrollByPath[currentLevelKey(targetPath)] ?: 0f,
+                    topPadding = if (targetNode != null) 0.dp else currentScaffoldTopPadding[0],
+                )
+            }
+        }
 
         val sharedFolderPath = when (direction) {
             FolderHierarchyDirection.FORWARD -> targetPath
@@ -357,6 +434,10 @@ fun FolderHierarchyPage(
             FolderHierarchyDirection.FORWARD -> clickedCover
             FolderHierarchyDirection.BACK -> sourceHeroCover
         }
+        val sourceSharedSnapshot = when (direction) {
+            FolderHierarchyDirection.FORWARD -> clickedSharedSnapshot
+            FolderHierarchyDirection.BACK -> sourceHeroCover?.toSharedSnapshot(sharedElementId)
+        }
         // Target hero geometry must always come from the freshly published destination provider.
         // Keeping a previous visit's endpoint can incorrectly re-enable shared motion after that
         // destination hero has been restored to an offscreen scroll position.
@@ -368,7 +449,7 @@ fun FolderHierarchyPage(
         transition = FolderHierarchyTransition(
             serial = transitionSerial,
             direction = direction,
-            retainedProvider = oldProvider,
+            retainedProvider = retainedProviderForTransition,
             sourcePath = currentPath,
             targetPath = targetPath,
             interactive = interactive,
@@ -377,8 +458,8 @@ fun FolderHierarchyPage(
             sharedFolderPath = sharedFolderPath,
             sharedElementId = sharedElementId,
             sourceCover = sourceCover,
-            sourceHeroCover = sourceHeroCover,
-            sharedEligible = if (sourceCover == null || sharedElementId.isBlank()) false else null,
+            sourceSharedSnapshot = sourceSharedSnapshot,
+            sharedEligible = if ((sourceSharedSnapshot == null && sourceCover == null) || sharedElementId.isBlank()) false else null,
         )
         // Do not mutate currentPath/scroll in this transaction. Reference first publishes RETAINED,
         // then prepares CURRENT on the next layout turn. Coalescing both writes was the frame-zero
@@ -398,63 +479,83 @@ fun FolderHierarchyPage(
     LaunchedEffect(transition?.serial, publicationOnly) {
         if (publicationOnly) return@LaunchedEffect
         val initial = transition ?: return@LaunchedEffect
-        // Frame A: source is still CURRENT and an identical RETAINED LayoutRes has been published.
-        while (!pageState.drawnLayouts.isReady(initial.serial to initial.sourcePath)) {
+        // The two concrete transition types use opposite LayoutRes roles:
+        // ItemToHeader keeps the parent/source in RETAINED, while HeaderToItem keeps the
+        // parent/destination in RETAINED and leaves the child/header source CURRENT.
+        val firstPreparedPath = if (initial.direction == FolderHierarchyDirection.BACK) {
+            initial.targetPath
+        } else {
+            initial.sourcePath
+        }
+        while (!pageState.drawnLayouts.isReady(initial.serial to firstPreparedPath)) {
             androidx.compose.runtime.withFrameNanos { }
             if (transition?.serial != initial.serial) return@LaunchedEffect
         }
         if (transition?.serial != initial.serial) return@LaunchedEffect
 
-        // Frame B preparation: publish target provider/scroll while source remains RETAINED at p=0.
-        // Drop old row geometry before Back so only the freshly laid-out parent provider can supply
-        // the shared target. Reference resolves the target from the prepared destination LayoutRes.
-        if (initial.direction == FolderHierarchyDirection.BACK) liveFolderRowEndpoints.clear()
-        currentPath = initial.targetPath
-        virtualListState.viewportScrollY = scrollByPath[currentLevelKey(initial.targetPath)] ?: 0f
-        transition = transition?.copy(targetPublished = true)
-        while (!pageState.drawnLayouts.isReady(initial.serial to initial.targetPath)) {
-            androidx.compose.runtime.withFrameNanos { }
+        if (initial.direction == FolderHierarchyDirection.FORWARD) {
+            // ItemToHeader: after the source RETAINED record exists, publish child as CURRENT.
+            currentPath = initial.targetPath
+            virtualListState.viewportScrollY = scrollByPath[currentLevelKey(initial.targetPath)] ?: 0f
+            transition = transition?.copy(targetPublished = true)
+            while (!pageState.drawnLayouts.isReady(initial.serial to initial.targetPath)) {
+                androidx.compose.runtime.withFrameNanos { }
+                if (transition?.serial != initial.serial) return@LaunchedEffect
+            }
             if (transition?.serial != initial.serial) return@LaunchedEffect
+        } else {
+            // HeaderToItem: the target parent was already published into RETAINED by navigateHierarchy().
+            // Keep currentPath on the child until the physical holder has been returned at p=1.
+            transition = transition?.copy(targetPublished = true)
         }
-        if (transition?.serial != initial.serial) return@LaunchedEffect
 
-        // Keep p=0 until the concrete shared target exists. Forward waits for the visible child artwork;
-        // Back waits for the freshly prepared parent folder-row holder in the current LIST/GRID mode.
-        // If either endpoint never appears (offscreen/no artwork), navigation still proceeds as pure
-        // PivotTransition instead of fabricating a stale shared element.
-        val sourceSnapshot = initial.sourceCover?.toSharedSnapshot(initial.sharedElementId)
+        val sourceSnapshot = initial.sourceSharedSnapshot
+            ?: initial.sourceCover?.toSharedSnapshot(initial.sharedElementId)
         val sharedKey = "$FOLDER_HIERARCHY_SHARED_PREFIX:${initial.serial}"
         val pair = if (sourceSnapshot != null && initial.sharedElementId.isNotBlank()) {
             awaitCollectionSharedPair(candidate = {
                 if (transition?.serial != initial.serial) null else {
-                    val target = when (initial.direction) {
+                    val targetSnapshot = when (initial.direction) {
                         FolderHierarchyDirection.FORWARD -> currentHeroEndpoint
-                            ?.takeIf { it.first == initial.targetPath }?.second
-                        FolderHierarchyDirection.BACK -> initial.sharedFolderPath?.let(liveFolderRowEndpoints::get)
+                            ?.takeIf { it.first == initial.targetPath }
+                            ?.second
+                            ?.toSharedSnapshot(initial.sharedElementId)
+                        FolderHierarchyDirection.BACK -> coverRegistry.resolvePhysicalRoleEndpoint(
+                            sceneId = NavScene.FOLDER_HIERARCHY.name,
+                            elementId = initial.sharedElementId,
+                            retainedRole = true,
+                        )
                     }
-                    target?.let { sourceSnapshot to it.toSharedSnapshot(initial.sharedElementId) }
+                    targetSnapshot?.let { sourceSnapshot to it }
                 }
             })
         } else null
         if (transition?.serial != initial.serial) return@LaunchedEffect
+
+        var physicalShared = false
         if (pair != null) {
             coverRegistry.prepareEphemeralTransition(sharedKey, pair.first, pair.second)
+            physicalShared = when (initial.direction) {
+                FolderHierarchyDirection.FORWARD -> coverRegistry.promotePreparedPhysicalSource(sharedKey)
+                FolderHierarchyDirection.BACK ->
+                    coverRegistry.activateStashedPhysicalPromotion(initial.sharedElementId)
+            }
+            if (!physicalShared) {
+                // Fall back to GenericPivot when the concrete matching holder cannot be
+                // acquired. Do not synthesize a second bitmap overlay for hierarchy navigation.
+                coverRegistry.clearEphemeralTransition(sharedKey)
+            }
         }
-        val targetCover = pair?.second?.let {
-            FolderHierarchyCoverEndpoint(
-                it.boundsInWindow.left, it.boundsInWindow.top,
-                it.boundsInWindow.right, it.boundsInWindow.bottom,
-                it.radiusDp, it.coverKey, initial.sourceCover?.folderId ?: 0L, it.promotedBitmap,
-            )
+        val itemPivotY = pair?.takeIf { physicalShared }?.let { resolvedPair ->
+            when (initial.direction) {
+                FolderHierarchyDirection.FORWARD -> resolvedPair.first.itemViewportBounds?.bottom
+                FolderHierarchyDirection.BACK -> resolvedPair.second.itemViewportBounds?.bottom
+            }
         }
-        transition = transition?.copy(sharedEligible = pair != null, targetCover = targetCover)
-        if (pair != null) {
-            // Match the ordinary collection route: mount the prepared actor, then wait for its
-            // readiness handshake. Geometry is not discarded just because the bitmap was cold.
-            androidx.compose.runtime.withFrameNanos { }
-            awaitSharedActorReady(coverRegistry, sharedKey)
-            if (transition?.serial != initial.serial) return@LaunchedEffect
-        }
+        transition = transition?.copy(
+            sharedEligible = physicalShared,
+            itemPivotY = itemPivotY,
+        )
 
         transition = transition?.copy(readyForMotion = true)
 
@@ -475,6 +576,30 @@ fun FolderHierarchyPage(
         }
         transitionProgress = 1f
         androidx.compose.runtime.withFrameNanos { }
+        if (transition?.serial != initial.serial) return@LaunchedEffect
+
+        if (physicalShared) {
+            when (initial.direction) {
+                // ItemToHeader commit keeps the migrated concrete holder as the settled child
+                // header. It will only be parked if the user enters another child from this scene.
+                FolderHierarchyDirection.FORWARD -> Unit
+                FolderHierarchyDirection.BACK ->
+                    coverRegistry.finishPhysicalReturn(initial.sharedElementId)
+            }
+        }
+
+        if (initial.direction == FolderHierarchyDirection.BACK) {
+            // HeaderToItem commits destination RETAINED into CURRENT only after the same concrete
+            // holder has been reattached to the target item slot.
+            pageState.drawnLayouts.invalidate()
+            currentPath = initial.targetPath
+            virtualListState.viewportScrollY = scrollByPath[currentLevelKey(initial.targetPath)] ?: 0f
+            while (!pageState.drawnLayouts.isReady(initial.serial to initial.targetPath)) {
+                androidx.compose.runtime.withFrameNanos { }
+                if (transition?.serial != initial.serial) return@LaunchedEffect
+            }
+            androidx.compose.runtime.withFrameNanos { }
+        }
         if (transition?.serial == initial.serial) transition = null
     }
 
@@ -484,8 +609,11 @@ fun FolderHierarchyPage(
         transition = active.copy(gestureReleased = true)
         settleJob?.cancel()
         if (!commit && !active.targetPublished) {
-            transitionProgress = 1f
+            transitionProgress = 0f
             pendingInteractiveProgress = 0f
+            active.sourceCover?.let { source ->
+                active.sourcePath?.let { path -> currentHeroEndpoint = path to source }
+            }
             transition = null
             return
         }
@@ -510,28 +638,30 @@ fun FolderHierarchyPage(
             if (commit) {
                 transitionProgress = 1f
                 androidx.compose.runtime.withFrameNanos { }
-                if (transition?.serial == active.serial) transition = null
-            } else {
-                // At p=0 RETAINED is the exact pre-gesture child: scale=1/alpha=1. Republish that
-                // source into CURRENT, but deliberately keep RETAINED + shared artwork alive until
-                // CURRENT has completed a layout turn. Releasing both in the same snapshot write
-                // creates the same one-frame provider/header jump that this round removes.
+                if (transition?.serial != active.serial) return@launch
+                val resolved = transition ?: return@launch
+                if (resolved.sharedEligible == true) {
+                    coverRegistry.finishPhysicalReturn(resolved.sharedElementId)
+                }
                 pageState.drawnLayouts.invalidate()
-                currentPath = active.sourcePath
-                virtualListState.viewportScrollY = scrollByPath[currentLevelKey(active.sourcePath)] ?: 0f
-                transitionProgress = 0f
-
-                // Keep RETAINED until the restored source population has actually been published;
-                // a frame delay alone does not guarantee that CURRENT has replaced the parent.
-                while (!pageState.drawnLayouts.isReady(active.serial to active.sourcePath)) {
-                    if (transition?.serial != active.serial) return@launch
+                currentPath = resolved.targetPath
+                virtualListState.viewportScrollY = scrollByPath[currentLevelKey(resolved.targetPath)] ?: 0f
+                while (!pageState.drawnLayouts.isReady(resolved.serial to resolved.targetPath)) {
+                    if (transition?.serial != resolved.serial) return@launch
                     androidx.compose.runtime.withFrameNanos { }
                 }
-                if (transition?.serial != active.serial) return@launch
+                androidx.compose.runtime.withFrameNanos { }
+                if (transition?.serial == resolved.serial) transition = null
+            } else {
+                transitionProgress = 0f
                 androidx.compose.runtime.withFrameNanos { }
                 if (transition?.serial != active.serial) return@launch
-
-                transitionProgress = 1f
+                val resolved = transition ?: return@launch
+                // Cancelling HeaderToItem keeps the child authoritative. Retain its migrated
+                // header instead of restoring the View to a parent row that is not being entered.
+                resolved.sourceCover?.let { source ->
+                    resolved.sourcePath?.let { path -> currentHeroEndpoint = path to source }
+                }
                 transition = null
             }
         }
@@ -622,52 +752,50 @@ fun FolderHierarchyPage(
             settleInteractiveBack(commit = false)
         }
     }
-    BoxWithConstraints(
+    Box(
         modifier = modifier
             .fillMaxSize()
+            .onSizeChanged { if (pageSizePx != it) pageSizePx = it }
             .onGloballyPositioned { coordinates ->
-                val bounds = coordinates.boundsInRoot()
-                if (pageOriginLeft != bounds.left) pageOriginLeft = bounds.left
-                if (pageOriginTop != bounds.top) pageOriginTop = bounds.top
+                // SharedCoverSnapshot is explicitly window-space. Keep the hierarchy overlay
+                // origin in the same coordinate system; boundsInRoot() is only equivalent while
+                // the Compose root itself happens to start at the window origin.
+                val position = coordinates.positionInWindow()
+                if (pageOriginLeft != position.x) pageOriginLeft = position.x
+                if (pageOriginTop != position.y) pageOriginTop = position.y
             },
     ) {
-        val density = LocalDensity.current
-        // Freeze BoxWithConstraintsScope.maxWidth before entering LibraryListScaffold's
-        // receiver lambda. Compose DSL markers intentionally block the outer implicit receiver.
-        val hierarchyHeroOuterSide = maxWidth
+        val hierarchyHeroCoverHeight =
+            collectionHeaderBaseHeight(NavScene.FOLDER_HIERARCHY) +
+                rawStableStatusBarTopPadding()
+        val hierarchyHeroTotalHeight = hierarchyHeroCoverHeight
         val pivotX = collectionBackPivotX(
-            with(density) { hierarchyHeroOuterSide.toPx() },
+            pageSizePx.width.toFloat(),
             transition?.interactive == true,
             transition?.gestureDirection ?: 1f,
         )
-        val viewportCenterPivotY = with(density) { maxHeight.toPx() } * 0.5f
+        val viewportCenterPivotY = pageSizePx.height * 0.5f
         val activeTransition = transition
-        val publishedLayoutKey = transitionSerial to currentPath
+        val publishedLayoutKey = when {
+            activeTransition?.direction == FolderHierarchyDirection.BACK &&
+                currentPath == activeTransition.sourcePath ->
+                activeTransition.serial to activeTransition.targetPath
+            else -> transitionSerial to currentPath
+        }
         val pProvider = { transitionProgress.coerceIn(0f, 1f) }
         val transitionKey = activeTransition?.let { "$FOLDER_HIERARCHY_SHARED_PREFIX:${it.serial}" }.orEmpty()
-        val sharedTarget = activeTransition?.targetCover
-        val sharedSource = activeTransition?.sourceCover
         val sharedPairReady = activeTransition != null &&
             activeTransition.sharedEligible == true &&
-            activeTransition.sharedElementId.isNotBlank() && sharedSource != null && sharedTarget != null
-        val sharedOwnsPixels = sharedPairReady && coverRegistry.isOverlayReady(transitionKey)
+            activeTransition.sharedElementId.isNotBlank() &&
+            activeTransition.itemPivotY != null
+        val sharedOwnsPixels = sharedPairReady &&
+            coverRegistry.isPhysicalPromotedElement(activeTransition.sharedElementId)
 
-        // Reference item<->header transition does not pivot both layouts around the viewport centre.
-        // The item-side layout pivots around the concrete item's bottom edge; the header-side layout
-        // uses the viewport centre. Our custom hierarchy keeps RETAINED=source and CURRENT=target for
-        // both directions, so the item-side role changes with direction.
-        val retainedPivotY = when {
-            !sharedPairReady -> viewportCenterPivotY
-            activeTransition?.direction == FolderHierarchyDirection.FORWARD ->
-                (sharedSource?.bottom ?: pageOriginTop + viewportCenterPivotY) - pageOriginTop
-            else -> viewportCenterPivotY
-        }
-        val currentPivotY = when {
-            !sharedPairReady -> viewportCenterPivotY
-            activeTransition?.direction == FolderHierarchyDirection.BACK ->
-                (sharedTarget?.bottom ?: pageOriginTop + viewportCenterPivotY) - pageOriginTop
-            else -> viewportCenterPivotY
-        }
+        // ItemToHeader/HeaderToItem uses the item-side LayoutRes bottom edge as pivot and
+        // the header-side LayoutRes viewport centre. Back keeps the destination parent in RETAINED.
+        val retainedPivotY = activeTransition?.itemPivotY?.takeIf { sharedPairReady }
+            ?: viewportCenterPivotY
+        val currentPivotY = viewportCenterPivotY
 
         DisposableEffect(transitionKey, publicationOnly) {
             onDispose {
@@ -716,10 +844,21 @@ fun FolderHierarchyPage(
             )
         }
         val providerFrame = if (activeTransition == null) {
-            VirtualListProviderNavigationFrame()
+            VirtualListProviderNavigationFrame(
+                physicalProviderIdentity = currentPath.orEmpty(),
+                settledSharedTarget = currentHeroEndpoint
+                    ?.takeIf { it.first == currentPath }
+                    ?.second
+                    ?.let { it.toSharedSnapshot("cover:folder:${it.folderId}") },
+            )
         } else {
             VirtualListProviderNavigationFrame(
                 active = true,
+                physicalProviderIdentity = currentPath.orEmpty(),
+                // At a committed Back endpoint, CURRENT still needs to acquire the parent rows.
+                readyForMotion = activeTransition.readyForMotion &&
+                    !(activeTransition.direction == FolderHierarchyDirection.BACK &&
+                        currentPath == activeTransition.targetPath),
                 retainedProvider = activeTransition.retainedProvider,
                 retainedTransform = retainedTransform,
                 currentTransform = currentTransform,
@@ -733,18 +872,18 @@ fun FolderHierarchyPage(
             LocalVirtualListProviderNavigationFrame provides providerFrame,
             LocalSharedTransitionSpec provides localSharedSpec,
         ) {
-            val statisticsText = if (currentNode == null) {
+            val statisticsText = if (chromeNode == null) {
                 stringResource(
                     com.rawsmusic.core.ui.R.string.library_statistics_hierarchy_root,
-                    currentChildren.size,
+                    chromeChildren.size,
                     songs.size,
                 )
             } else {
                 stringResource(
                     com.rawsmusic.core.ui.R.string.library_statistics_hierarchy_level,
-                    currentChildren.size,
-                    directSongs.size,
-                    subtreeSongs.size,
+                    chromeChildren.size,
+                    chromeDirectSongCount,
+                    chromeNode.hierarchicalSongCount,
                 )
             }
             LibraryListScaffold(
@@ -761,27 +900,45 @@ fun FolderHierarchyPage(
                 allowContentBehindTopChrome = currentNode != null,
             ) { topPadding, backdropSource ->
                 val heroNode = currentNode
+                currentScaffoldTopPadding[0] = topPadding
                 // Reference hierarchy/detail header starts at window y=0 and lets the top chrome draw
                 // over the artwork. Root hierarchy has no hero and keeps the normal library inset.
                 val effectiveTopPadding = if (heroNode != null) 0.dp else topPadding
                 currentContentTopPadding[0] = effectiveTopPadding
-                currentHeroOuterHeight[0] = if (heroNode != null) hierarchyHeroOuterSide else 0.dp
-                val hideHeroCover = sharedOwnsPixels && activeTransition?.sharedFolderPath == heroNode?.path
+                currentHeroCoverHeight[0] = if (heroNode != null) hierarchyHeroCoverHeight else 0.dp
+                currentHeroOuterHeight[0] = if (heroNode != null) hierarchyHeroTotalHeight else 0.dp
+                val heroElementId = heroNode?.let { "cover:folder:${it.id}" }.orEmpty()
+                val hideHeroCover =
+                    (sharedOwnsPixels && activeTransition.sharedFolderPath == heroNode?.path) ||
+                        coverRegistry.isPhysicalPromotedElement(heroElementId) ||
+                        (activeTransition?.retainedProvider?.persistentHeaderSceneItemId == heroElementId &&
+                            coverRegistry.isPhysicalStashedElement(heroElementId))
                 ComposeGenericVirtualList(
                     items = currentRows,
                     state = virtualListState,
                     contentTopPadding = effectiveTopPadding,
-                    persistentHeaderHeight = if (heroNode != null) hierarchyHeroOuterSide else 0.dp,
-                    persistentHeaderVisibilityHeight = if (heroNode != null) hierarchyHeroOuterSide else 0.dp,
-                    persistentHeaderSceneItemVisibilityHeight = if (heroNode != null) hierarchyHeroOuterSide else 0.dp,
-                    persistentHeaderSceneItemId = heroNode?.let { "cover:folder:${it.id}" }.orEmpty(),
+                    persistentHeaderHeight = if (heroNode != null) hierarchyHeroTotalHeight else 0.dp,
+                    persistentHeaderVisibilityHeight = if (heroNode != null) hierarchyHeroTotalHeight else 0.dp,
+                    persistentHeaderSceneItemVisibilityHeight = if (heroNode != null) hierarchyHeroCoverHeight else 0.dp,
+                    persistentHeaderSceneItemId = heroElementId,
                     virtualListEdgeEnabled = heroNode != null,
                     persistentHeaderContent = { _, coverVisible ->
                         if (heroNode != null) {
                             FolderHierarchyHeroHeader(
                                 node = heroNode,
+                                coverHeight = hierarchyHeroCoverHeight,
                                 coverVisible = coverVisible,
                                 hideForShared = hideHeroCover,
+                                freezeArtworkUpdates = activeTransition != null,
+                                headerEdgeOvershootProvider = { virtualListState.virtualListHeaderEdgeOvershootPx },
+                                listEdgeOvershootProvider = { virtualListState.virtualListEdgeOvershootPx },
+                                onBack = handleHierarchyBack,
+                                onShuffle = {
+                                    onShuffle(
+                                        if (AppPreferences.Player.shuffleEntireFolderHierarchy) songs else subtreeSongs
+                                    )
+                                },
+                                onSearch = onSearch,
                                 onCoverEndpointChanged = { measuredEndpoint ->
                                     // A fully offscreen header must stop advertising a shared source.
                                     // Reference retains a concrete View/holder slot; it cannot resurrect a logical
@@ -839,6 +996,7 @@ fun FolderHierarchyPage(
                                     targetPath = item.path,
                                     direction = FolderHierarchyDirection.FORWARD,
                                     clickedCover = clicked,
+                                    clickedSharedSnapshot = frozen,
                                 )
                             }
                             is SongVirtualListItem -> {
@@ -848,9 +1006,11 @@ fun FolderHierarchyPage(
                         }
                     },
                 )
+                if (publicationOnly) return@LibraryListScaffold
 
                 run {
                     RawAlphabetIndex(
+                        sceneId = NavScene.FOLDER_HIERARCHY.name,
                         data = alphabetIndexData,
                         scrollActiveProvider = { virtualListState.isListScrollInProgress },
                         modifier = Modifier
@@ -865,52 +1025,57 @@ fun FolderHierarchyPage(
             }
         }
 
-        val retainedHero = activeTransition?.sourceHeroCover
-        val sharedOverlayOwnsRetainedHero =
-            sharedOwnsPixels && activeTransition?.direction == FolderHierarchyDirection.BACK
-        if (activeTransition != null && retainedHero != null && !sharedOverlayOwnsRetainedHero) {
-            FolderHierarchyRetainedHeroCover(
-                endpoint = retainedHero,
-                motionProvider = {
-                    resolveFolderHierarchyRoleMotion(activeTransition.direction, retainedRole = true, pProvider())
-                },
-                pivotX = pivotX,
-                pivotY = retainedPivotY,
-                originLeft = pageOriginLeft,
-                originTop = pageOriginTop,
-            )
-        }
-
-        if (!publicationOnly && sharedPairReady) {
-            SharedCoverOverlay(
-                registry = coverRegistry,
-                spec = localSharedSpec,
-                overlayOriginInWindow = Offset(pageOriginLeft, pageOriginTop),
-            )
-        }
     }
 }
 
 @Composable
 private fun FolderHierarchyHeroHeader(
     node: FolderHierarchyNode,
+    coverHeight: Dp,
     coverVisible: Boolean,
     hideForShared: Boolean,
+    freezeArtworkUpdates: Boolean,
+    headerEdgeOvershootProvider: () -> Float = { 0f },
+    listEdgeOvershootProvider: () -> Float = { 0f },
+    onBack: () -> Unit,
+    onShuffle: () -> Unit,
+    onSearch: () -> Unit,
     onCoverEndpointChanged: (FolderHierarchyCoverEndpoint?) -> Unit,
 ) {
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
     SideEffect {
         if (!coverVisible) onCoverEndpointChanged(null)
     }
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(maxWidth)
-                .graphicsLayer { alpha = if (coverVisible && !hideForShared) 1f else 0f }
-                .clip(RoundedCornerShape(ReferenceHeroArtworkGeometry.cornerRadius))
-                .onGloballyPositioned { coordinates ->
-                    if (!coverVisible) return@onGloballyPositioned
-                    val bounds = coordinates.boundsInRoot()
+    CollectionHeroHeader(
+            hero = CollectionHeroData(
+                stableKey = node.path,
+                sharedElementId = "cover:folder:${node.id}",
+                coverKey = node.coverKey,
+                title = node.name,
+                subtitle = node.parentLabel,
+                meta = "${node.hierarchicalSongCount} | ${formatVirtualListDuration(node.hierarchicalDurationMs)}",
+                songs = emptyList(),
+            ),
+            geometry = CollectionHeroWindowGeometry(
+                headerHeight = coverHeight,
+                artworkLeft = 0.dp,
+                artworkTop = 0.dp,
+                artworkWidth = windowLayoutProfile.libraryContentMaxWidth,
+                artworkHeight = coverHeight,
+                wide = false,
+            ),
+            listScene = NavScene.FOLDER_HIERARCHY,
+            detailScene = NavScene.FOLDER_HIERARCHY,
+            coverVisible = coverVisible,
+            freezeArtworkUpdates = freezeArtworkUpdates,
+            onBack = onBack,
+            onMore = {},
+            onShuffle = onShuffle,
+            onSearch = onSearch,
+            onBiography = null,
+            onHeroArtworkLongPress = null,
+            onHeroArtworkBoundsChanged = { bounds ->
+                if (coverVisible) {
                     onCoverEndpointChanged(
                         FolderHierarchyCoverEndpoint(
                             left = bounds.left,
@@ -922,54 +1087,20 @@ private fun FolderHierarchyHeroHeader(
                             folderId = node.id,
                         )
                     )
-                },
-        ) {
-            CrossfadeAlbumArt(
-                key = node.coverKey,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-                showPlaceholder = true,
-                fadeMillis = 0,
-                holdPreviousOnKeyChange = false,
-            )
-        }
-    }
-}
-
-@Composable
-private fun FolderHierarchyRetainedHeroCover(
-    endpoint: FolderHierarchyCoverEndpoint,
-    motionProvider: () -> FolderHierarchyRoleMotion,
-    pivotX: Float,
-    pivotY: Float,
-    originLeft: Float,
-    originTop: Float,
-) {
-    if (endpoint.coverKey.isBlank()) return
-    val density = LocalDensity.current
-    val left = endpoint.left - originLeft
-    val top = endpoint.top - originTop
-    val originX = if (endpoint.width > 0f) (pivotX - left) / endpoint.width else 0.5f
-    val originY = if (endpoint.height > 0f) (pivotY - top) / endpoint.height else 0.5f
-    CrossfadeAlbumArt(
-        key = endpoint.coverKey,
-        modifier = Modifier
-            .offset { IntOffset(left.roundToInt(), top.roundToInt()) }
-            .requiredSize(
-                width = with(density) { endpoint.width.toDp() },
-                height = with(density) { endpoint.height.toDp() },
-            )
-            .clip(RoundedCornerShape(endpoint.radiusDp.dp))
-            .graphicsLayer {
-                val motion = motionProvider()
-                scaleX = motion.scale
-                scaleY = motion.scale
-                alpha = motion.alpha
-                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(originX, originY)
+                }
             },
-        contentScale = ContentScale.Crop,
-        showPlaceholder = true,
-        fadeMillis = 0,
-        holdPreviousOnKeyChange = false,
-    )
+            hideHeroArtwork = hideForShared || !coverVisible,
+            // The hierarchy remains one recursive scene. Its exact source/target pair is supplied
+            // by the provider-role transaction above; registering the header under the same scene
+            // key as the row would overwrite that row endpoint in SharedCoverRegistry.
+            publishSharedAnchor = false,
+            // LibraryListScaffold continues to own the hierarchy back affordance over the artwork.
+            // Drawing the collection button too would create two physical back owners in one scene.
+            showBackButton = false,
+            // Hierarchy currently has no collection sort/more sheet; hide only the unsupported
+            // action instead of rendering a dead button. Shuffle/search now use the same hero UI.
+            showMoreAction = false,
+            headerEdgeOvershootProvider = headerEdgeOvershootProvider,
+            listEdgeOvershootProvider = listEdgeOvershootProvider,
+        )
 }

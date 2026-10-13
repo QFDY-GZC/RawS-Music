@@ -1,5 +1,6 @@
 package com.rawsmusic.lyric
 
+import android.util.TypedValue
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -34,6 +35,7 @@ import com.rawsmusic.core.common.model.LyricLine
 import com.rawsmusic.core.common.model.LyricWord
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.data.prefs.FontFileInspector
 import com.rawsmusic.module.player.PlayerService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,9 +48,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.math.abs
-import kotlin.math.PI
 import kotlin.math.roundToInt
-import kotlin.math.sin
 
 /**
  * A transparent desktop lyric overlay backed by RawSMusic's playback timeline.
@@ -755,7 +755,7 @@ private class DesktopLyricView(context: Context) : View(context) {
     }
 
     fun setPlayback(positionMs: Long, isPlaying: Boolean) {
-        anchorPositionMs = positionMs
+        anchorPositionMs = com.rawsmusic.core.common.utils.LyricPlaybackTimeline.toLyricTime(positionMs)
         anchorRealtimeMs = SystemClock.elapsedRealtime()
         playing = isPlaying
         invalidate()
@@ -873,20 +873,8 @@ private class DesktopLyricView(context: Context) : View(context) {
         highlightPaint.color = withAlpha(textColor, opacity)
         val clippedText = ellipsize(text, basePaint, maxWidth)
         val x = alignedX(clippedText, basePaint, isRight, isCentered, maxWidth)
-        canvas.drawText(clippedText, x, baseline, basePaint)
-        val progress = wordProgress(line.words, line, positionMs)
-        val wordLift = activeWordLift(line.words, positionMs)
-        val textWidth = basePaint.measureText(clippedText)
-        val left = if (isRight) x - textWidth else x
-        canvas.save()
-        canvas.clipRect(
-            if (isRight) left + textWidth * (1f - progress) else left,
-            baseline + basePaint.fontMetrics.top,
-            if (isRight) left + textWidth else left + textWidth * progress,
-            baseline + basePaint.fontMetrics.bottom
-        )
-        canvas.drawText(clippedText, x, baseline - wordLift, highlightPaint)
-        canvas.restore()
+        drawTimedText(canvas, clippedText, x, baseline, basePaint, highlightPaint,
+            line.words, line, positionMs, isRight)
 
         secondaryPaint.color = withAlpha(
             textColor,
@@ -906,28 +894,10 @@ private class DesktopLyricView(context: Context) : View(context) {
                 canvas.drawText(display, secondaryX, baseline, secondaryPaint)
             } else {
                 secondaryPaint.color = withAlpha(textColor, opacity * 0.34f)
-                canvas.drawText(display, secondaryX, baseline, secondaryPaint)
-                val timedProgress = wordProgress(timedWords, line, positionMs)
-                val secondaryLift = activeWordLift(timedWords, positionMs)
-                val secondaryWidth = secondaryPaint.measureText(display)
-                canvas.save()
-                canvas.clipRect(
-                    if (isRight) {
-                        secondaryX + secondaryWidth * (1f - timedProgress)
-                    } else {
-                        secondaryX
-                    },
-                    baseline + secondaryPaint.fontMetrics.top,
-                    if (isRight) {
-                        secondaryX + secondaryWidth
-                    } else {
-                        secondaryX + secondaryWidth * timedProgress
-                    },
-                    baseline + secondaryPaint.fontMetrics.bottom
-                )
-                secondaryPaint.color = withAlpha(textColor, opacity * 0.76f)
-                canvas.drawText(display, secondaryX, baseline - secondaryLift, secondaryPaint)
-                canvas.restore()
+                // Same paint is reused, so set each pass's color inside the renderer.
+                drawTimedText(canvas, display, secondaryX, baseline, secondaryPaint, secondaryPaint,
+                    timedWords, line, positionMs, isRight,
+                    withAlpha(textColor, opacity * 0.34f), withAlpha(textColor, opacity * 0.76f))
                 secondaryPaint.color = withAlpha(
                     textColor,
                     opacity * if (statusBarMode) statusSecondaryOpacity else 0.72f
@@ -990,18 +960,47 @@ private class DesktopLyricView(context: Context) : View(context) {
 
     private fun currentPosition(): Long {
         if (!playing) return anchorPositionMs
-        return anchorPositionMs + (SystemClock.elapsedRealtime() - anchorRealtimeMs)
+        return anchorPositionMs + com.rawsmusic.core.common.utils.LyricPlaybackTimeline.toLyricTime(
+            SystemClock.elapsedRealtime() - anchorRealtimeMs,
+        )
     }
 
-    private fun activeWordLift(words: List<LyricWord>, positionMs: Long): Float {
-        if (!AppPreferences.UI.lyricKaraokeLiftEnabled) return 0f
-        val active = words.firstOrNull { positionMs in it.begin until maxOf(it.end, it.begin + 1L) }
-            ?: return 0f
-        val progress = (
-            (positionMs - active.begin).toFloat() /
-                (active.end - active.begin).coerceAtLeast(1L)
-            ).coerceIn(0f, 1f)
-        return dp(1) * sin(PI * progress).toFloat()
+    private fun drawTimedText(
+        canvas: Canvas, text: String, x: Float, baseline: Float,
+        base: Paint, highlight: Paint, words: List<LyricWord>, line: LyricLine,
+        positionMs: Long, right: Boolean,
+        baseColor: Int = base.color, highlightColor: Int = highlight.color,
+    ) {
+        val spans = if (words.isEmpty()) {
+            listOf(DesktopLyricWordSpan(0, text.length, wordProgress(words, line, positionMs), 0f))
+        } else desktopLyricWordSpans(text, words, positionMs,
+            AppPreferences.UI.lyricKaraokeLiftEnabled, dp(1).toFloat())
+        // Draw slices of the same shaped line, not independently measured/rejoined words.
+        // Both base and highlight use the word's baseline and an unclipped vertical extent.
+        for (span in spans) {
+            val left = x + base.measureText(text, 0, span.start)
+            val edge = x + base.measureText(text, 0, span.end)
+            val y = baseline - span.lift
+            val top = y + base.fontMetrics.top - 1f
+            val bottom = baseline + base.fontMetrics.bottom + 1f
+            val save = canvas.save()
+            try {
+                canvas.clipRect(left, top, edge, bottom)
+                base.color = baseColor
+                canvas.drawText(text, x, y, base)
+                if (span.progress > 0f) {
+                    val width = edge - left
+                    canvas.clipRect(if (right) edge - width * span.progress else left,
+                        top, if (right) edge else left + width * span.progress, bottom)
+                    highlight.color = highlightColor
+                    canvas.drawText(text, x, y, highlight)
+                }
+            } finally {
+                canvas.restoreToCount(save)
+            }
+        }
+        base.color = baseColor
+        highlight.color = highlightColor
     }
 
     private fun resolveLyricTypeface(): Typeface {
@@ -1013,9 +1012,28 @@ private class DesktopLyricView(context: Context) : View(context) {
             return Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
         return runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val requestedWeight = AppPreferences.LyricFont.fontWeight.coerceIn(100, 900)
+            val variableWeightRange = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                FontFileInspector.inspect(path).weightRange
+            } else {
+                null
+            }
+            if (variableWeightRange != null) {
+                val axisWeight = if (AppPreferences.LyricFont.experimentalFontWeightEnabled) {
+                    requestedWeight
+                } else {
+                    requestedWeight.coerceIn(
+                        variableWeightRange.first,
+                        variableWeightRange.last,
+                    )
+                }
                 Typeface.Builder(path)
-                    .setWeight(AppPreferences.LyricFont.fontWeight)
+                    .setFontVariationSettings("'wght' $axisWeight")
+                    .setWeight(axisWeight)
+                    .build()
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                Typeface.Builder(path)
+                    .setWeight(requestedWeight)
                     .build()
             } else {
                 @Suppress("DEPRECATION")
@@ -1032,6 +1050,10 @@ private class DesktopLyricView(context: Context) : View(context) {
             Color.blue(color)
         )
 
-    private fun sp(value: Float): Float = value * resources.displayMetrics.scaledDensity
+    private fun sp(value: Float): Float = TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_SP,
+        value,
+        resources.displayMetrics,
+    )
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
 }

@@ -1,0 +1,14 @@
+<resources>
+    <string name="spectrum_heading">Spectrum analysis</string>
+    <string name="spectrum_close_chart">Close expanded chart</string>
+    <string name="spectrum_back">Back</string>
+    <string name="spectrum_mean_level">Average level</string>
+    <string name="spectrum_peak_level">Peak level</string>
+    <string name="spectrum_bandwidth">Estimated bandwidth</string>
+    <string name="spectrum_duration">Duration</string>
+    <string name="spectrum_waterfall_tab">Spectrogram</string>
+    <string name="spectrum_fullscreen">Expand</string>
+    <string name="spectrum_stereo">Stereo</string>
+    <string name="spectrum_log">Log</string>
+    <string name="spectrum_linear">Linear</string>
+</resources>

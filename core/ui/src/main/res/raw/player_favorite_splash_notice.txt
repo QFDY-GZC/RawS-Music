@@ -1,0 +1,5 @@
+Reference: user-provided Heart splash.json (Heart, Bodymovin 5.5.7).
+Derived asset: retain eight vector splash layers, remove both heart layers,
+recolor strokes to #EF5350, center the splash, trim the idle tail to frame 45.
+Runtime playback: one shot in 650 ms after a confirmed playlist addition.
+This file records asset provenance; it does not grant or replace the source license.

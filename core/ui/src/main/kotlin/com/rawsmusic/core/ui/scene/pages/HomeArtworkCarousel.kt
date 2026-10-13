@@ -56,7 +56,6 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -117,7 +116,7 @@ private fun homeArtworkCarouselHorizontalLyricOffset(
 ): androidx.compose.ui.unit.Dp = if (
     showLyrics && style == HomeArtworkCarouselStyle.CurrentCarousel
 ) {
-    28.dp + (40.dp * (fontScale - 1f).coerceIn(0f, 0.5f))
+    28.dp + (40.dp * (fontScale - 1f).coerceAtLeast(0f))
 } else {
     0.dp
 }
@@ -375,6 +374,7 @@ internal fun HomeArtworkCarousel(
     onNavigate: (Int) -> Unit,
     onSelectSong: (AudioFile, Int) -> Unit = { _, _ -> },
     onCurrentArtworkLongPress: (HomeFullCoverSourceAnchor) -> Unit = {},
+    onCurrentArtworkDoubleTap: () -> Unit = {},
     onCurrentArtworkBoundsChanged: (AudioFile, Rect) -> Unit = { _, _ -> },
     hideCenterForFullscreenTransition: Boolean = false,
     centerReflectionAlpha: Float = 1f,
@@ -389,6 +389,9 @@ internal fun HomeArtworkCarousel(
     var settleGeneration by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
     val fontScale = density.fontScale
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val evenlySpacedTabletLandscape = configuration.smallestScreenWidthDp >= 600 &&
+        configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     val horizontalLyricArtworkOffset = homeArtworkCarouselHorizontalLyricOffset(
         style = style,
         showLyrics = showLyrics,
@@ -405,9 +408,9 @@ internal fun HomeArtworkCarousel(
     SideEffect {
         state.fullCoverTransitionActive = hideCenterForFullscreenTransition
     }
-    val lyricPositionMs = playbackPositionMs
+    val lyricPositionMs = com.rawsmusic.core.common.utils.LyricPlaybackTimeline.toLyricTime(playbackPositionMs)
     val lyricRenderClock = com.rawsmusic.core.ui.widget.player.rememberLyricDirectRenderClock(
-        positionMs = playbackPositionMs,
+        positionMs = lyricPositionMs,
         isPlaying = isPlaying && !hostFrozen && frameAnimationActive,
         durationMs = currentSong?.duration ?: 0L
     )
@@ -433,13 +436,17 @@ internal fun HomeArtworkCarousel(
     }
 
     fun settle(commitDirection: Int, velocityFractionPerSecond: Float) {
+        val boundedTarget = carouselPreviewIndex(
+            state.centerIndex + commitDirection, state.committedIndex, availableSongs.size,
+        )
+        val boundedDirection = boundedTarget - state.centerIndex
         settleGeneration += 1
         val generation = settleGeneration
         settleJob?.cancel()
         settleJob = scope.launch {
             state.interactionActive = true
             try {
-                val destination = commitDirection.toFloat()
+                val destination = boundedDirection.toFloat()
                 val animation = Animatable(state.progress)
                 val remaining = destination - state.progress
                 val requestedVelocity = velocityFractionPerSecond.coerceIn(-2.4f, 2.4f)
@@ -469,7 +476,7 @@ internal fun HomeArtworkCarousel(
                 if (generation != settleGeneration) return@launch
                 if (availableSongs.isNotEmpty()) {
                     val targetIndex = if (commitDirection != 0 && availableSongs.size > 1) {
-                        wrapCarouselIndex(state.centerIndex + commitDirection, availableSongs.size)
+                        boundedTarget
                     } else {
                         state.centerIndex.coerceIn(0, availableSongs.lastIndex)
                     }
@@ -517,22 +524,30 @@ internal fun HomeArtworkCarousel(
             // Locked mode preserves the centre identity for the entire pointer stream. The rail can
             // approach either adjacent item but never rebases while the finger is still down, so a
             // single long/fast swipe can commit at most one neighbour on release.
-            state.progress = nextProgress.coerceIn(-0.999f, 0.999f)
+            val canAdvance = carouselPreviewIndex(state.centerIndex + 1, state.committedIndex, availableSongs.size) != state.centerIndex
+            val canRetreat = carouselPreviewIndex(state.centerIndex - 1, state.committedIndex, availableSongs.size) != state.centerIndex
+            state.progress = nextProgress.coerceIn(if (canRetreat) -0.999f else 0f, if (canAdvance) 0.999f else 0f)
             return@rememberDraggableState
         }
         // Rebase at every full rail without ending the pointer gesture. The centre identity changes
         // only in the visual carousel; playback/background remain on committedIndex/currentSong.
         // Because rail +/-1 is pixel-identical to the adjacent centre at progress 0, this rebase has
-        // no visible seam and permits one continuous swipe across an arbitrary number of songs.
+        // no visible seam. The finite preview never wraps its last entry back to its first entry.
         while (nextProgress >= 1f) {
-            state.centerIndex = wrapCarouselIndex(state.centerIndex + 1, availableSongs.size)
+            val next = carouselPreviewIndex(state.centerIndex + 1, state.committedIndex, availableSongs.size)
+            if (next == state.centerIndex) { nextProgress = 0f; break }
+            state.centerIndex = next
             nextProgress -= 1f
         }
         while (nextProgress <= -1f) {
-            state.centerIndex = wrapCarouselIndex(state.centerIndex - 1, availableSongs.size)
+            val previous = carouselPreviewIndex(state.centerIndex - 1, state.committedIndex, availableSongs.size)
+            if (previous == state.centerIndex) { nextProgress = 0f; break }
+            state.centerIndex = previous
             nextProgress += 1f
         }
-        state.progress = nextProgress.coerceIn(-0.999f, 0.999f)
+        val canAdvance = carouselPreviewIndex(state.centerIndex + 1, state.committedIndex, availableSongs.size) != state.centerIndex
+        val canRetreat = carouselPreviewIndex(state.centerIndex - 1, state.committedIndex, availableSongs.size) != state.centerIndex
+        state.progress = nextProgress.coerceIn(if (canRetreat) -0.999f else 0f, if (canAdvance) 0.999f else 0f)
     }
 
     fun Modifier.carouselDrag(orientation: Orientation): Modifier = draggable(
@@ -563,7 +578,13 @@ internal fun HomeArtworkCarousel(
             .fillMaxWidth()
             .height(carouselHeight)
             .onGloballyPositioned { coordinates ->
-                carouselHostBounds = coordinates.boundsInRoot()
+                // A scrolled carousel can have a negative origin. boundsInRoot() clips it to
+                // the viewport, which makes pointer-local positions acquire a second scroll offset.
+                val origin = coordinates.localToRoot(androidx.compose.ui.geometry.Offset.Zero)
+                val end = coordinates.localToRoot(androidx.compose.ui.geometry.Offset(
+                    coordinates.size.width.toFloat(), coordinates.size.height.toFloat(),
+                ))
+                carouselHostBounds = Rect(origin, end)
             }
             // The horizontal carousel intentionally owns its whole strip. The portrait dial does
             // not: a vertical drag starting in the lyric/empty area used to switch tracks and made
@@ -579,39 +600,42 @@ internal fun HomeArtworkCarousel(
                 currentSong,
                 currentArtworkBounds,
             ) {
-                detectTapGestures(
-                    onLongPress = { position ->
-                        if (hostFrozen || abs(state.progress) > 0.001f || state.interactionActive ||
-                            state.hostTransitionActive || state.awaitingQueueIndex >= 0
-                        ) {
-                            return@detectTapGestures
-                        }
-                        val currentIndex = resolveCarouselCenterIndex(
-                            songs = availableSongs,
-                            currentSong = currentSong,
-                            reportedQueueIndex = state.centerIndex,
-                        )
-                        if (currentIndex != state.centerIndex) return@detectTapGestures
-                        val hostBounds = carouselHostBounds ?: return@detectTapGestures
-                        val artworkBounds = if (style == HomeArtworkCarouselStyle.CurrentCarousel) {
-                            currentCanvasArtworkBoundsHandle.resolveInRoot() ?: currentArtworkBounds
-                        } else {
-                            currentArtworkBounds
-                        } ?: return@detectTapGestures
-                        val rootPosition = androidx.compose.ui.geometry.Offset(
-                            x = hostBounds.left + position.x,
-                            y = hostBounds.top + position.y,
-                        )
-                        if (artworkBounds.contains(rootPosition)) {
-                            onCurrentArtworkLongPress(
-                                HomeFullCoverSourceAnchor(
-                                    boundsInRoot = artworkBounds,
-                                    cornerRadiusDp =
-                                        resolveHomeArtworkSourceCornerRadiusDp(style),
-                                )
+                fun openCurrentArtwork(position: androidx.compose.ui.geometry.Offset, openPlayer: Boolean) {
+                    if (hostFrozen || abs(state.progress) > 0.001f || state.interactionActive ||
+                        state.hostTransitionActive || state.awaitingQueueIndex >= 0
+                    ) {
+                        return
+                    }
+                    val currentIndex = resolveCarouselCenterIndex(
+                        songs = availableSongs,
+                        currentSong = currentSong,
+                        reportedQueueIndex = state.centerIndex,
+                    )
+                    if (currentIndex != state.centerIndex) return
+                    val hostBounds = carouselHostBounds ?: return
+                    val artworkBounds = if (style == HomeArtworkCarouselStyle.CurrentCarousel) {
+                        currentCanvasArtworkBoundsHandle.resolveInRoot() ?: currentArtworkBounds
+                    } else {
+                        currentArtworkBounds
+                    } ?: return
+                    val rootPosition = androidx.compose.ui.geometry.Offset(
+                        x = hostBounds.left + position.x,
+                        y = hostBounds.top + position.y,
+                    )
+                    if (artworkBounds.contains(rootPosition)) {
+                        if (openPlayer) onCurrentArtworkDoubleTap() else onCurrentArtworkLongPress(
+                            HomeFullCoverSourceAnchor(
+                                boundsInRoot = artworkBounds,
+                                cornerRadiusDp = resolveHomeArtworkSourceCornerRadiusDp(style),
                             )
-                        }
-                    },
+                        )
+                    }
+                }
+                detectTapGestures(
+                    // The two destinations deliberately have distinct owners. Both still use the
+                    // same central-cover hit test rather than treating the whole rail as a button.
+                    onDoubleTap = { openCurrentArtwork(it, openPlayer = true) },
+                    onLongPress = { openCurrentArtwork(it, openPlayer = false) },
                 )
             },
         contentAlignment = Alignment.Center
@@ -623,7 +647,14 @@ internal fun HomeArtworkCarousel(
         dragExtentPx = if (style == HomeArtworkCarouselStyle.VerticalDial) {
             resolvePortraitDialMetrics(containerWidthPx, containerHeightPx).stridePx
         } else {
-            containerWidthPx * HomeCarouselFirstTranslationFraction
+            val canvasWidth = containerWidthPx + with(density) { 32.dp.toPx() }
+            val slotSide = resolveHomeCanvasSlotSidePx(
+                canvasWidth,
+                containerHeightPx - with(density) { horizontalLyricArtworkOffset.toPx() },
+            )
+            if (evenlySpacedTabletLandscape) {
+                tabletCarouselTranslationX(1f, canvasWidth, slotSide, with(density) { 24.dp.toPx() })
+            } else slotSide * HomeCarouselFirstTranslationFraction
         }.coerceAtLeast(1f)
 
         AnimatedContent(
@@ -644,6 +675,7 @@ internal fun HomeArtworkCarousel(
                         HomeArtworkCarouselCanvas(
                             songs = availableSongs,
                             centerIndex = state.centerIndex,
+                            evenlySpacedTabletLandscape = evenlySpacedTabletLandscape,
                             progressProvider = { state.progress },
                             hideCenterLane = hideCenterForFullscreenTransition,
                             centerReflectionAlpha = centerReflectionAlpha,
@@ -660,7 +692,7 @@ internal fun HomeArtworkCarousel(
                             },
                             modifier = Modifier
                                 .requiredWidth(containerWidth + 32.dp)
-                                .fillMaxHeight()
+                                .height(carouselHeight - horizontalLyricArtworkOffset)
                                 .offset(y = horizontalLyricArtworkOffset)
                                 .align(Alignment.TopCenter)
                         )
@@ -740,12 +772,15 @@ private fun HomeArtworkDial(
             .clipToBounds()
             .onGloballyPositioned { coordinates ->
                 if (songs.isNotEmpty() && abs(progress) < 0.02f) {
-                    val rootBounds = coordinates.boundsInRoot()
                     val cardBounds = resolvePortraitDialCardBoundsInRoot(
-                        containerLeftInRootPx = rootBounds.left,
-                        containerTopInRootPx = rootBounds.top,
+                        containerLeftInRootPx = 0f,
+                        containerTopInRootPx = 0f,
                         viewportWidthPx = coordinates.size.width.toFloat(),
                         viewportHeightPx = coordinates.size.height.toFloat(),
+                        localToRoot = { x, y ->
+                            val point = coordinates.localToRoot(androidx.compose.ui.geometry.Offset(x, y))
+                            point.x to point.y
+                        },
                     )
                     val songIndex = wrapCarouselIndex(centerIndex, songs.size)
                     val song = songs[songIndex]
@@ -771,8 +806,7 @@ private fun HomeArtworkDial(
 
         for (logicalOffset in -PORTRAIT_DIAL_VISIBLE_RADIUS..PORTRAIT_DIAL_VISIBLE_RADIUS) {
             val position = logicalOffset.toFloat() - progress
-            val songIndex = wrapCarouselIndex(centerIndex + logicalOffset, songs.size)
-            val song = songs[songIndex]
+            val song = songs.getOrNull(centerIndex + logicalOffset) ?: continue
             val artworkKey = song.resolvePlaybackArtworkKey(null).orEmpty()
             val transform = resolvePortraitDialLaneTransform(position, widthPx, heightPx)
             val hiddenCenter = hideCenterLane && abs(position) < 0.02f

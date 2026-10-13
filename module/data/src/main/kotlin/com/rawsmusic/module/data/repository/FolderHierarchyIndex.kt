@@ -12,7 +12,7 @@ import com.rawsmusic.core.common.utils.CjkSortUtils
  * and direct files by the exact folder path, while subtree song count/duration are already folded
  * into each node just like Reference's hierarchy provider projection.
  */
-internal fun buildFolderHierarchyIndex(songs: List<AudioFile>): List<FolderHierarchyNode> {
+fun buildFolderHierarchyIndex(songs: List<AudioFile>): List<FolderHierarchyNode> {
     if (songs.isEmpty()) return emptyList()
 
     data class MutableNode(
@@ -69,7 +69,7 @@ internal fun buildFolderHierarchyIndex(songs: List<AudioFile>): List<FolderHiera
 
     val nodes = LinkedHashMap<String, MutableNode>()
     songs.forEach { song ->
-        val directory = normalize(song.path.substringBeforeLast('/', ""))
+        val directory = normalize(sourceFolderDirectory(song.path))
         if (directory.isBlank()) return@forEach
         val chain = ancestors(directory)
         chain.forEachIndexed { index, path ->

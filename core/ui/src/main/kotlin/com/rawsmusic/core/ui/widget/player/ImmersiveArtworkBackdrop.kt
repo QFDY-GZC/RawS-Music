@@ -8,13 +8,22 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
@@ -29,6 +38,8 @@ import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
 import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkTransitionState
+import com.rawsmusic.core.ui.systemui.rawStableStatusBarsPadding
+import com.rawsmusic.core.ui.systemui.rawStableNavigationBarsPadding
 import kotlin.math.abs
 
 internal const val IMMERSIVE_CLEAR_ARTWORK_FRACTION = 0.41f
@@ -46,15 +57,27 @@ internal fun ImmersiveBackdrop(
     coverPath: String?,
     videoCoverUri: String? = null,
     pageProgress: Float = 1f,
+    pageProgressState: State<Float>? = null,
     artworkTransitionState: PlaybackArtworkTransitionState? = null,
     clearArtworkVisible: Boolean = true,
     motionEnabled: Boolean = true,
+    verticalMotion: ImmersiveVerticalTrackMotion? = null,
+    externallyOwnedClearArtwork: Boolean = false,
+    onClearArtworkBoundsChanged: (Rect) -> Unit = {},
 ) {
     val hasVideoCover = !videoCoverUri.isNullOrBlank()
     val transitionMotionActive = artworkTransitionState?.isGestureActive == true ||
         artworkTransitionState?.isSettling == true
     val effectiveMotionEnabled = motionEnabled || transitionMotionActive
-    val playerProgress = (1f - abs(pageProgress - 1f)).coerceIn(0f, 1f)
+    // Only the video decoder needs a composition-level visibility gate. derivedStateOf reduces the
+    // live page clock to an endpoint boolean, so horizontal paging no longer recomposes this
+    // backdrop every frame. Artwork alpha itself is consumed directly by graphicsLayer below.
+    val playerPageVisible by remember(pageProgressState, pageProgress) {
+        derivedStateOf {
+            val livePage = pageProgressState?.value ?: pageProgress
+            (1f - abs(livePage - 1f)).coerceIn(0f, 1f) > 0.001f
+        }
+    }
     val density = LocalDensity.current
     val clearArtworkPresence by animateFloatAsState(
         targetValue = if (clearArtworkVisible) 1f else 0f,
@@ -67,6 +90,7 @@ internal fun ImmersiveBackdrop(
     val liftPx = with(density) { 14.dp.toPx() }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize().clipToBounds()) {
+        val landscape = maxWidth > maxHeight
         StandardPlayerBackdrop(
             coverPath = coverPath,
             accent = Color.Transparent,
@@ -79,21 +103,40 @@ internal fun ImmersiveBackdrop(
         val hasClearArtwork = clearArtworkLayers.isNotEmpty() ||
             !coverPath.isNullOrBlank() ||
             !videoCoverUri.isNullOrBlank()
-        if (hasClearArtwork) {
+        val verticalPresentation = verticalMotion?.presentation
+        if (hasClearArtwork || verticalPresentation != null) {
             val splitY = maxHeight * IMMERSIVE_CLEAR_ARTWORK_FRACTION
+            val pageHeightPx = constraints.maxHeight.toFloat()
+            @Composable
+            fun ClearArtworkLane(incoming: Boolean = false) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(splitY + IMMERSIVE_CLEAR_ARTWORK_FADE_EXTENSION)
-                    .align(Alignment.TopCenter)
-                    .clipToBounds()
+                    .then(if (landscape) Modifier
+                        .width(maxWidth * IMMERSIVE_CLEAR_ARTWORK_FRACTION + IMMERSIVE_CLEAR_ARTWORK_FADE_EXTENSION)
+                        .fillMaxHeight()
+                        .rawStableStatusBarsPadding()
+                        .rawStableNavigationBarsPadding()
+                        .padding(top = 76.dp, bottom = 76.dp)
+                        else Modifier.fillMaxWidth().height(splitY + IMMERSIVE_CLEAR_ARTWORK_FADE_EXTENSION))
+                    .align(if (landscape) Alignment.TopStart else Alignment.TopCenter)
                     .graphicsLayer {
+                        val livePage = pageProgressState?.value ?: pageProgress
+                        val playerProgress = (1f - abs(livePage - 1f)).coerceIn(0f, 1f)
                         val hiddenFraction = 1f - clearArtworkPresence
-                        alpha = playerProgress * clearArtworkPresence
+                        // During the MAIN <-> PLAYER morph a single retained bitmap actor owns
+                        // the moving clear artwork. Keep the actual lane mounted and prepared,
+                        // but reveal it only when the controller commits the immersive endpoint.
+                        alpha = playerProgress * clearArtworkPresence *
+                            if (externallyOwnedClearArtwork) 0f else 1f
                         scaleX = 1f + hiddenFraction * 0.045f
                         scaleY = 1f + hiddenFraction * 0.045f
-                        translationY = -liftPx * hiddenFraction
+                        translationY = -liftPx * hiddenFraction +
+                            (verticalMotion?.translation(pageHeightPx, incoming) ?: 0f)
                         transformOrigin = TransformOrigin(0.5f, 0.32f)
+                    }
+                    .clipToBounds()
+                    .onGloballyPositioned {
+                        if (!incoming && verticalPresentation == null) onClearArtworkBoundsChanged(it.boundsInRoot())
                     }
             ) {
                 val fadeHeightPx = with(density) { 118.dp.toPx() }
@@ -106,14 +149,20 @@ internal fun ImmersiveBackdrop(
                     modifier = Modifier
                         .fillMaxSize()
                         .immersiveArtworkEdgeFeather(
-                            bottomFadePx = fadeHeightPx,
-                            sideFadePx = sideFadePx,
-                            topFadePx = topFadePx
+                            bottomFadePx = if (landscape) sideFadePx else fadeHeightPx,
+                            sideFadePx = if (landscape) 0f else sideFadePx,
+                            topFadePx = topFadePx,
+                            trailingFadePx = if (landscape) with(density) { 96.dp.toPx() } else 0f
                         )
                 ) {
                     // A selected video owns the clear-artwork lane completely. Keeping bitmap
                     // transition layers underneath lets them show through the video's faded edge.
-                    if (!hasVideoCover) {
+                    if (verticalPresentation != null) {
+                        ImmersiveClearArtworkLayer(
+                            coverKey = if (incoming) verticalPresentation.target.coverKey
+                                else verticalPresentation.sourceCover ?: verticalPresentation.source.coverKey,
+                        )
+                    } else if (!hasVideoCover) {
                         if (clearArtworkLayers.isEmpty()) {
                             ImmersiveClearArtworkLayer(
                                 coverKey = coverPath.orEmpty(),
@@ -130,16 +179,20 @@ internal fun ImmersiveBackdrop(
                             }
                         }
                     }
-                    if (hasVideoCover) {
+                    if (hasVideoCover && verticalPresentation == null) {
                         FfmpegVideoCover(
                             uri = videoCoverUri,
-                            active = effectiveMotionEnabled && clearArtworkVisible && playerProgress > 0f,
+                            active = effectiveMotionEnabled && clearArtworkVisible &&
+                                playerPageVisible && !externallyOwnedClearArtwork,
                             cornerRadiusDp = 0f,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
                 }
             }
+            }
+            ClearArtworkLane()
+            if (verticalPresentation != null) ClearArtworkLane(incoming = true)
         }
     }
 }
@@ -177,13 +230,28 @@ private fun ImmersiveClearArtworkLayer(
 private fun Modifier.immersiveArtworkEdgeFeather(
     bottomFadePx: Float,
     sideFadePx: Float,
-    topFadePx: Float
+    topFadePx: Float,
+    trailingFadePx: Float = 0f
 ): Modifier = this
     .graphicsLayer {
         compositingStrategy = CompositingStrategy.Offscreen
     }
     .drawWithContent {
         drawContent()
+
+        if (trailingFadePx > 0f) {
+            val width = trailingFadePx.coerceAtMost(size.width)
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    colors = listOf(Color.Transparent, Color.White),
+                    startX = size.width - width,
+                    endX = size.width
+                ),
+                topLeft = Offset(size.width - width, 0f),
+                size = Size(width, size.height),
+                blendMode = BlendMode.DstOut
+            )
+        }
 
         if (topFadePx > 0f) {
             drawRect(

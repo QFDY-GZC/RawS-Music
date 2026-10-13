@@ -10,20 +10,23 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -102,12 +105,13 @@ fun AudioInfoCapsule(
         AudioInfoCapsuleBackgroundStyle.CUSTOM_COLOR ->
             Color(customArgb).copy(alpha = customAlphaPercent.coerceIn(0, 100) / 100f)
     }
-    val contentColor = if (usesReferenceStaticForeground()) {
-        Color.White.copy(alpha = 0.90f)
-    } else when (style) {
+    // Only a transparent capsule inherits the artwork foreground. Filled capsules
+    // must retain contrast with their own surface, even on a static artwork background.
+    val contentColor = when (style) {
         AudioInfoCapsuleBackgroundStyle.CLASSIC -> scheme.onSurface
         AudioInfoCapsuleBackgroundStyle.TRANSPARENT ->
-            if (isDark) Color.White.copy(alpha = 0.88f) else scheme.onBackground.copy(alpha = 0.84f)
+            if (usesReferenceStaticForeground() || isDark) Color.White.copy(alpha = 0.88f)
+            else scheme.onBackground.copy(alpha = 0.84f)
         AudioInfoCapsuleBackgroundStyle.ALBUM_COLOR,
         AudioInfoCapsuleBackgroundStyle.THEME_COLOR,
         AudioInfoCapsuleBackgroundStyle.CUSTOM_COLOR ->
@@ -155,7 +159,7 @@ fun AudioInfoCapsule(
                     onLongPress = { if (!smartTransitionVisible) onLongClick() },
                 )
             }
-            .height(18.dp)
+            .heightIn(min = 24.dp)
             .widthIn(max = 320.dp)
             .padding(horizontal = 8.dp),
         contentAlignment = Alignment.Center,
@@ -168,10 +172,25 @@ fun AudioInfoCapsule(
             label = "audio-info-smart-transition",
         ) { showSmartTransition ->
             if (showSmartTransition) {
-                SmartTransitionShimmerText(
-                    text = stringResource(R.string.player_smart_crossfade),
-                    color = contentColor,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    SmartTransitionShimmerText(
+                        text = stringResource(R.string.player_smart_crossfade),
+                        color = contentColor,
+                    )
+                    Text(
+                        text = stringResource(R.string.common_cancel),
+                        color = contentColor,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 11.sp,
+                            lineHeight = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        maxLines = 1,
+                        modifier = Modifier
+                            .clickable(enabled = smartTransitionVisible, onClick = onClick)
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
             } else {
                 Text(
                     text = when (contentStyle) {
@@ -180,9 +199,11 @@ fun AudioInfoCapsule(
                             playbackChainText.ifBlank { audioChainText(song) }
                     },
                     color = contentColor,
-                    fontSize = 8.sp,
-                    lineHeight = 10.sp,
-                    fontWeight = FontWeight.Medium,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 11.sp,
+                        lineHeight = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -198,15 +219,16 @@ private fun SmartTransitionShimmerText(text: String, color: Color) {
     val animationsEnabled = remember {
         Build.VERSION.SDK_INT < Build.VERSION_CODES.O || ValueAnimator.areAnimatorsEnabled()
     }
-    val style = TextStyle(
-        fontSize = 8.sp,
-        lineHeight = 10.sp,
-        fontWeight = FontWeight.Medium,
+    val style = MaterialTheme.typography.labelSmall.copy(
+        fontSize = 11.sp,
+        lineHeight = 14.sp,
+        fontWeight = FontWeight.SemiBold,
     )
     Box(modifier = Modifier.onSizeChanged { textWidthPx = it.width.coerceAtLeast(1) }) {
         Text(
             text = text,
-            color = color,
+            // White text at full opacity leaves almost no contrast for a white light sweep.
+            color = if (animationsEnabled && frameAnimationActive) color.copy(alpha = color.alpha * 0.82f) else color,
             style = style,
             maxLines = 1,
         )
@@ -232,16 +254,16 @@ private fun SmartTransitionShimmerOverlay(
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
             animation = tween(
-                durationMillis = 1_400,
-                delayMillis = 450,
-                easing = FastOutSlowInEasing,
+                durationMillis = 2_800,
+                delayMillis = 650,
+                easing = LinearEasing,
             ),
             repeatMode = RepeatMode.Restart,
         ),
         label = "smart-crossfade-shimmer-progress",
     )
     val width = widthPx.toFloat()
-    val startX = -width + progress * width * 2.6f
+    val startX = -width * 0.62f + progress * width * 1.62f
     Text(
         text = text,
         style = style.copy(

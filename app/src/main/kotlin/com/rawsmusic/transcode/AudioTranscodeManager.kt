@@ -2,6 +2,7 @@ package com.rawsmusic.transcode
 
 import android.system.Os
 import android.system.OsConstants
+import android.util.Log
 import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.core.common.taglib.TranscodeMetadataReport
 import java.io.File
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * and converts DSF/DFF back to the lossless PCM target matrix through FFmpeg dsd2pcm + swresample.
  */
 object AudioTranscodeManager {
+    private const val LOG_TAG = "AudioTranscode"
     val selectableSampleRatesHz: List<Int> = listOf(
         44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000,
     )
@@ -36,7 +38,12 @@ object AudioTranscodeManager {
     }
 
     private val capabilitySnapshot: List<AudioTranscodeCapability> by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        NativeAudioTranscoder.capabilities()
+        val native = NativeAudioTranscoder.capabilities()
+        if (native.any { it.id == "dsf" && it.supportsDsd(AudioTranscodeDsdRate.DSD64) } &&
+            native.any { it.id == "wav" && it.supports(44_100, 32) }) {
+            native + AudioTranscodeCapability("sacd_iso", "iso", false, emptySet(), null,
+                setOf(AudioTranscodeDsdRate.DSD64))
+        } else native
     }
 
     fun capabilities(): List<AudioTranscodeCapability> = capabilitySnapshot
@@ -93,7 +100,8 @@ object AudioTranscodeManager {
                 AudioTranscodePreviewIssueCode.SOURCE_PARAMETER_OUTSIDE_POLICY,
                 "当前源格式没有可用的 TagLib 元数据适配器，禁止静默丢失标签",
             )
-        } else if (metadataSource != null && metadataSource.unsupportedOpaqueItems > 0) {
+        } else if (metadataSource != null && metadataSource.unsupportedOpaqueItems > 0 &&
+            request.format != AudioTranscodeFormat.SACD_ISO) {
             val detail = buildString {
                 append("源标签包含 ${metadataSource.unsupportedOpaqueItems} 个无法映射到 PropertyMap/PICTURE 的 opaque 对象")
                 if (metadataSource.unsupportedKeys.isNotEmpty()) {
@@ -204,6 +212,7 @@ object AudioTranscodeManager {
             ?.let { dsdRateForLogicalRate(it.dsdSampleRateHz) }
         val resolvedDsdSampleRate = when {
             source == null || resolvedDsdRate == null -> null
+            request.format == AudioTranscodeFormat.SACD_ISO -> 2_822_400
             source.isDsdSource && sourceDsdRate == resolvedDsdRate -> source.dsdSampleRateHz
             !source.isDsdSource -> resolveDsdSampleRateHz(source.sampleRateHz, resolvedDsdRate)
             else -> null
@@ -215,7 +224,9 @@ object AudioTranscodeManager {
         val backend = if (directDsdTransfer) {
             AudioTranscodeBackendInfo(
                 kind = AudioTranscodeBackendKind.BITSTREAM_COPY,
-                name = if (sourceExtension == "dsf") {
+                name = if (request.format == AudioTranscodeFormat.SACD_ISO) {
+                    "RawSMusic SACD DSD bitstream packaging"
+                } else if (sourceExtension == "dsf") {
                     "RawSMusic DSF bitstream copy"
                 } else {
                     "RawSMusic DSD direct remux"
@@ -252,6 +263,15 @@ object AudioTranscodeManager {
         }
 
         if (request.format.isDsd) {
+            if (request.format == AudioTranscodeFormat.SACD_ISO) {
+                issues += AudioTranscodePreviewIssue(AudioTranscodePreviewIssueCode.METADATA_SEMANTICS_MAY_DEGRADE,
+                    AudioTranscodePreviewIssueSeverity.INFO,
+                    "SACD ISO 内嵌完整源元数据快照，严格模式核对原始标签字节、文字、多值字段及图片。RawSMusic 可读取全部信息；其他 SACD 播放器可能仅显示标准 TOC。")
+                if (source?.isDsdSource == true && source.dsdSampleRateHz != 2_822_400) {
+                    issues += blocking(AudioTranscodePreviewIssueCode.DSD_TO_DSD_UNSUPPORTED,
+                        "SACD ISO 只接收 2.8224 MHz DSD64，不能封装其他 DSD 时钟")
+                }
+            }
             if (source?.isDsdSource == true) {
                 when {
                     sourceDsdRate == null -> {
@@ -270,7 +290,9 @@ object AudioTranscodeManager {
                         issues += AudioTranscodePreviewIssue(
                             AudioTranscodePreviewIssueCode.SAME_FORMAT_REENCODE_NOT_ALLOWED,
                             AudioTranscodePreviewIssueSeverity.INFO,
-                            "源文件已经是 DSF 且 DSD rate 不变；将直接复制原始 DSF bitstream 到新文件，再执行元数据迁移，不经过 PCM/DSD 重调制。",
+                            if (request.format == AudioTranscodeFormat.SACD_ISO)
+                                "读取原始 DSF DSD64 数据，规范化位序并封装到 SACD ISO，不重新调制音频。"
+                            else "源文件已经是 DSF 且 DSD rate 不变；将直接复制原始 DSF bitstream 到新文件，再执行元数据迁移，不经过 PCM/DSD 重调制。",
                         )
                     }
                     sourceExtension !in setOf("dff", "dsdiff") -> {
@@ -283,7 +305,9 @@ object AudioTranscodeManager {
                         issues += AudioTranscodePreviewIssue(
                             AudioTranscodePreviewIssueCode.DSD_DIRECT_REMUX,
                             AudioTranscodePreviewIssueSeverity.INFO,
-                            "DFF/DSDIFF 将直接复制原始 DSD bitstream 到 DSF：只规范化 packet 的 planar/interleaved 布局和 LSBF/MSBF 位序，不经过 dsd2pcm，也不重新 P2D。",
+                            if (request.format == AudioTranscodeFormat.SACD_ISO)
+                                "读取原始 DFF/DSDIFF DSD64 数据，经 DSF 暂存后封装到 SACD ISO，不重新调制音频。"
+                            else "DFF/DSDIFF 将直接复制原始 DSD bitstream 到 DSF：只规范化 packet 的 planar/interleaved 布局和 LSBF/MSBF 位序，不经过 dsd2pcm，也不重新 P2D。",
                         )
                     }
                 }
@@ -567,6 +591,10 @@ object AudioTranscodeManager {
 
         val estimate = when {
             source == null -> null
+            request.format == AudioTranscodeFormat.SACD_ISO -> {
+                val bytes = source.durationMs.coerceAtLeast(0) * 716_800L / 1000 + 2L * 1024 * 1024
+                bytes to bytes
+            }
             request.format.isDsd && resolvedDsdSampleRate != null ->
                 estimateDsfOutputRange(source, resolvedDsdSampleRate)
             request.format.isLossy && resolvedRate != null && resolvedBitRateKbps != null ->
@@ -628,7 +656,7 @@ object AudioTranscodeManager {
         resolvedBitRateKbps: Int?,
     ): AudioTranscodeBackendInfo {
         val softwareName = when (request.format) {
-            AudioTranscodeFormat.DSF -> "RawSMusic Offline P2D"
+            AudioTranscodeFormat.DSF, AudioTranscodeFormat.SACD_ISO -> "RawSMusic Offline P2D"
             else -> "FFmpeg ${request.format.name}"
         }
         if (!request.hardwareAccelerationEnabled) {
@@ -711,9 +739,35 @@ object AudioTranscodeManager {
 
     fun start(request: AudioTranscodeRequest): AudioTranscodeTask {
         val task = AudioTranscodeTask(request)
+        Log.i(
+            LOG_TAG,
+            "START format=${request.format.name} input=${request.inputPath} output=${request.outputPath} " +
+                "rate=${request.targetSampleRateHz ?: 0} bits=${request.targetBitDepth ?: 0} " +
+                "bitrateKbps=${request.targetBitRateKbps ?: 0} metadata=${request.metadataPolicy.name} " +
+                "verify=${request.verificationMode.name}",
+        )
         executor.execute {
             if (!task.markStarted()) return@execute
             val result = runTask(task, request)
+            when (result) {
+                is AudioTranscodeResult.Success -> Log.i(
+                    LOG_TAG,
+                    "SUCCESS stage=${task.progress.value.stage.name} format=${request.format.name} " +
+                        "input=${request.inputPath} output=${result.output.absolutePath} " +
+                        "backend=${result.backend.kind.name}:${result.backend.name}",
+                )
+                is AudioTranscodeResult.Failure -> Log.e(
+                    LOG_TAG,
+                    "FAIL stage=${task.progress.value.stage.name} format=${request.format.name} " +
+                        "reason=${result.reason.name} native=${result.nativeCode ?: 0} " +
+                        "detail=${result.detail} input=${request.inputPath} output=${request.outputPath}",
+                )
+                AudioTranscodeResult.Cancelled -> Log.w(
+                    LOG_TAG,
+                    "CANCEL stage=${task.progress.value.stage.name} format=${request.format.name} " +
+                        "input=${request.inputPath} output=${request.outputPath}",
+                )
+            }
             task.finish(result)
         }
         return task
@@ -729,6 +783,20 @@ object AudioTranscodeManager {
             task.updateStage(AudioTranscodeStage.PROBING, 0)
 
             val preflight = preview(request)
+            Log.i(
+                LOG_TAG,
+                "PREFLIGHT format=${request.format.name} canStart=${preflight.canStart} " +
+                    "sourceRate=${preflight.source?.sampleRateHz ?: 0} " +
+                    "sourceChannels=${preflight.source?.channels ?: 0} " +
+                    "targetRate=${preflight.resolvedSampleRateHz ?: 0} " +
+                    "targetBits=${preflight.resolvedBitDepth ?: 0} issues=${preflight.issues.size}",
+            )
+            preflight.issues.forEach { issue ->
+                Log.i(
+                    LOG_TAG,
+                    "PREFLIGHT_ISSUE severity=${issue.severity.name} code=${issue.code.name} detail=${issue.detail}",
+                )
+            }
             val blocking = preflight.issues.firstOrNull {
                 it.severity == AudioTranscodePreviewIssueSeverity.BLOCKING
             }
@@ -791,6 +859,10 @@ object AudioTranscodeManager {
             }
 
             val requiredBytes = (preflight.estimatedOutputBytesMax ?: (256L * 1024L * 1024L)) +
+                (if (request.format == AudioTranscodeFormat.SACD_ISO) {
+                    source.durationMs.coerceAtLeast(0) * 1_100_000L / 1000 + 2L * 1024 * 1024 +
+                        com.rawsmusic.core.common.sacd.SacdMetadataArchive.estimatedPayloadBytes(input) * 2
+                } else 0L) +
                 64L * 1024L * 1024L
             val usable = parent.usableSpace
             if (usable > 0L && requiredBytes > usable) {
@@ -806,6 +878,10 @@ object AudioTranscodeManager {
             )
             partial = partialFile
             if (partialFile.exists()) partialFile.delete()
+            Log.i(
+                LOG_TAG,
+                "PARTIAL format=${request.format.name} partial=${partialFile.absolutePath} final=${output.absolutePath}",
+            )
             task.updateStage(AudioTranscodeStage.PROBING, 1000)
             if (task.isCancellationRequested()) return AudioTranscodeResult.Cancelled
 
@@ -817,6 +893,8 @@ object AudioTranscodeManager {
                 resolvedBitRateKbps = targetBitRateKbps,
             )
             var nativeFailureDetail: String? = null
+            var sacdResult: SacdIsoWriter.Result? = null
+            val packaging = AtomicBoolean(false)
             val nativeCode = NativeAudioTranscoder.createSession().use { session ->
                 task.attachSession(session)
                 val polling = AtomicBoolean(true)
@@ -826,7 +904,9 @@ object AudioTranscodeManager {
                     name = "RawS-AudioTranscodeProgress",
                 ) {
                     while (polling.get()) {
-                        task.updateStage(AudioTranscodeStage.ENCODING, session.progressPermille())
+                        if (!packaging.get()) task.updateStage(AudioTranscodeStage.ENCODING,
+                            if (request.format == AudioTranscodeFormat.SACD_ISO) session.progressPermille() * 4 / 5
+                            else session.progressPermille())
                         try {
                             Thread.sleep(160L)
                         } catch (_: InterruptedException) {
@@ -836,7 +916,14 @@ object AudioTranscodeManager {
                 }
                 try {
                     if (task.isCancellationRequested()) session.cancel()
-                    if (request.format.isDsd) {
+                    if (request.format == AudioTranscodeFormat.SACD_ISO) {
+                        val encoded = SacdIsoTranscode.encode(session, source, input, partialFile,
+                            TagLibBridge.readTags(input.absolutePath), task::isCancellationRequested,
+                            onPackaging = { packaging.set(true) },
+                            onProgress = { task.updateStage(AudioTranscodeStage.ENCODING, 800 + it / 5) })
+                        sacdResult = encoded.second
+                        encoded.first
+                    } else if (request.format.isDsd) {
                         if (actualBackend.kind == AudioTranscodeBackendKind.BITSTREAM_COPY) {
                             if (input.extension.equals("dsf", ignoreCase = true)) {
                                 input.copyTo(partialFile, overwrite = true)
@@ -942,6 +1029,12 @@ object AudioTranscodeManager {
                     task.detachSession(session)
                 }
             }
+            Log.i(
+                LOG_TAG,
+                "ENCODE_RESULT format=${request.format.name} native=$nativeCode " +
+                    "detail=${nativeFailureDetail.orEmpty()} partial=${partialFile.absolutePath} " +
+                    "exists=${partialFile.isFile} bytes=${if (partialFile.isFile) partialFile.length() else 0L}",
+            )
             if (nativeCode == NativeAudioTranscoder.ERR_CANCELLED || task.isCancellationRequested()) {
                 return AudioTranscodeResult.Cancelled
             }
@@ -965,6 +1058,14 @@ object AudioTranscodeManager {
                 sourcePath = input.absolutePath,
                 targetPath = partialFile.absolutePath,
                 encoderLabel = metadataEncoderLabel(request, actualBackend),
+                isCancelled = task::isCancellationRequested,
+            )
+            Log.i(
+                LOG_TAG,
+                "METADATA_RESULT format=${request.format.name} supported=${metadata.supported} " +
+                    "saveOk=${metadata.saveOk} verifyOk=${metadata.verifyOk} strictOk=${metadata.strictOk} " +
+                    "rejected=${metadata.rejectedFields} textMismatch=${metadata.textMismatches} " +
+                    "pictureMismatch=${metadata.pictureMismatches} unsupportedBinary=${metadata.unsupportedBinaryItems}",
             )
             val metadataAccepted = when (request.metadataPolicy) {
                 AudioTranscodeMetadataPolicy.STRICT -> metadata.strictOk
@@ -982,7 +1083,7 @@ object AudioTranscodeManager {
             if (task.isCancellationRequested()) return AudioTranscodeResult.Cancelled
 
             task.updateStage(AudioTranscodeStage.VERIFYING, 0)
-            val dsfProbe = if (request.format.isDsd) {
+            val dsfProbe = if (request.format == AudioTranscodeFormat.DSF) {
                 NativeAudioTranscoder.probeDsf(partialFile.absolutePath)
                     ?: return AudioTranscodeResult.Failure(
                         AudioTranscodeFailureReason.VERIFICATION_FAILED,
@@ -992,14 +1093,28 @@ object AudioTranscodeManager {
             } else {
                 null
             }
-            val outputProbe = dsfProbe?.asAudioProbe() ?:
+            val sacdTrack = if (request.format == AudioTranscodeFormat.SACD_ISO) {
+                com.rawsmusic.core.common.sacd.SacdIsoBridge.tracks(
+                    com.rawsmusic.core.common.model.AudioFile(path = partialFile.absolutePath,
+                        format = "SACD-ISO", fileSize = partialFile.length())).singleOrNull()
+            } else null
+            val outputProbe = sacdTrack?.let {
+                AudioTranscodeProbe(2_822_400, 1, 2, it.frames * 1000 / 75, 5_644_800, 0, true, 2_822_400)
+            } ?: dsfProbe?.asAudioProbe() ?:
                 (NativeAudioTranscoder.probe(partialFile.absolutePath)
                     ?: return AudioTranscodeResult.Failure(
                         AudioTranscodeFailureReason.VERIFICATION_FAILED,
                         "转换文件无法重新打开验证",
                         metadata = metadata,
                     ))
-            var verification = if (dsfProbe != null) {
+            var verification = if (request.format == AudioTranscodeFormat.SACD_ISO) {
+                AudioTranscodeVerification(sampleRateMatches = outputProbe.sampleRateHz == 2_822_400,
+                    bitDepthMatches = outputProbe.bitDepth == 1, channelsMatch = sacdTrack?.channels == 2,
+                    durationMatches = if (source.durationMs > 0) abs(source.durationMs - outputProbe.durationMs) <= 100L
+                        else outputProbe.durationMs > 0,
+                    codecMatches = sacdTrack?.dst == false,
+                    containerStructureMatches = sacdTrack != null && sacdTrack.frames == sacdResult?.frames)
+            } else if (dsfProbe != null) {
                 verifyDsf(
                     source = source,
                     output = dsfProbe,
@@ -1015,6 +1130,15 @@ object AudioTranscodeManager {
                     lossy = request.format.isLossy,
                 )
             }
+            Log.i(
+                LOG_TAG,
+                "VERIFY_RESULT format=${request.format.name} passed=${verification.passed} " +
+                    "sampleRate=${verification.sampleRateMatches} bitDepth=${verification.bitDepthMatches} " +
+                    "channels=${verification.channelsMatch} duration=${verification.durationMatches} " +
+                    "codec=${verification.codecMatches} container=${verification.containerStructureMatches} " +
+                    "sourceDurationMs=${source.durationMs} outputDurationMs=${outputProbe.durationMs} " +
+                    "dsfSampleCount=${dsfProbe?.sampleCount}",
+            )
             if (!verification.passed) {
                 return AudioTranscodeResult.Failure(
                     AudioTranscodeFailureReason.VERIFICATION_FAILED,
@@ -1085,6 +1209,10 @@ object AudioTranscodeManager {
             if (task.isCancellationRequested()) return AudioTranscodeResult.Cancelled
 
             task.updateStage(AudioTranscodeStage.COMMITTING, 0)
+            Log.i(
+                LOG_TAG,
+                "COMMIT_BEGIN format=${request.format.name} partial=${partialFile.absolutePath} final=${output.absolutePath}",
+            )
             syncFile(partialFile)
             if (output.exists() && !request.overwrite) {
                 return AudioTranscodeResult.Failure(
@@ -1096,7 +1224,17 @@ object AudioTranscodeManager {
             try {
                 Os.rename(partialFile.absolutePath, output.absolutePath)
                 syncDirectory(parent)
+                Log.i(
+                    LOG_TAG,
+                    "COMMIT_OK format=${request.format.name} output=${output.absolutePath} bytes=${output.length()}",
+                )
             } catch (error: Throwable) {
+                Log.e(
+                    LOG_TAG,
+                    "COMMIT_FAIL format=${request.format.name} partial=${partialFile.absolutePath} " +
+                        "final=${output.absolutePath} error=${error.message ?: error::class.java.simpleName}",
+                    error,
+                )
                 return AudioTranscodeResult.Failure(
                     AudioTranscodeFailureReason.COMMIT_FAILED,
                     "原子提交失败：${error.message ?: error::class.java.simpleName}",
@@ -1118,6 +1256,13 @@ object AudioTranscodeManager {
                 backend = actualBackend,
             )
         } catch (error: Throwable) {
+            Log.e(
+                LOG_TAG,
+                "EXCEPTION stage=${task.progress.value.stage.name} format=${request.format.name} " +
+                    "input=${request.inputPath} output=${request.outputPath} " +
+                    "error=${error.message ?: error::class.java.simpleName}",
+                error,
+            )
             return if (task.isCancellationRequested()) {
                 AudioTranscodeResult.Cancelled
             } else {
@@ -1208,6 +1353,7 @@ object AudioTranscodeManager {
                 maxFactor = 0.98
             }
             AudioTranscodeFormat.DSF,
+            AudioTranscodeFormat.SACD_ISO,
             AudioTranscodeFormat.AAC,
             AudioTranscodeFormat.MP2,
             AudioTranscodeFormat.MP3,
@@ -1337,7 +1483,7 @@ object AudioTranscodeManager {
         AudioTranscodeBackendKind.BITSTREAM_COPY -> "RawSMusic DSD Direct Remux"
         AudioTranscodeBackendKind.HARDWARE -> "RawSMusic / MediaCodec ${backend.name}"
         AudioTranscodeBackendKind.SOFTWARE -> when (request.format) {
-            AudioTranscodeFormat.DSF -> "RawSMusic PCMToDSD"
+            AudioTranscodeFormat.DSF, AudioTranscodeFormat.SACD_ISO -> "RawSMusic PCMToDSD"
             else -> "RawSMusic / ${backend.name}"
         }
     }

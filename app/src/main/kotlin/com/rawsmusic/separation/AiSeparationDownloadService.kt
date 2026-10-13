@@ -17,6 +17,7 @@ import com.rawsmusic.ai.melody.AiMelodyModelStore
 import com.rawsmusic.ai.melody.AiRecommendedMelodyModels
 import com.rawsmusic.ai.instrument.AiRecommendedPianoPack
 import com.rawsmusic.ai.instrument.AiRecommendedPianoPackInstaller
+import com.rawsmusic.locale.localizedErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -329,20 +330,21 @@ class AiSeparationDownloadService : Service() {
                 )
             } catch (error: Throwable) {
                 Log.e(TAG, "AI_DOWNLOAD_FAILED id=$modelId version=$modelVersion", error)
+                val downloadFailureRes =
+                    if (pianoPackRequest) R.string.ai_piano_pack_download_failed
+                    else if (melodyRequest) R.string.ai_melody_download_failed
+                    else if (runtimeRequest) R.string.ai_runtime_download_failed
+                    else if (fastVocalAlignmentRequest) R.string.ai_fast_alignment_download_failed
+                    else if (lyricAlignmentRequest) R.string.ai_lyric_alignment_download_failed
+                    else R.string.ai_model_download_failed
+                val failureMessage = localizedErrorMessage(error, downloadFailureRes)
                 publish(
                     AiSeparationDownloadProgress(
                         modelId = modelId,
                         modelVersion = modelVersion,
                         modelName = modelName,
                         phase = AiSeparationDownloadPhase.FAILED,
-                        message = error.message ?: getString(
-                            if (pianoPackRequest) R.string.ai_piano_pack_download_failed
-                            else if (melodyRequest) R.string.ai_melody_download_failed
-                            else if (runtimeRequest) R.string.ai_runtime_download_failed
-                            else if (fastVocalAlignmentRequest) R.string.ai_fast_alignment_download_failed
-                            else if (lyricAlignmentRequest) R.string.ai_lyric_alignment_download_failed
-                            else R.string.ai_model_download_failed
-                        ),
+                        message = failureMessage,
                     )
                 )
                 notificationManager().notify(
@@ -359,8 +361,8 @@ class AiSeparationDownloadService : Service() {
                                 else R.string.ai_model_install_failed
                             )
                         )
-                        .setContentText(error.message ?: getString(R.string.ai_download_check_source))
-                        .setStyle(NotificationCompat.BigTextStyle().bigText(error.message.orEmpty()))
+                        .setContentText(failureMessage)
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(failureMessage))
                         .setAutoCancel(true)
                         .build()
                 )

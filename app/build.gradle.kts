@@ -14,10 +14,15 @@ android {
         applicationId = "com.rawsmusic"
         minSdk = 24
         targetSdk = 37
-        versionCode = 100
-        versionName = "1.0.0-release"
+        versionCode = 113
+        versionName = "1.0.13-release"
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Match locales_config.xml. Keep default values and the four supported languages,
+        // rather than shipping every dependency's unused translations.
+        resourceConfigurations += listOf("en", "zh", "ja", "ko")
+
+        testInstrumentationRunner = providers.gradleProperty("backupValidationRunner")
+            .orElse("androidx.test.runner.AndroidJUnitRunner").get()
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -115,6 +120,9 @@ dependencies {
     implementation(project(":module:player"))
     implementation(project(":module:scanner"))
     implementation(project(":module:data"))
+    // Backup coordinates both durable stores in one existing Room transaction.
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.ktx)
@@ -126,6 +134,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-process:2.7.0")
 
     implementation(libs.lottie)
+    implementation(libs.lottie.compose)
 
     implementation(libs.androidx.palette.ktx)
     implementation(libs.androidx.media)
@@ -149,6 +158,8 @@ dependencies {
     implementation(libs.compose.runtime.livedata)
 
     implementation(project(":backdrop"))
+    // Settings owns a Haze source in its separate Activity; runtime is already used by core:ui.
+    implementation("dev.chrisbanes.haze:haze:2.0.0-alpha03")
     implementation(libs.gson)
 
     // Miuix UI 库
@@ -158,6 +169,8 @@ dependencies {
     implementation(libs.focus.api)
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
+    compileOnly(project(":module:system-api-stubs"))
+    implementation("org.lsposed.hiddenapibypass:hiddenapibypass:6.1")
     // navigationevent-compose (miuix SearchBar 内部需要 LocalNavigationEventDispatcherOwner)
     implementation("androidx.navigationevent:navigationevent-compose:1.1.1")
 }

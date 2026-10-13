@@ -331,7 +331,7 @@ class LyricoSourceEngine(context: Context) {
         }
     )
 
-    suspend fun writeEmbeddedCover(song: AudioFile, coverUrl: String): File =
+    suspend fun writeEmbeddedCover(song: AudioFile, coverUrl: String, notifyMediaStore: Boolean = true): File =
         withContext(Dispatchers.IO) {
             require(coverUrl.startsWith("http://") || coverUrl.startsWith("https://")) {
                 "Unsupported cover address"
@@ -363,7 +363,7 @@ class LyricoSourceEngine(context: Context) {
                 try {
                     copyAudioSource(song, access.mediaUri, working)
                     writeAndVerifyCover(working, downloaded, verify)
-                    commitWorkingAudio(song, access.mediaUri, working)
+                    commitWorkingAudio(song, access.mediaUri, working, notifyMediaStore)
                     Log.i(
                         TAG,
                         "LYRICO_COVER_WRITE committed strategy=${if (access.canOpenMediaUri) "media_store" else "direct_stream"} " +
@@ -481,7 +481,7 @@ class LyricoSourceEngine(context: Context) {
         error("The audio source cannot be opened")
     }
 
-    private fun commitWorkingAudio(song: AudioFile, mediaUri: Uri?, working: File) {
+    private fun commitWorkingAudio(song: AudioFile, mediaUri: Uri?, working: File, notifyMediaStore: Boolean) {
         val access = LyricoAudioWriteAccess.inspect(appContext, song)
         if (mediaUri != null && access.canOpenMediaUri) {
             val resolver = appContext.contentResolver
@@ -520,7 +520,7 @@ class LyricoSourceEngine(context: Context) {
                 "The updated audio size does not match the prepared file"
             }
         }
-        if (!song.path.startsWith("content://", ignoreCase = true)) {
+        if (notifyMediaStore && !song.path.startsWith("content://", ignoreCase = true)) {
             runCatching {
                 MediaScannerConnection.scanFile(appContext, arrayOf(song.path), null, null)
             }

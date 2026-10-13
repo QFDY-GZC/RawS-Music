@@ -1,0 +1,11 @@
+<resources>
+    <string name="spectrum_ui_mean_help">RMS 是解码信号的平均功率电平，不等于感知响度。综合 LUFS 可在质量详情中查看。</string>
+    <string name="spectrum_ui_peak_help">样本峰值是解码后的最大采样值。单个满幅样本不能证明削波；连续满幅与真实峰值请看详情。</string>
+    <string name="spectrum_ui_band_help">这是频谱范围估计，不代表原始采样率。具有支持证据的重复陡峭边缘会另行标注。</string>
+    <string name="spectrum_ui_duration_help">时长来自文件或曲库记录。质量详情会与实际解码长度比较。</string>
+    <string name="spectrum_ui_cutoff">截止 · %1$s</string>
+    <string name="spectrum_ui_extent">估计频带 · %1$s</string>
+    <string name="spectrum_ui_band_occupancy">可测频率范围／奈奎斯特频率：%1$s%%。带宽占用率不能单独判断音源质量。</string>
+    <string name="spectrum_ui_legend">频谱电平 · dBFS／频点</string>
+    <string name="spectrum_ui_log_resolution">对数视图重新分配缓存频点；插值不增加真实频率分辨率。</string>
+</resources>

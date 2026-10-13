@@ -12,12 +12,28 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.widget.virtuallist.LocalReferenceLibraryBodyRender
@@ -37,8 +53,11 @@ import com.rawsmusic.core.ui.widget.virtuallist.ReferenceLibraryPresentationHost
 import com.rawsmusic.core.ui.widget.virtuallist.VirtualListPresentationHostBackend
 import com.rawsmusic.core.ui.widget.virtuallist.virtualListPresentationHost
 import com.rawsmusic.core.ui.widget.virtuallist.VirtualListPersistentRuntime
+import com.rawsmusic.core.ui.systemui.rawStableStatusBarTopPadding
 import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.flow.distinctUntilChanged
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /** True only for the retained provider/layout population inside the single library owner. */
 internal val LocalReferenceRetainedLibraryPopulation = staticCompositionLocalOf { false }
@@ -66,6 +85,7 @@ internal val ReferenceLibraryScenes: Set<NavScene> = setOf(
     NavScene.ALBUM_DETAIL,
     NavScene.ARTISTS,
     NavScene.ARTIST_DETAIL,
+    NavScene.ARTIST_ALL_SONGS,
     NavScene.ARTIST_BIOGRAPHY,
     NavScene.GENRE,
     NavScene.GENRE_DETAIL,
@@ -95,6 +115,79 @@ private val ReferenceLibraryTopChromeScenes = setOf(
     NavScene.QUEUE,
     NavScene.RECENTLY_ADDED,
 )
+
+private val PersistentLibraryRailScenes = listOf(
+    NavScene.HOME,
+    NavScene.SONGS,
+    NavScene.FOLDERS,
+    NavScene.ALBUMS,
+    NavScene.ARTISTS,
+    NavScene.PLAYLISTS,
+    NavScene.GENRE,
+    NavScene.RECENTLY_ADDED,
+    NavScene.QUEUE,
+)
+
+private fun NavScene.persistentLibraryRailRoot(): NavScene = when (this) {
+    NavScene.ALBUM_DETAIL -> NavScene.ALBUMS
+    NavScene.ARTIST_DETAIL,
+    NavScene.ARTIST_ALL_SONGS,
+    NavScene.ARTIST_BIOGRAPHY -> NavScene.ARTISTS
+    NavScene.FOLDER_DETAIL,
+    NavScene.FOLDER_HIERARCHY -> NavScene.FOLDERS
+    NavScene.GENRE_DETAIL -> NavScene.GENRE
+    NavScene.PLAYLIST_DETAIL,
+    NavScene.PLAYLIST_DETAIL_PAGE,
+    NavScene.PLAYLIST_LIST -> NavScene.PLAYLISTS
+    else -> this
+}
+
+@Composable
+private fun PersistentLibraryRail(
+    selectedScene: NavScene,
+    onNavigate: (NavScene) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MiuixTheme.colorScheme
+    val selectedRoot = selectedScene.persistentLibraryRailRoot()
+    Column(
+        modifier = modifier
+            .background(
+                color = colors.surfaceContainer.copy(alpha = 0.72f),
+                shape = RoundedCornerShape(28.dp),
+            )
+            .padding(horizontal = 10.dp, vertical = 14.dp),
+    ) {
+        PersistentLibraryRailScenes.forEach { scene ->
+            val selected = scene == selectedRoot
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .background(
+                        color = if (selected) colors.primary.copy(alpha = 0.14f) else Color.Transparent,
+                        shape = RoundedCornerShape(18.dp),
+                    )
+                    .clickable(enabled = !selected) { onNavigate(scene) }
+                    .padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BottomNavigationEntryIcon(
+                    scene = scene,
+                    tint = if (selected) colors.primary else colors.onSurface,
+                    modifier = Modifier.size(22.dp),
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    text = scene.bottomNavigationLabel(),
+                    color = if (selected) colors.primary else colors.onSurface,
+                    maxLines = 1,
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+        }
+    }
+}
 
 /**
  * Resolve the destination whose provider must be bound as VirtualList's next/retained provider.
@@ -175,9 +268,13 @@ internal fun ReferenceLibraryVirtualListHost(
     presentationVisible: Boolean = true,
     controllerVisible: Boolean = true,
     providerIdentity: (NavScene) -> String = { "" },
+    onNavigate: (NavScene) -> Unit = {},
     modifier: Modifier = Modifier,
     content: @Composable (NavScene) -> Unit,
 ) {
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
+    val libraryRailTopInset = rawStableStatusBarTopPadding()
+    val libraryRailBottomInset = LocalBottomChromeInsets.current.contentBottom
     val appHazeState = LocalAppHazeState.current
     val pageFrameAnimationActive = LocalUiFrameAnimationActive.current && presentationVisible
     // Ordinary VirtualList pixels are drawn by this fixed presentation owner, not by the page
@@ -205,10 +302,20 @@ internal fun ReferenceLibraryVirtualListHost(
             else -> providerIdentity(scene)
         }
     }
-    val providerMotionActive = registry[currentScene]?.providerNavigationActive == true
+    val currentProvider = registry[currentScene]
+    // Local provider navigation (Folders Hierarchy) publishes its transition into the persistent
+    // provider object rather than the outer SceneTransitionHost CompositionLocal. Observe the
+    // behavior clock so physical shared-holder ownership sees the same transaction as the body.
+    currentProvider?.behaviorRevision
+    val providerMotionActive = currentProvider?.providerNavigationActive == true
     val currentContent by rememberUpdatedState(content)
     val sharedCoverRegistry = LocalSharedCoverRegistry.current
-    val sharedTransitionSpec = LocalSharedTransitionSpec.current
+    val outerSharedTransitionSpec = LocalSharedTransitionSpec.current
+    val sharedTransitionSpec = if (providerMotionActive && !effectiveFrame.active) {
+        currentProvider.providerSharedTransitionSpec
+    } else {
+        outerSharedTransitionSpec
+    }
     val preparedSharedPair = if (sharedTransitionSpec.transitionKey.isNotBlank()) {
         sharedCoverRegistry.getPreparedPair(sharedTransitionSpec.transitionKey)
     } else {
@@ -226,6 +333,7 @@ internal fun ReferenceLibraryVirtualListHost(
     SideEffect {
         val runtime = physicalRuntime.settledNodeRuntime
         val pair = preparedSharedPair
+        val localHeader = currentProvider?.providerNavigationFrame?.settledSharedTarget
         when {
             sharedTransitionSpec.active &&
                 pair != null &&
@@ -235,6 +343,19 @@ internal fun ReferenceLibraryVirtualListHost(
                     target = pair.second,
                     progressProvider = sharedTransitionSpec.progressProvider,
                     animateFromCurrent = true,
+                    originOverscrollXProvider = sharedTransitionSpec.originOverscrollXProvider,
+                )
+            }
+
+            !effectiveFrame.active && !providerMotionActive && !sharedTransitionSpec.active &&
+                localHeader != null && runtime.hasPromotedSharedHolder(localHeader.elementId) -> {
+                // Pin a settled recursive header to its live endpoint and detach the old gesture
+                // clock. Reusing that clock lets the next gesture reset the previous actor to p=0.
+                runtime.updateSharedHolderGeometry(
+                    transitionKey = "provider-header:${localHeader.elementId}",
+                    target = localHeader,
+                    progressProvider = null,
+                    animateFromCurrent = false,
                 )
             }
 
@@ -285,24 +406,59 @@ internal fun ReferenceLibraryVirtualListHost(
             }
             promoted
         }
+        sharedCoverRegistry.attachPhysicalPromotionStasher(owner) { elementId ->
+            physicalRuntime.settledNodeRuntime.stashSharedHolderPromotion(elementId)
+        }
+        sharedCoverRegistry.attachPhysicalPromotionActivator(owner) { elementId, source, transitionKey ->
+            val runtime = physicalRuntime.settledNodeRuntime
+            val activated = runtime.activateStashedSharedHolder(elementId)
+            if (activated) {
+                // HeaderToItem may start after the user scrolled the child header. The parked
+                // concrete View still carries its ItemToHeader commit geometry, so first snap it
+                // to the live source header LayoutRes, then let the transition clock move it to
+                // the destination item. Reuse the live collection-header slot.
+                runtime.updateSharedHolderGeometry(
+                    transitionKey = "$transitionKey:source",
+                    target = source,
+                    progressProvider = null,
+                    animateFromCurrent = false,
+                )
+            }
+            activated
+        }
+        sharedCoverRegistry.attachPhysicalPromotionStashClearer(owner) {
+            physicalRuntime.settledNodeRuntime.clearStashedSharedHolders()
+        }
+        sharedCoverRegistry.attachPhysicalRoleEndpointResolver(owner) { sceneId, elementId, retainedRole ->
+            physicalRuntime.settledNodeRuntime.resolveOuterSharedCoverEndpoint(
+                sceneId = sceneId,
+                elementId = elementId,
+                retainedRole = retainedRole,
+            )
+        }
         sharedCoverRegistry.attachPhysicalPromotionLiveness(owner) { elementId ->
             physicalRuntime.settledNodeRuntime.hasPromotedSharedHolder(elementId)
         }
         sharedCoverRegistry.attachPhysicalEndpointListener(owner) { snapshot ->
-            if (sharedTransitionActiveState.value) return@attachPhysicalEndpointListener
+            val requested = requestedSceneState.value
+            val localProviderMotionActive = registry[requested]?.providerNavigationActive == true
+            if (sharedTransitionActiveState.value || localProviderMotionActive) {
+                return@attachPhysicalEndpointListener
+            }
             val session = sharedCoverRegistry.collectionSessionSnapshot()
-                ?: return@attachPhysicalEndpointListener
-            if (
-                session.elementId != snapshot.elementId ||
-                session.detailSceneId != snapshot.sceneId ||
-                requestedSceneState.value.name != session.detailSceneId
-            ) return@attachPhysicalEndpointListener
-            physicalRuntime.settledNodeRuntime.updateSharedHolderGeometry(
-                transitionKey = "detail:${session.elementId}",
-                target = snapshot,
-                progressProvider = null,
-                animateFromCurrent = false,
-            )
+            if (session != null) {
+                if (
+                    session.elementId != snapshot.elementId ||
+                    session.detailSceneId != snapshot.sceneId ||
+                    requested.name != session.detailSceneId
+                ) return@attachPhysicalEndpointListener
+                physicalRuntime.settledNodeRuntime.updateSharedHolderGeometry(
+                    transitionKey = "detail:${session.elementId}",
+                    target = snapshot,
+                    progressProvider = null,
+                    animateFromCurrent = false,
+                )
+            }
         }
         sharedCoverRegistry.attachCollectionReturnTargetPreparer(owner) returnPreparer@{ session ->
             val targetScene = NavScene.entries.firstOrNull { it.name == session.listSceneId }
@@ -342,6 +498,10 @@ internal fun ReferenceLibraryVirtualListHost(
         }
         onDispose {
             sharedCoverRegistry.detachPhysicalPromotionStarter(owner)
+            sharedCoverRegistry.detachPhysicalPromotionStasher(owner)
+            sharedCoverRegistry.detachPhysicalPromotionActivator(owner)
+            sharedCoverRegistry.detachPhysicalPromotionStashClearer(owner)
+            sharedCoverRegistry.detachPhysicalRoleEndpointResolver(owner)
             sharedCoverRegistry.detachPhysicalPromotionLiveness(owner)
             sharedCoverRegistry.detachPhysicalPromotionCanceller(owner)
             sharedCoverRegistry.detachPhysicalReturnFinalizer(owner)
@@ -520,6 +680,49 @@ internal fun ReferenceLibraryVirtualListHost(
         }
     }
 
+    /**
+     * Keep both navigation scene children attached for GenericPivot and animate their
+     * properties from the same scene clock. Raw already has the matching ENTER chrome renderer in
+     * LibraryTopChromeTransitionOverlay, but until now no owner ever provided
+     * LocalReferenceLibraryTopChromeOverlayOnly=true. As a result the source TopNav could EXIT,
+     * while the destination title/text/actions were first composed only after commit and appeared
+     * instantly in their IDLE state.
+     *
+     * Keep this deliberately chrome-only: destination provider/list preparation remains owned by
+     * ProviderPreflight and the one persistent VirtualList. The page returns immediately after
+     * composing LibraryTopChromeTransitionOverlay when the local below is true.
+     */
+    @Composable
+    fun IncomingTopChrome(scene: NavScene) {
+        if (scene == presentationScene || scene !in ReferenceLibraryTopChromeScenes) return
+        val sceneProviderIdentity = roleProviderIdentity(scene)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(30f),
+        ) {
+            CompositionLocalProvider(
+                LocalReferenceLibraryProviderScene provides scene,
+                LocalReferenceLibraryProviderIdentity provides sceneProviderIdentity,
+                LocalReferenceLibraryBodyRender provides false,
+                LocalReferenceLibraryProviderPublicationOnly provides false,
+                LocalReferenceLibraryFullScenePreflight provides false,
+                LocalReferenceLibraryTopChromeOverlayOnly provides true,
+                LocalReferenceRetainedVirtualListProvider provides null,
+                LocalVirtualListPersistentRuntime provides physicalRuntime,
+                LocalVirtualListPresentationHostExternal provides true,
+                LocalSceneBackgroundFrozen provides true,
+                LocalUiFrameAnimationActive provides false,
+                LocalReferenceRetainedLibraryPopulation provides false,
+                LocalRetainedSceneMotionActive provides true,
+                LocalRetainedScenePreflightOwnership provides true,
+                LocalRetainedSceneItemTransform provides null,
+            ) {
+                currentContent(scene)
+            }
+        }
+    }
+
     CompositionLocalProvider(
         LocalReferenceLibraryLayoutFrame provides effectiveFrame,
         LocalReferenceLibraryProviderRegistry provides registry,
@@ -539,17 +742,42 @@ internal fun ReferenceLibraryVirtualListHost(
         // One retained-layout VirtualList presentation owner for the complete library lifetime.
         // Pages only publish their viewport/provider/LayoutRes into the persistent runtime; this
         // Modifier.Node never moves between HOME/category parents.
-        Box(
-            modifier = modifier
-                .fillMaxSize()
-                .onGloballyPositioned { coordinates ->
-                    val bounds = coordinates.boundsInRoot()
-                    physicalRuntime.settledNodeRuntime.updatePresentationHostBoundsInRoot(
-                        left = bounds.left,
-                        top = bounds.top,
+        Box(modifier = modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .widthIn(max = windowLayoutProfile.contentMaxWidth)
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+                    .align(Alignment.Center),
+            ) {
+                if (windowLayoutProfile.supportsPersistentLibraryRail) {
+                    PersistentLibraryRail(
+                        selectedScene = presentationScene,
+                        onNavigate = onNavigate,
+                        modifier = Modifier
+                            .width(windowLayoutProfile.libraryRailWidth)
+                            .fillMaxHeight()
+                            .padding(
+                                top = libraryRailTopInset + 16.dp,
+                                bottom = libraryRailBottomInset + 16.dp,
+                            ),
                     )
-                },
-        ) {
+                    Spacer(Modifier.width(windowLayoutProfile.libraryRailGap))
+                }
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .widthIn(max = windowLayoutProfile.libraryContentMaxWidth)
+                    .fillMaxHeight()
+                    .onGloballyPositioned { coordinates ->
+                        val bounds = coordinates.boundsInRoot()
+                        physicalRuntime.settledNodeRuntime.updatePresentationHostBoundsInRoot(
+                            left = bounds.left,
+                            top = bounds.top,
+                        )
+                    },
+            ) {
             when (ReferenceLibraryPresentationHostBackend) {
                 VirtualListPresentationHostBackend.COMPOSE_NODE -> {
                     Box(
@@ -577,6 +805,7 @@ internal fun ReferenceLibraryVirtualListHost(
             VisibleController(presentationScene)
             transitionStandbyScene?.let { standby ->
                 ProviderPreflight(standby)
+                IncomingTopChrome(standby)
             }
 
             // One fixed VirtualList body consumes the provider pair. Only these record references
@@ -619,9 +848,17 @@ internal fun ReferenceLibraryVirtualListHost(
                             ),
                     )
                 }
+                if (controllerVisible && currentScene == NavScene.HOME && !effectiveFrame.active) {
+                    bodyProvider.state?.let { homeState ->
+                        com.rawsmusic.core.ui.widget.index.LibraryScrollThumb(
+                            state = homeState,
+                            modifier = Modifier.align(Alignment.CenterEnd).zIndex(35f),
+                        )
+                    }
+                }
             }
 
-            if (!controllerVisible) {
+                if (!controllerVisible) {
                 // reference player does not destroy the attached HOME/category Views merely because a
                 // Settings/other scene covers VirtualList. Ordinary Raw holders already survive in
                 // settledNodeRuntime; heterogeneous HOME/category holders are Compose-backed and
@@ -645,6 +882,8 @@ internal fun ReferenceLibraryVirtualListHost(
                     }
                     }
                 }
+                }
+            }
             }
         }
     }

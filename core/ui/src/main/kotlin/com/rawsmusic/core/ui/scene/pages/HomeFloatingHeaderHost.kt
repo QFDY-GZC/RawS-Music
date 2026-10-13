@@ -286,6 +286,11 @@ internal fun BoxScope.HomeFloatingHeaderHost(
         longPressSpringEnabled = options.floatingLongPressSpringEnabled,
     )
 
+    val actionContentColor = if (mainButtonsSurface == LibraryBottomButtonsSurface.SOLID) {
+        MiuixTheme.colorScheme.onSurface
+    } else {
+        referenceStaticForeground(MiuixTheme.colorScheme.onSurface)
+    }
     Box(modifier = Modifier.fillMaxSize()) {
         if (options.topFeatherEnabled) {
             // Deliberately keep this compact. Strong mode fully merges the very top into the
@@ -348,7 +353,7 @@ internal fun BoxScope.HomeFloatingHeaderHost(
                     Icon(
                         painter = painterResource(R.drawable.ic_home_hamburger),
                         contentDescription = stringResource(R.string.home_header_menu_action),
-                        tint = referenceStaticForeground(MiuixTheme.colorScheme.onSurface),
+                        tint = actionContentColor,
                         modifier = Modifier.size(24.dp),
                     )
                 }
@@ -390,7 +395,7 @@ internal fun BoxScope.HomeFloatingHeaderHost(
                         Icon(
                             painter = painterResource(R.drawable.ic_palette),
                             contentDescription = stringResource(R.string.flow_background_action),
-                            tint = referenceStaticForeground(MiuixTheme.colorScheme.onSurface),
+                            tint = actionContentColor,
                             modifier = Modifier.size(24.dp),
                         )
                     }
@@ -403,7 +408,7 @@ internal fun BoxScope.HomeFloatingHeaderHost(
                             Icon(
                                 imageVector = MiuixIcons.Regular.Settings,
                                 contentDescription = stringResource(R.string.bottom_nav_settings),
-                                tint = referenceStaticForeground(MiuixTheme.colorScheme.onSurface),
+                                tint = actionContentColor,
                                 modifier = Modifier.size(24.dp),
                             )
                         }

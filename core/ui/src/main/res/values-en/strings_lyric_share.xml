@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="lyric_share_video_title">Create lyric video</string>
+    <string name="lyric_share_video_summary">Export a continuous lyric range as a video with the flow background and lyric effects</string>
+    <string name="lyric_share_poster_title">Share lyric poster</string>
+    <string name="lyric_share_poster_summary">Turn selected lyrics into a shareable image</string>
+    <string name="lyric_share_select_hint">Tap the first and last line to select a continuous range</string>
+    <string name="lyric_share_poster_select_hint">Choose any six lines, or make an artwork-only poster</string>
+    <string name="lyric_share_poster_selected">%1$d / %2$d lines selected</string>
+    <string name="lyric_share_select_all">Select all</string>
+    <string name="lyric_share_selected">%1$d lines · %2$s</string>
+    <string name="lyric_share_no_lyrics">This song has no lyrics. Choose a time range instead.</string>
+    <string name="lyric_share_range">%1$s – %2$s</string>
+    <string name="lyric_share_aspect">Aspect</string>
+    <string name="lyric_share_resolution">Resolution</string>
+    <string name="lyric_share_frame_rate">Frame rate</string>
+    <string name="lyric_share_codec">Codec</string>
+    <string name="lyric_share_unsupported">This device can\'t encode this resolution, frame rate and codec combination</string>
+    <string name="lyric_share_export">Export</string>
+    <string name="lyric_share_exporting">Exporting… %1$d%%</string>
+    <string name="lyric_share_exporting_hint">Stay on this screen while exporting</string>
+    <string name="lyric_share_cancel">Cancel</string>
+    <string name="lyric_share_share">Share</string>
+    <string name="lyric_share_save">Save to gallery</string>
+    <string name="lyric_share_done">Done</string>
+    <string name="lyric_share_saved">Saved to %1$s</string>
+    <string name="lyric_share_failed">Export failed: %1$s</string>
+    <string name="lyric_share_generate_poster">Create poster</string>
+    <string name="lyric_share_generating_poster">Creating poster…</string>
+    <string name="lyric_share_regenerate">Change selection</string>
+</resources>

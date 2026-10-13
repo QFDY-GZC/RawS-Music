@@ -1,7 +1,13 @@
 package com.rawsmusic.core.ui.widget.player
 
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.TextUnit
+import com.rawsmusic.core.common.model.rubySyllables
 import androidx.compose.material3.Text
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -14,16 +20,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.layer.CompositingStrategy
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.AlignmentLine
 import androidx.compose.ui.layout.FirstBaseline
@@ -33,9 +43,11 @@ import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -52,22 +64,21 @@ import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 // Keep the karaoke gradient feather width as an explicit local rendering parameter.
-// archive does not contain resource values. Keep the fallback centralized; the gradient geometry
-// and progress math below match reference karaoke lyric renderer.
-private val AM_KARAOKE_FEATHER_WIDTH_FALLBACK = 12.dp
-// Keep the emphasis shadow radius as an explicit local rendering parameter.
-// missing from the reference material. Keep the fallback in one place so it can be replaced when
-// resources.arsc/dimens.xml is available.
-private val AM_KARAOKE_EMPHASIS_SHADOW_RADIUS_FALLBACK = 5.dp
-private const val AM_KARAOKE_EMPHASIS_MIN_DURATION_MS = 1_000L
-private const val AM_KARAOKE_EMPHASIS_SCALE_MAX_DURATION_MS = 2_000L
-private const val AM_KARAOKE_EMPHASIS_ANIMATION_MAX_DURATION_MS = 3_000L
-private const val AM_KARAOKE_EMPHASIS_MAX_GLYPHS = 7
-private const val AM_KARAOKE_EMPHASIS_MAX_SCALE_DELTA = 0.14f
-private const val AM_KARAOKE_EMPHASIS_SHADOW_ALPHA = 0.5019608f // round(127.5) / 255
-private const val AM_KARAOKE_EMPHASIS_STAGGER_FRACTION = 0.4f
-private const val AM_KARAOKE_EMPHASIS_MAX_STAGGER_MS = 400f
-private val AM_KARAOKE_EMPHASIS_EASING = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f)
+// Gradient feather width is 30dp; emphasis shadow radius is 5dp, with peak alpha 0.5.
+private val KARAOKE_FEATHER_WIDTH = 30.dp
+private val KARAOKE_EMPHASIS_SHADOW_RADIUS = 5.dp
+private const val KARAOKE_EMPHASIS_SCALE_MAX_DELTA = 0.14f
+private const val KARAOKE_EMPHASIS_GLOW_MAX = 0.5f
+
+// Use source duration for long-note eligibility and scale. The lyric model does not
+// expose its emphasis metadata, so duration remains a fallback for scale only.
+private const val KARAOKE_EMPHASIS_FALLBACK_MIN_DURATION_MS = 1_000L
+private const val KARAOKE_EMPHASIS_FALLBACK_SCALE_MAX_DURATION_MS = 2_000L
+private const val KARAOKE_EMPHASIS_ANIMATION_MAX_DURATION_MS = 3_000L
+private const val KARAOKE_EMPHASIS_MAX_GLYPHS = 7
+private const val KARAOKE_EMPHASIS_STAGGER_FRACTION = 0.4f
+private const val KARAOKE_EMPHASIS_MAX_STAGGER_MS = 400f
+private val KARAOKE_EMPHASIS_EASING = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f)
 
 private data class LyricFloatUpRenderSpec(
     val peakLiftPx: Float,
@@ -91,7 +102,7 @@ private data class DirectKaraokeHighlightRenderSpec(
 private fun lyricElapsedMs(positionMs: Long, beginMs: Long): Float =
     if (positionMs <= beginMs) 0f else (positionMs - beginMs).toFloat()
 
-private fun amKaraokeFeatherScaleForText(text: String): Float {
+private fun karaokeFeatherScaleForText(text: String): Float {
     // reference karaoke word renderer does not use one global feather width. For ordinary karaoke words
     // whose exact Flex-line edge metadata is unavailable in Compose, its stable non-edge branch
     // scales the resource width by 0.5 for very short words and 0.25 for longer words. Keep that
@@ -109,7 +120,7 @@ private fun amKaraokeFeatherScaleForText(text: String): Float {
 // These scripts stay in the shaped-word lane instead of the
 // split-on-glyph emphasis lane because splitting would break script shaping. CJK/Kana are the
 // exception: multi-glyph long notes are explicitly allowed through the split lane.
-private val AM_KARAOKE_SHAPED_SCRIPT_BLOCKS = setOf(
+private val KARAOKE_SHAPED_SCRIPT_BLOCKS = setOf(
     Character.UnicodeBlock.THAI,
     Character.UnicodeBlock.ARABIC,
     Character.UnicodeBlock.ARABIC_SUPPLEMENT,
@@ -121,8 +132,6 @@ private val AM_KARAOKE_SHAPED_SCRIPT_BLOCKS = setOf(
     Character.UnicodeBlock.HANGUL_JAMO,
     Character.UnicodeBlock.HANGUL_COMPATIBILITY_JAMO,
 )
-
-
 /**
  * True only when this line still contains a visual owner that is composition-position-driven.
  *
@@ -139,7 +148,7 @@ internal fun lyricLineNeedsCompositionPosition(line: IRichLyricLine): Boolean {
     val timedWords = if (backgroundOnly) line.secondaryWords.orEmpty() else line.words.orEmpty()
     return timedWords.any { word ->
         val duration = (word.end - word.begin).coerceAtLeast(0L)
-        duration >= AM_KARAOKE_EMPHASIS_MIN_DURATION_MS
+        duration >= KARAOKE_EMPHASIS_FALLBACK_MIN_DURATION_MS
     }
 }
 
@@ -217,10 +226,33 @@ internal fun KaraokeTimedText(
     positionState: State<Long>? = null,
     positionFractionState: State<Float>? = null,
     renderClock: LyricDirectRenderClock? = null,
+    showRuby: Boolean = false,
+    rubyFontSize: TextUnit = fontSize * 0.45f,
     modifier: Modifier = Modifier
-) {
-    if (words.isEmpty() || text.isBlank()) return
-    val segments = remember(text, words) { buildLyricSegments(text, words) }
+) = BoxWithConstraints(modifier = modifier) {
+    if (words.isEmpty() || text.isBlank()) return@BoxWithConstraints
+    val style = LocalTextStyle.current.merge(TextStyle(
+        // The flow owns paragraph spacing. A single token must not reserve that gap again.
+        localeList = lyricGlyphLocales(text), fontSize = fontSize, lineHeight = fontSize,
+        platformStyle = PlatformTextStyle(includeFontPadding = false),
+        lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both),
+        fontWeight = fontWeight, fontFamily = fontFamily,
+    ))
+    val textMeasurer = rememberTextMeasurer()
+    val availableWidth = constraints.maxWidth
+    val segments = remember(text, words, style, availableWidth, textMeasurer) {
+        buildLyricSegments(text, words).flatMap { segment ->
+            if (segment is LyricSegment.Word && segment.word.rubySyllables().isNotEmpty()) listOf(segment)
+            else splitWideLyricText(segment.text, availableWidth) { part ->
+                textMeasurer.measure(part.trimEnd('\n'), style = style, softWrap = false, maxLines = 1).size.width
+            }.map { part ->
+                when (segment) {
+                    is LyricSegment.Space -> segment.copy(text = part)
+                    is LyricSegment.Word -> segment.copy(text = part)
+                }
+            }
+        }
+    }
     val lyricLineGeometry = remember(segments, lineEndMs) {
         LyricLineFloatUpGeometry(
             segments.map { segment ->
@@ -250,14 +282,27 @@ internal fun KaraokeTimedText(
             )
         }
     }
-    val style = TextStyle(
-        fontSize = fontSize, lineHeight = lineHeight,
-        fontWeight = fontWeight, fontFamily = fontFamily
-    )
+    val rubyStyle = style.copy(fontSize = rubyFontSize,
+        lineHeight = rubyFontSize, fontWeight = FontWeight.Medium)
+    val hasRuby = remember(words, showRuby) { showRuby && words.any { it.rubySyllables().isNotEmpty() } }
+    val rowRubyText = remember(words) {
+        words.flatMap { it.rubySyllables() }.joinToString("") { it.text }.ifEmpty { "かな" }
+    }
+    val rubyInk = rememberLyricInkBounds(rowRubyText, rubyStyle)
+    val rowBaseInk = rememberLyricInkBounds(text, style)
+    val density = LocalDensity.current
+    val textScalePx = with(density) { fontSize.toPx() }
+    val rubyPeakLiftPx = with(density) {
+        LyricFloatUpSpec.peakLiftPx(textScalePx, wordLiftDp.toPx(), LyricFloatUpSpec.ENABLED_PERCENTAGE)
+    }
 
     BaselineFlowRow(
-        modifier = modifier,
+        modifier = Modifier,
         textAlign = textAlign,
+        rowSpacing = with(density) { LyricRubySpacingSpec.flowGapPx(
+            (lineHeight.toPx() - fontSize.toPx()).roundToInt(),
+            if (hasRuby) rubyInk.height + 2.dp.roundToPx() else 0) },
+        sequentialWrap = hasRuby,
         wrapTexts = segments.map { it.text },
         onChildPlaced = { index, leftPx, widthPx, lineIndex ->
             lyricLineGeometry.updatePlacement(index, leftPx, widthPx, lineIndex)
@@ -274,24 +319,32 @@ internal fun KaraokeTimedText(
                         nextWordBeginMs = segment.nextWordBeginMs,
                         lineEndMs = lineEndMs,
                     )
-                    // Use LyricsWord.getDuration() for long-note emphasis. Keep that raw word
-                    // duration separate from RawSMusic's sweep end, which may be clipped to the
-                    // next word begin to avoid karaoke-color overlap.
+                    // Eligibility uses source duration. Ordinary words clip overlapping timing,
+                    // but sustained-word color and bloom must share the original timed interval.
                     val emphasisEndMs = segment.word.end
                         .takeIf { it > timingBounds.beginMs }
                         ?: timingBounds.endMs
                     val coreText = remember(segment.text) { segment.text.trimEnd() }
-                    val glyphCount = remember(coreText) { splitGraphemeClusters(coreText).size }
-                    val emphasisEligible = remember(coreText, timingBounds.beginMs, emphasisEndMs, glyphCount) {
+                    val emphasisEligible = remember(coreText, timingBounds.beginMs, emphasisEndMs) {
                         isAMLongNoteEmphasisEligible(
                             text = coreText,
                             durationMs = (emphasisEndMs - timingBounds.beginMs).coerceAtLeast(1L),
-                            glyphCount = glyphCount,
                         )
                     }
                     val directOrdinaryWord = lineRenderDispatcher != null &&
                         !emphasisEligible && abs(wordLiftScale) <= 0.0001f
+                    val sweepBounds = timingBounds.copy(endMs = lyricWordSweepEnd(
+                        beginMs = timingBounds.beginMs,
+                        sourceEndMs = segment.word.end,
+                        nextBeginMs = segment.nextWordBeginMs,
+                        lineEndMs = lineEndMs,
+                        sustained = emphasisEligible,
+                    ))
 
+                    val ruby = remember(segment.word, showRuby) {
+                        if (showRuby) segment.word.rubySyllables() else emptyList()
+                    }
+                    val baseContent: @Composable () -> Unit = {
                     if (directOrdinaryWord) {
                         // The common karaoke path is completely position-callback independent.
                         // begin/end, typography and geometry are immutable for the word; both the
@@ -299,22 +352,22 @@ internal fun KaraokeTimedText(
                         // draw. This lets Compose skip this subtree when PlayerController publishes
                         // another coarse position sample.
                         DirectKaraokeWordGroup(
-                            text = segment.text,
+                            text = segment.text.trimEnd('\n'),
                             wordBeginMs = timingBounds.beginMs,
                             wordEndMs = timingBounds.endMs,
                             highlightColor = highlightColor,
                             dimColor = dimColor,
                             style = style,
                             wordLiftDp = wordLiftDp,
-                            liftEnabled = liftEnabled,
+                            liftEnabled = liftEnabled && ruby.isEmpty(),
                             segmentIndex = segmentIndex,
                             lyricLineGeometry = lyricLineGeometry,
                             lineDispatcher = requireNotNull(lineRenderDispatcher),
                         )
                     } else {
-                        val timing = wordTimingState(positionMs, timingBounds)
+                        val timing = wordTimingState(positionMs, sweepBounds)
                         KaraokeWordGroup(
-                            text = segment.text,
+                            text = segment.text.trimEnd('\n'),
                             progress = timing.progress,
                             wordBeginMs = timing.beginMs,
                             wordEndMs = timing.endMs,
@@ -327,7 +380,7 @@ internal fun KaraokeTimedText(
                             wordLiftDp = wordLiftDp,
                             wordLiftScale = wordLiftScale,
                             glowEnabled = glowEnabled,
-                            liftEnabled = liftEnabled,
+                            liftEnabled = liftEnabled && ruby.isEmpty(),
                             segmentIndex = segmentIndex,
                             lyricLineGeometry = lyricLineGeometry,
                             positionState = positionState,
@@ -336,6 +389,49 @@ internal fun KaraokeTimedText(
                             lineDispatcher = lineRenderDispatcher,
                         )
                     }
+                    }
+                    if (ruby.isEmpty()) baseContent() else RubyWordLayout(
+                        annotationInk = rubyInk,
+                        baseInk = rememberLyricInkBounds(segment.text, style),
+                        rowBaseInkTop = rowBaseInk.top,
+                        modifier = (if (!liftEnabled) Modifier else if (lineRenderDispatcher != null || renderClock != null) {
+                            Modifier.lyricFloatUpDraw(clock = renderClock, lineDispatcher = lineRenderDispatcher,
+                                peakLiftPx = rubyPeakLiftPx, textScalePx = textScalePx,
+                                segmentIndex = segmentIndex, lineGeometry = lyricLineGeometry)
+                        } else Modifier.drawWithContent {
+                            val position = positionFractionState?.value ?: (positionState?.value ?: positionMs).toFloat()
+                            val lift = lyricLineGeometry.fractionForLocalCenter(segmentIndex,
+                                size.width * 0.5f, position, textScalePx)
+                            translate(top = -rubyPeakLiftPx * lift) { this@drawWithContent.drawContent() }
+                        }).let { motion ->
+                            if (liftEnabled) motion.lyricSubpixelTextLayer(paddingPx = rubyPeakLiftPx + 2f) else motion
+                        },
+                        annotation = {
+                            BaselineFlowRow(textAlign = TextAlign.Center, sequentialWrap = true,
+                                fillAvailableWidth = false,
+                                wrapTexts = ruby.map { it.text }) {
+                                ruby.forEach { syllable ->
+                                    val begin = syllable.begin ?: timingBounds.beginMs
+                                    val end = (syllable.end ?: timingBounds.endMs).coerceAtLeast(begin + 1)
+                                    ProgressiveLyricText(
+                                        text = syllable.text,
+                                        progress = wordTimingState(positionMs,
+                                            WordTimingBounds(begin, end)).progress,
+                                        highlightColor = highlightColor,
+                                        dimColor = dimColor,
+                                        style = rubyStyle,
+                                        shadowAlpha = 0f,
+                                        shadowRadiusPx = 0f,
+                                        rtl = isTextRtl(syllable.text),
+                                        directHighlightRenderSpec = if (lineRenderDispatcher != null || renderClock != null) {
+                                            DirectKaraokeHighlightRenderSpec(lineRenderDispatcher, renderClock, begin, end)
+                                        } else null,
+                                    )
+                                }
+                            }
+                        },
+                        base = baseContent,
+                    )
                 }
             }
         }
@@ -358,32 +454,112 @@ internal fun KaraokeTimedMeasureText(
     fontWeight: FontWeight,
     fontFamily: FontFamily?,
     textAlign: TextAlign,
+    showRuby: Boolean = false,
+    rubyFontSize: TextUnit = fontSize * 0.45f,
     modifier: Modifier = Modifier,
-) {
-    if (words.isEmpty() || text.isBlank()) return
-    val segments = remember(text, words) { buildLyricSegments(text, words) }
-    val style = TextStyle(
+) = BoxWithConstraints(modifier = modifier) {
+    if (words.isEmpty() || text.isBlank()) return@BoxWithConstraints
+    val style = LocalTextStyle.current.merge(TextStyle(
+        localeList = lyricGlyphLocales(text),
         fontSize = fontSize,
-        lineHeight = lineHeight,
+        lineHeight = fontSize,
+        platformStyle = PlatformTextStyle(includeFontPadding = false),
+        lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both),
         fontWeight = fontWeight,
         fontFamily = fontFamily,
-    )
+    ))
+    val textMeasurer = rememberTextMeasurer()
+    val availableWidth = constraints.maxWidth
+    val segments = remember(text, words, style, availableWidth, textMeasurer) {
+        buildLyricSegments(text, words).flatMap { segment ->
+            if (segment is LyricSegment.Word && segment.word.rubySyllables().isNotEmpty()) listOf(segment)
+            else splitWideLyricText(segment.text, availableWidth) { part ->
+                textMeasurer.measure(part.trimEnd('\n'), style = style, softWrap = false, maxLines = 1).size.width
+            }.map { part ->
+                when (segment) {
+                    is LyricSegment.Space -> segment.copy(text = part)
+                    is LyricSegment.Word -> segment.copy(text = part)
+                }
+            }
+        }
+    }
+    val rubyStyle = style.copy(fontSize = rubyFontSize,
+        lineHeight = rubyFontSize, fontWeight = FontWeight.Medium)
+    val hasRuby = remember(words, showRuby) { showRuby && words.any { it.rubySyllables().isNotEmpty() } }
+    val rowRubyText = remember(words) {
+        words.flatMap { it.rubySyllables() }.joinToString("") { it.text }.ifEmpty { "かな" }
+    }
+    val rubyInk = rememberLyricInkBounds(rowRubyText, rubyStyle)
+    val rowBaseInk = rememberLyricInkBounds(text, style)
     BaselineFlowRow(
-        modifier = modifier,
+        modifier = Modifier,
         textAlign = textAlign,
+        rowSpacing = with(LocalDensity.current) { LyricRubySpacingSpec.flowGapPx(
+            (lineHeight.toPx() - fontSize.toPx()).roundToInt(),
+            if (hasRuby) rubyInk.height + 2.dp.roundToPx() else 0) },
+        sequentialWrap = hasRuby,
         wrapTexts = segments.map { it.text },
     ) {
         segments.forEach { segment ->
+            val ruby = remember(segment, showRuby) {
+                if (showRuby && segment is LyricSegment.Word) segment.word.rubySyllables() else emptyList()
+            }
+            val base: @Composable () -> Unit = {
             StaticLyricText(
                 text = segment.text,
                 color = Color.Transparent,
                 style = style,
+            )
+            }
+            if (ruby.isEmpty()) base() else RubyWordLayout(
+                annotationInk = rubyInk,
+                baseInk = rememberLyricInkBounds(segment.text, style),
+                rowBaseInkTop = rowBaseInk.top,
+                annotation = {
+                    BaselineFlowRow(textAlign = TextAlign.Center, sequentialWrap = true,
+                        fillAvailableWidth = false,
+                        wrapTexts = ruby.map { it.text }) {
+                        ruby.forEach { syllable -> StaticLyricText(syllable.text, Color.Transparent,
+                            rubyStyle) }
+                    }
+                }, base = base,
             )
         }
     }
 }
 
 // ========== Word Group ==========
+
+/** One wrapping unit; expose the base's baseline, not the pronunciation's baseline. */
+@Composable
+private fun RubyWordLayout(annotationInk: LyricInkBounds, baseInk: LyricInkBounds,
+    rowBaseInkTop: Int = baseInk.top,
+    modifier: Modifier = Modifier,
+    annotation: @Composable () -> Unit, base: @Composable () -> Unit) {
+    Layout(modifier = modifier, content = { annotation(); base() }) { measurables, constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val annotationPlaceable = measurables[0].measure(loose)
+        val basePlaceable = measurables[1].measure(loose)
+        val gap = 2.dp.roundToPx()
+        val width = maxOf(annotationPlaceable.width, basePlaceable.width).coerceIn(constraints.minWidth, constraints.maxWidth)
+        val annotationBaseline = annotationPlaceable[FirstBaseline].let {
+            if (it == AlignmentLine.Unspecified) annotationPlaceable.height else it
+        }
+        val baseline = basePlaceable[FirstBaseline].let {
+            if (it == AlignmentLine.Unspecified) basePlaceable.height else it
+        }
+        val annotationLast = annotationPlaceable[LastBaseline].takeIf { it != AlignmentLine.Unspecified } ?: annotationBaseline
+        val baseLast = basePlaceable[LastBaseline].takeIf { it != AlignmentLine.Unspecified } ?: baseline
+        val placement = rubyInkPlacement(annotationBaseline, annotationLast, annotationInk.top, annotationInk.bottom,
+            baseline, baseLast, baseInk.top, baseInk.bottom, gap, rowBaseInkTop)
+        val height = placement.height
+            .coerceIn(constraints.minHeight, constraints.maxHeight)
+        layout(width, height, mapOf(FirstBaseline to placement.firstBaseline, LastBaseline to placement.lastBaseline)) {
+            annotationPlaceable.placeRelative((width - annotationPlaceable.width) / 2, placement.annotationTop)
+            basePlaceable.placeRelative((width - basePlaceable.width) / 2, placement.baseTop)
+        }
+    }
+}
 
 @Composable
 private fun DirectKaraokeWordGroup(
@@ -412,7 +588,7 @@ private fun DirectKaraokeWordGroup(
             },
         )
     }
-    val shadowRadiusPx = with(density) { AM_KARAOKE_EMPHASIS_SHADOW_RADIUS_FALLBACK.toPx() }
+    val shadowRadiusPx = with(density) { KARAOKE_EMPHASIS_SHADOW_RADIUS.toPx() }
     val lyricSpec = if (liftEnabled) {
         LyricFloatUpRenderSpec(
             peakLiftPx = maxLiftPx,
@@ -485,10 +661,9 @@ private fun KaraokeWordGroup(
             },
         )
     }
-    val shadowRadiusPx = with(density) { AM_KARAOKE_EMPHASIS_SHADOW_RADIUS_FALLBACK.toPx() }
+    val shadowRadiusPx = with(density) { KARAOKE_EMPHASIS_SHADOW_RADIUS.toPx() }
 
     val coreText = remember(text) { text.trimEnd() }
-    val suffix = remember(text, coreText) { text.substring(coreText.length) }
     val glyphs = remember(coreText) { splitGraphemeClusters(coreText) }
     val fallbackWordWidthPx = textScalePx * glyphs.size.coerceAtLeast(1)
     var measuredWordWidthPx by remember(
@@ -498,11 +673,10 @@ private fun KaraokeWordGroup(
         style.fontFamily,
         style.letterSpacing,
     ) { mutableFloatStateOf(fallbackWordWidthPx) }
-    val emphasisEligible = remember(coreText, wordBeginMs, emphasisEndMs, glyphs) {
+    val emphasisEligible = remember(coreText, wordBeginMs, emphasisEndMs) {
         isAMLongNoteEmphasisEligible(
             text = coreText,
             durationMs = (emphasisEndMs - wordBeginMs).coerceAtLeast(1L),
-            glyphCount = glyphs.size,
         )
     }
 
@@ -549,6 +723,19 @@ private fun KaraokeWordGroup(
     } else {
         null
     }
+    val emphasisFloatUpRenderSpec = lyricFloatUpRenderSpec ?: if (liftEnabled) {
+        LyricFloatUpRenderSpec(
+            peakLiftPx = maxLiftPx,
+            textScalePx = textScalePx,
+            segmentIndex = segmentIndex,
+            lineGeometry = lyricLineGeometry,
+            fallbackPositionMs = positionMs,
+            lineDispatcher = lineDispatcher,
+            renderClock = renderClock.takeIf { lineDispatcher == null },
+            positionState = positionState,
+            positionFractionState = positionFractionState,
+        )
+    } else null
     val directHighlightRenderSpec = when {
         lineDispatcher != null -> DirectKaraokeHighlightRenderSpec(
             lineDispatcher = lineDispatcher,
@@ -595,49 +782,13 @@ private fun KaraokeWordGroup(
     } else {
         Modifier
     }
-    val shapedEmphasisModifier = when (lyricSamplingMode) {
-        LyricFrameSamplingMode.STATIC_UP -> Modifier.graphicsLayer {
-            translationY = -maxLiftPx
-            val legacyScale = 1f + wordLiftScale
-            scaleX = legacyScale
-            scaleY = legacyScale
-            transformOrigin = TransformOrigin(0.5f, 1f)
-        }
-        LyricFrameSamplingMode.ANIMATED -> if (
-            (lineDispatcher != null || renderClock != null) && abs(wordLiftScale) <= 0.0001f
-        ) {
-            // Direct draw invalidation. Ordinary lines use one line dispatcher; legacy/emphasis
-            // callers may still fall back to the surface clock.
-            Modifier.lyricFloatUpDraw(
-                clock = renderClock.takeIf { lineDispatcher == null },
-                lineDispatcher = lineDispatcher,
-                peakLiftPx = maxLiftPx,
-                textScalePx = textScalePx,
-                segmentIndex = segmentIndex,
-                lineGeometry = lyricLineGeometry,
-                wholeLocalCenterPx = measuredWordWidthPx.coerceAtLeast(1f) * 0.5f,
-            )
-        } else {
-            Modifier.graphicsLayer {
-                val framePositionMs = positionFractionState?.value
-                    ?: (positionState?.value ?: positionMs).toFloat()
-                val liftFraction = currentLineLiftFraction(framePositionMs)
-                translationY = -maxLiftPx * liftFraction
-                val legacyScale = 1f + wordLiftScale * liftFraction
-                scaleX = legacyScale
-                scaleY = legacyScale
-                transformOrigin = TransformOrigin(0.5f, 1f)
-            }
-        }
-        LyricFrameSamplingMode.STATIC_DOWN -> Modifier
-    }
-
-    val splitEmphasis = emphasisEligible && shouldSplitAMLongNoteEmphasis(coreText, glyphs)
     when {
         emphasisEligible && renderClock != null -> {
+            val visualParts = remember(coreText) { longNoteVisualParts(coreText) }
+            val suffix = text.substring(coreText.length)
             DirectEmphasisWord(
-                parts = if (splitEmphasis) glyphs + listOfNotNull(suffix.takeIf { it.isNotEmpty() }) else listOf(text),
-                emphasisCount = if (splitEmphasis) glyphs.size else 1,
+                parts = visualParts + listOfNotNull(suffix.takeIf { it.isNotEmpty() }),
+                emphasisCount = visualParts.size,
                 clock = renderClock,
                 wordBeginMs = wordBeginMs,
                 wordEndMs = wordEndMs,
@@ -647,48 +798,16 @@ private fun KaraokeWordGroup(
                 style = style,
                 glowEnabled = glowEnabled,
                 shadowRadiusPx = shadowRadiusPx,
-                peakLiftPx = maxLiftPx,
+                peakLiftPx = if (liftEnabled) maxLiftPx else 0f,
                 textScalePx = textScalePx,
                 segmentIndex = segmentIndex,
                 geometry = lyricLineGeometry,
-                wordLiftScale = wordLiftScale,
-            )
-        }
-        splitEmphasis -> {
-            AMEmphasisWord(
-                glyphs = glyphs,
-                suffix = suffix,
-                wordProgress = progress,
-                wordBeginMs = wordBeginMs,
-                emphasisEndMs = emphasisEndMs,
-                positionMs = positionMs,
-                highlightColor = highlightColor,
-                dimColor = dimColor,
-                style = style,
-                shadowRadiusPx = shadowRadiusPx,
-                glowEnabled = glowEnabled,
-                wordLiftPx = maxLiftPx,
-                textScalePx = textScalePx,
-                liftEnabled = liftEnabled,
-                lyricSamplingMode = lyricSamplingMode,
-                segmentIndex = segmentIndex,
-                lyricLineGeometry = lyricLineGeometry,
-                positionState = positionState.takeIf {
-                    renderClockArmed && renderClock == null && lineDispatcher == null
-                },
-                positionFractionState = positionFractionState.takeIf {
-                    renderClockArmed && renderClock == null && lineDispatcher == null
-                },
-                renderClock = renderClock.takeIf { renderClockArmed && lineDispatcher == null },
-                lineDispatcher = lineDispatcher.takeIf { renderClockArmed },
-                modifier = splitGlyphBaseModifier,
             )
         }
         emphasisEligible -> {
-            // Keep CJK single-glyph and shaping-sensitive scripts in one text view instead of
-            // splitting them into characters.  They still need the long-note emphasis owner; our
-            // previous port incorrectly treated "do not split" as "do not emphasize", which made
-            // the glow disappear for the most common single-character CJK long notes.
+            // Keep the source-timed unit shaped as one text run. Providers with actual syllable
+            // timing already arrive as multiple LyricWord entries; providers with only word timing
+            // stay a single shaped word rather than receiving invented grapheme timing.
             AMShapedEmphasisWord(
                 text = text,
                 wordProgress = progress,
@@ -705,14 +824,12 @@ private fun KaraokeWordGroup(
                         measuredWordWidthPx = measuredWidth
                     }
                 },
-                modifier = shapedEmphasisModifier,
+                lyricFloatUpRenderSpec = emphasisFloatUpRenderSpec,
             )
         }
         else -> {
-            // The lyric lift keeps one shaped text layout and applies a float-up value to each glyph centre.
-            // Do the same in draw phase: no Animatable/coroutine and no per-glyph Compose Text
-            // nodes. Completed/future words stay on the cheap single-layer path; only the active
-            // word samples the moving spatial cursor.
+            // Keep shaped ordinary words in one text layout. Splitting their cached layer with
+            // rectangular clips can shear a glyph at the moving rise boundary.
             val regularModifier = if (directLyricOwner) {
                 // The direct DrawModifierNode owns STATIC_UP / ANIMATED / STATIC_DOWN itself and
                 // only invalidates while the moving lyric band intersects this word. Do not stack
@@ -774,13 +891,13 @@ internal class LyricEmphasisDrawFrame(private val count: Int) {
         lastDuration = duration
         lastRtl = rtl
         val elapsed = (position - begin.toFloat()).coerceAtLeast(0f)
-        val scaleDelta = amEmphasisTargetScale(duration) - 1f
+        val scaleDelta = lyricEmphasisTargetScale(duration) - 1f
         for (index in 0 until count) {
             previousWidths[index] = widths[index]
-            fractions[index] = amGlyphEmphasisFraction(elapsed, duration, count, index)
+            fractions[index] = lyricGlyphEmphasisFraction(elapsed, duration, count, index)
             growth[index] = scaleDelta * fractions[index] * widths[index] * 0.5f
         }
-        offsets = amGlyphSpacingTranslations(growth, rtl)
+        offsets = lyricGlyphSpacingTranslations(growth, rtl)
     }
 }
 
@@ -801,17 +918,17 @@ private fun DirectEmphasisWord(
     textScalePx: Float,
     segmentIndex: Int,
     geometry: LyricLineFloatUpGeometry,
-    wordLiftScale: Float,
 ) {
     val widths = remember(parts, style) {
         mutableStateListOf<Float>().apply { repeat(parts.size) { add(1f) } }
     }
     val rtl = remember(parts) { isTextRtl(parts.joinToString("")) }
     val duration = (emphasisEndMs - wordBeginMs).coerceAtLeast(1L)
-    val targetScale = amEmphasisTargetScale(duration)
+    val targetScale = lyricEmphasisTargetScale(duration)
     val frame = remember(emphasisCount) { LyricEmphasisDrawFrame(emphasisCount) }
-    val feather = with(LocalDensity.current) {
-        AM_KARAOKE_FEATHER_WIDTH_FALLBACK.toPx() * amKaraokeFeatherScaleForText(parts.joinToString(""))
+    val density = LocalDensity.current
+    val feather = with(density) {
+        KARAOKE_FEATHER_WIDTH.toPx() * karaokeFeatherScaleForText(parts.joinToString(""))
     }
     // Layout is immutable during playback. All time-dependent transforms and paint read the
     // same display clock inside draw; neither progress callbacks nor vsync remeasure the text.
@@ -832,7 +949,17 @@ private fun DirectEmphasisWord(
                     val width = result.size.width.toFloat().coerceAtLeast(1f)
                     if (widths[index] != width) widths[index] = width
                 },
-                modifier = Modifier.lyricClockDrawInvalidation(clock).drawWithCache {
+                modifier = Modifier
+                    .lyricFloatUpDraw(
+                        clock = clock,
+                        peakLiftPx = peakLiftPx,
+                        textScalePx = textScalePx,
+                        segmentIndex = segmentIndex,
+                        lineGeometry = geometry,
+                        wholeLocalCenterPx = (0 until index).sumOf { widths[it].toDouble() }.toFloat() +
+                            widths[index] * 0.5f,
+                    )
+                    .lyricClockDrawInvalidation(clock).drawWithCache {
                     val shaped = textLayout
                     val padding = ceil(shadowRadiusPx.coerceAtLeast(0f) * 2f + 2f).toInt()
                     val paddedSize = IntSize(ceil(size.width).toInt() + padding * 2,
@@ -840,36 +967,35 @@ private fun DirectEmphasisWord(
                     val textLayer = obtainGraphicsLayer().apply { compositingStrategy = CompositingStrategy.Offscreen }
                     val glowLayer = obtainGraphicsLayer().apply { compositingStrategy = CompositingStrategy.Offscreen }
                     var glowRecorded = false
+                    val glowMaskPaint = Paint()
                     onDrawWithContent {
                     if (shaped == null) { drawContent(); return@onDrawWithContent }
                     val position = clock.currentPosition()
+                    // The emphasis envelope uses source duration rather than the clipped color sweep.
                     frame.sample(position, wordBeginMs, duration, widths, rtl)
                     val offset = frame.offsets[index.coerceAtMost(emphasisCount - 1)]
                     val fraction = if (index < emphasisCount) frame.fractions[index] else 0f
                     val start = (0 until index).sumOf { widths[it].toDouble() }.toFloat()
                     val total = widths.sum().coerceAtLeast(1f)
-                    val lift = geometry.fractionForLocalCenter(
-                        segmentIndex, start + widths[index] * 0.5f, position, textScalePx,
-                    )
-                    val zoom = (1f + (targetScale - 1f) * fraction) * (1f + wordLiftScale * lift)
-                    val progress = ((position - wordBeginMs.toFloat()) /
-                        (wordEndMs - wordBeginMs).coerceAtLeast(1L).toFloat()).coerceIn(0f, 1f)
-                    val boundary = progress * total - start
+                    val zoom = 1f + (targetScale - 1f) * fraction
+                    val progress = DirectKaraokeHighlightSpec.progress(position, wordBeginMs, wordEndMs)
+                    val sweepFeather = feather.coerceIn(0f, total)
+                    val boundary = progress * DirectKaraokeHighlightSpec.sweepDistance(total, sweepFeather) - start
                     val end = (boundary / widths[index]).coerceIn(0f, 1f)
-                    val begin = ((boundary - feather) / widths[index]).coerceIn(0f, end)
+                    val sweepEnd = if (rtl) widths[index] - boundary else boundary
+                    val sweepStart = if (rtl) sweepEnd + sweepFeather else sweepEnd - sweepFeather
                     val brush = Brush.linearGradient(
-                        0f to highlightColor, begin to highlightColor,
-                        end to highlightColor.copy(alpha = 0f), 1f to highlightColor.copy(alpha = 0f),
-                        start = if (rtl) Offset(widths[index], 0f) else Offset.Zero,
-                        end = if (rtl) Offset.Zero else Offset(widths[index], 0f),
+                        colors = listOf(highlightColor, highlightColor.copy(alpha = 0f)),
+                        start = Offset(sweepStart, 0f),
+                        end = Offset(sweepEnd, 0f),
                     )
                     // Rasterize the blurred mask once at a stable baseline. Frames only change its
                     // opacity and transform; changing the shadow paint every frame defeats caching.
-                    if (glowEnabled && !glowRecorded) {
+                    if (glowEnabled && fraction > 0f && !glowRecorded) {
                         glowLayer.record(size = paddedSize) {
                             translate(left = padding.toFloat(), top = padding.toFloat()) {
                                 drawText(shaped, color = Color.Transparent, shadow = Shadow(
-                                    Color.White.copy(alpha = AM_KARAOKE_EMPHASIS_SHADOW_ALPHA),
+                                    Color.White,
                                     Offset.Zero, shadowRadiusPx))
                             }
                         }
@@ -877,17 +1003,39 @@ private fun DirectEmphasisWord(
                     }
                     textLayer.record(size = paddedSize) {
                         translate(left = padding.toFloat(), top = padding.toFloat()) {
-                            drawText(shaped, color = dimColor, shadow = null)
-                            if (progress >= 1f) drawText(shaped, color = highlightColor, shadow = null)
-                            else if (end > 0f) drawText(shaped, brush = brush, shadow = null)
+                            // Paragraph paint is reused by all passes. null preserves the shadow
+                            // installed while recording glow; None explicitly clears it.
+                            drawText(shaped, color = dimColor, shadow = Shadow.None)
+                            if (progress >= 1f) drawText(shaped, color = highlightColor, shadow = Shadow.None)
+                            else if (end > 0f) drawText(shaped, brush = brush, shadow = Shadow.None)
                         }
                     }
-                    translate(left = offset, top = -peakLiftPx * lift) {
+                    translate(left = offset) {
                         scale(zoom, pivot = Offset(size.width * 0.5f, shaped.firstBaseline)) {
                             translate(left = -padding.toFloat(), top = -padding.toFloat()) {
-                                if (glowEnabled && fraction > 0f) {
-                                    glowLayer.alpha = fraction
-                                    drawLayer(glowLayer)
+                                if (glowEnabled && fraction > 0f && end > 0f) {
+                                    glowLayer.alpha = longNoteGlowAlpha(fraction)
+                                    run {
+                                        // The cached bloom covers the whole glyph. Mask it with the
+                                        // same source-timed sweep, otherwise unread pixels look white
+                                        // before the foreground highlight reaches them.
+                                        val maskSize = Size(paddedSize.width.toFloat(), paddedSize.height.toFloat())
+                                        drawContext.canvas.saveLayer(Rect(Offset.Zero, maskSize), glowMaskPaint)
+                                        try {
+                                            drawLayer(glowLayer)
+                                            drawRect(
+                                                brush = Brush.linearGradient(
+                                                    colors = listOf(Color.White, Color.Transparent),
+                                                    start = Offset(padding + sweepStart, 0f),
+                                                    end = Offset(padding + sweepEnd, 0f),
+                                                ),
+                                                size = maskSize,
+                                                blendMode = BlendMode.DstIn,
+                                            )
+                                        } finally {
+                                            drawContext.canvas.restore()
+                                        }
+                                    }
                                 }
                                 drawLayer(textLayer)
                             }
@@ -912,20 +1060,23 @@ private fun AMShapedEmphasisWord(
     style: TextStyle,
     shadowRadiusPx: Float,
     glowEnabled: Boolean,
-    modifier: Modifier = Modifier,
+    lyricFloatUpRenderSpec: LyricFloatUpRenderSpec?,
     onWidthMeasured: ((Float) -> Unit)? = null,
 ) {
     val rawDurationMs = (emphasisEndMs - wordBeginMs).coerceAtLeast(1L)
-    val fraction = amGlyphEmphasisFraction(
+    val fraction = lyricGlyphEmphasisFraction(
+        // positionMs uses Long.MIN_VALUE for inactive/future lines. Never subtract that sentinel:
+        // it can overflow to a huge positive value and make a future emphasis word render at peak
+        // glow before the line becomes active.
         elapsedMs = lyricElapsedMs(positionMs, wordBeginMs),
         rawDurationMs = rawDurationMs,
         glyphCount = 1,
         glyphIndex = 0,
     )
-    val scale = 1f + (amEmphasisTargetScale(rawDurationMs) - 1f) * fraction
+    val scale = 1f + (lyricEmphasisTargetScale(rawDurationMs) - 1f) * fraction
     val rtl = remember(text) { isTextRtl(text) }
     AMGappedGlyphLayout(
-        modifier = modifier,
+        modifier = Modifier,
         scales = listOf(scale),
         rtl = rtl,
         suffixPresent = false,
@@ -936,199 +1087,17 @@ private fun AMShapedEmphasisWord(
             highlightColor = highlightColor,
             dimColor = dimColor,
             style = style,
-            shadowAlpha = if (glowEnabled) fraction * AM_KARAOKE_EMPHASIS_SHADOW_ALPHA else 0f,
+            shadowAlpha = if (glowEnabled) {
+                longNoteGlowAlpha(fraction)
+            } else {
+                0f
+            },
             shadowRadiusPx = shadowRadiusPx,
             rtl = rtl,
             onWidthMeasured = onWidthMeasured,
+            lyricFloatUpRenderSpec = lyricFloatUpRenderSpec,
         )
     }
-}
-
-/**
- * Long-note emphasis with timed attack, hold, and release phases.
- *
- * Each glyph has two independent ValueAnimator-equivalent phases:
- *  - grow: startDelay = index * min(0.4 * rawDuration / glyphCount, 400ms)
- *  - return: startDelay = growStart + rawDuration / (glyphCount / 2f)
- * Both phases use the same capped duration (<= 3000ms) and PathInterpolator(0.25, .1, .25, 1).
- * The return phase cancels grow and starts from the exact scale/shadow reached at that instant.
- */
-@Composable
-private fun AMEmphasisWord(
-    glyphs: List<String>,
-    suffix: String,
-    wordProgress: Float,
-    wordBeginMs: Long,
-    emphasisEndMs: Long,
-    positionMs: Long,
-    highlightColor: Color,
-    dimColor: Color,
-    style: TextStyle,
-    shadowRadiusPx: Float,
-    glowEnabled: Boolean,
-    wordLiftPx: Float,
-    textScalePx: Float,
-    liftEnabled: Boolean,
-    lyricSamplingMode: LyricFrameSamplingMode,
-    segmentIndex: Int,
-    lyricLineGeometry: LyricLineFloatUpGeometry,
-    modifier: Modifier = Modifier,
-    positionState: State<Long>? = null,
-    positionFractionState: State<Float>? = null,
-    renderClock: LyricDirectRenderClock? = null,
-    lineDispatcher: LyricLineRenderDispatcher? = null,
-) {
-    val rawDurationMs = (emphasisEndMs - wordBeginMs).coerceAtLeast(1L)
-    val elapsedMs = lyricElapsedMs(positionMs, wordBeginMs)
-    val glyphCount = glyphs.size.coerceAtLeast(1)
-    val density = LocalDensity.current
-    val featherPx = with(density) {
-        AM_KARAOKE_FEATHER_WIDTH_FALLBACK.toPx() *
-            amKaraokeFeatherScaleForText(glyphs.joinToString(separator = ""))
-    }
-    val glyphWidths = remember(glyphs) {
-        mutableStateListOf<Float>().apply { repeat(glyphCount) { add(1f) } }
-    }
-    val targetScale = amEmphasisTargetScale(rawDurationMs)
-    val emphasisFractions = remember(positionMs, wordBeginMs, emphasisEndMs, glyphs) {
-        List(glyphCount) { index ->
-            amGlyphEmphasisFraction(
-                elapsedMs = elapsedMs,
-                rawDurationMs = rawDurationMs,
-                glyphCount = glyphCount,
-                glyphIndex = index,
-            )
-        }
-    }
-    val scales = remember(emphasisFractions, targetScale) {
-        emphasisFractions.map { fraction -> 1f + (targetScale - 1f) * fraction }
-    }
-    val cumulativeGlyphWidths = FloatArray(glyphCount + 1)
-    for (index in 0 until glyphCount) {
-        cumulativeGlyphWidths[index + 1] = cumulativeGlyphWidths[index] + glyphWidths[index]
-    }
-    val totalGlyphWidth = cumulativeGlyphWidths[glyphCount].coerceAtLeast(1f)
-    val rtl = remember(glyphs) { isTextRtl(glyphs.joinToString(separator = "")) }
-
-    AMGappedGlyphLayout(
-        modifier = modifier,
-        scales = scales,
-        rtl = rtl,
-        suffixPresent = suffix.isNotEmpty(),
-        content = {
-            glyphs.forEachIndexed { index, glyph ->
-                // Split these words into individual glyph lanes. Map the global karaoke
-                // sweep into the same logical glyph slots while keeping the feather inside each
-                // glyph. The emphasis timing itself is independent from highlight sweep timing.
-                val glyphStart = cumulativeGlyphWidths[index]
-                val glyphWidth = glyphWidths[index].coerceAtLeast(1f)
-                val boundary = wordProgress.coerceIn(0f, 1f) * totalGlyphWidth
-                val localProgress = ((boundary - glyphStart) / glyphWidth).coerceIn(0f, 1f)
-                val localFadeStart = ((boundary - featherPx - glyphStart) / glyphWidth).coerceIn(0f, 1f)
-                val localFadeEnd = ((boundary - glyphStart) / glyphWidth).coerceIn(0f, 1f)
-                ProgressiveLyricText(
-                    text = glyph,
-                    progress = localProgress,
-                    highlightColor = highlightColor,
-                    dimColor = dimColor,
-                    style = style,
-                    shadowAlpha = if (glowEnabled) {
-                        emphasisFractions[index] * AM_KARAOKE_EMPHASIS_SHADOW_ALPHA
-                    } else {
-                        0f
-                    },
-                    shadowRadiusPx = shadowRadiusPx,
-                     rtl = rtl,
-                     fadeStartOverride = localFadeStart,
-                     fadeEndOverride = localFadeEnd,
-                     modifier = when (lyricSamplingMode) {
-                         LyricFrameSamplingMode.STATIC_UP -> Modifier.graphicsLayer {
-                             translationY = -wordLiftPx
-                         }
-                         LyricFrameSamplingMode.ANIMATED -> if ((lineDispatcher != null || renderClock != null) && liftEnabled) {
-                             Modifier.lyricFloatUpDraw(
-                                 clock = renderClock.takeIf { lineDispatcher == null },
-                                 lineDispatcher = lineDispatcher,
-                                 peakLiftPx = wordLiftPx,
-                                 textScalePx = textScalePx,
-                                 segmentIndex = segmentIndex,
-                                 lineGeometry = lyricLineGeometry,
-                                 wholeLocalCenterPx = glyphStart + glyphWidth * 0.5f,
-                             )
-                         } else {
-                             Modifier.graphicsLayer {
-                                 val framePositionMs = positionFractionState?.value
-                                     ?: (positionState?.value ?: positionMs).toFloat()
-                                 val glyphCenterPx = glyphStart + glyphWidth * 0.5f
-                                 val glyphLiftFraction = if (liftEnabled) {
-                                     lyricLineGeometry.fractionForLocalCenter(
-                                         slotIndex = segmentIndex,
-                                         localCenterPx = glyphCenterPx,
-                                         positionMs = framePositionMs,
-                                         textScalePx = textScalePx,
-                                     )
-                                 } else {
-                                     0f
-                                 }
-                                 translationY = -wordLiftPx * glyphLiftFraction
-                             }
-                         }
-                         LyricFrameSamplingMode.STATIC_DOWN -> Modifier
-                     },
-                    onWidthMeasured = { measuredWidth ->
-                        if (abs(glyphWidths[index] - measuredWidth) > 0.5f) {
-                            glyphWidths[index] = measuredWidth
-                        }
-                    },
-                )
-            }
-            if (suffix.isNotEmpty()) {
-                ProgressiveLyricText(
-                    text = suffix,
-                    progress = wordProgress,
-                    highlightColor = highlightColor,
-                    dimColor = dimColor,
-                    style = style,
-                    shadowAlpha = 0f,
-                    shadowRadiusPx = shadowRadiusPx,
-                    rtl = rtl,
-                    modifier = when (lyricSamplingMode) {
-                        LyricFrameSamplingMode.STATIC_UP -> Modifier.graphicsLayer {
-                            translationY = -wordLiftPx
-                        }
-                        LyricFrameSamplingMode.ANIMATED -> if ((lineDispatcher != null || renderClock != null) && liftEnabled) {
-                            Modifier.lyricFloatUpDraw(
-                                clock = renderClock.takeIf { lineDispatcher == null },
-                                lineDispatcher = lineDispatcher,
-                                peakLiftPx = wordLiftPx,
-                                textScalePx = textScalePx,
-                                segmentIndex = segmentIndex,
-                                lineGeometry = lyricLineGeometry,
-                                wholeLocalCenterPx = totalGlyphWidth,
-                            )
-                        } else {
-                            Modifier.graphicsLayer {
-                                val framePositionMs = positionFractionState?.value
-                                    ?: (positionState?.value ?: positionMs).toFloat()
-                                val suffixLiftFraction = if (liftEnabled) {
-                                    lyricLineGeometry.fractionForLocalCenter(
-                                        slotIndex = segmentIndex,
-                                        localCenterPx = totalGlyphWidth,
-                                        positionMs = framePositionMs,
-                                        textScalePx = textScalePx,
-                                    )
-                                } else {
-                                    0f
-                                }
-                                translationY = -wordLiftPx * suffixLiftFraction
-                            }
-                        }
-                        LyricFrameSamplingMode.STATIC_DOWN -> Modifier
-                    },
-                )
-            }
-        },
-    )
 }
 
 /**
@@ -1162,7 +1131,7 @@ private fun AMGappedGlyphLayout(
         val halfGrowth = FloatArray(emphasisCount) { index ->
             ((scales[index] - 1f) * placeables[index].width) / 2f
         }
-        val translations = amGlyphSpacingTranslations(halfGrowth, rtl)
+        val translations = lyricGlyphSpacingTranslations(halfGrowth, rtl)
 
         layout(
             width = originalWidth.coerceIn(constraints.minWidth, constraints.maxWidth),
@@ -1235,14 +1204,6 @@ private fun ProgressiveLyricText(
         style.fontFamily,
         style.letterSpacing,
     ) { mutableFloatStateOf(1f) }
-    var lyricGlyphSlices by remember(
-        text,
-        style.fontSize,
-        style.fontWeight,
-        style.fontFamily,
-        style.letterSpacing,
-        rtl,
-    ) { mutableStateOf(emptyList<LyricGlyphSliceSpec>()) }
     val density = LocalDensity.current
 
     // In the direct playback path progress is deliberately NOT a visual input. The player may
@@ -1253,7 +1214,7 @@ private fun ProgressiveLyricText(
     val shadow = if (shadowAlpha > 0.0001f) {
         Shadow(
             // C12217i always uses a white shadow; it is not tinted with the lyric highlight color.
-            color = Color.White.copy(alpha = shadowAlpha.coerceIn(0f, AM_KARAOKE_EMPHASIS_SHADOW_ALPHA)),
+            color = Color.White.copy(alpha = shadowAlpha.coerceIn(0f, KARAOKE_EMPHASIS_GLOW_MAX)),
             offset = Offset.Zero,
             blurRadius = shadowRadiusPx,
         )
@@ -1262,11 +1223,12 @@ private fun ProgressiveLyricText(
     }
 
     val featherPx = with(density) {
-        AM_KARAOKE_FEATHER_WIDTH_FALLBACK.toPx() * amKaraokeFeatherScaleForText(text)
+        KARAOKE_FEATHER_WIDTH.toPx() * karaokeFeatherScaleForText(text)
     }.coerceAtMost(widthPx)
     val featherFraction = (featherPx / widthPx).coerceIn(0f, 1f)
-    val fadeStart = fadeStartOverride ?: (p - featherFraction).coerceIn(0f, 1f)
-    val fadeEnd = fadeEndOverride ?: p
+    val maskStops = DirectKaraokeHighlightSpec.maskStops(p, featherFraction)
+    val fadeStart = fadeStartOverride ?: maskStops[1]
+    val fadeEnd = fadeEndOverride ?: maskStops[2]
     val brush = if (directHighlightRenderSpec == null) {
         Brush.linearGradient(
             colorStops = arrayOf(
@@ -1286,7 +1248,6 @@ private fun ProgressiveLyricText(
         lyricFloatUpRenderSpec != null &&
             (lyricFloatUpRenderSpec.lineDispatcher != null || lyricFloatUpRenderSpec.renderClock != null) -> {
             val spec = lyricFloatUpRenderSpec
-            val singleGlyphCenter = lyricGlyphSlices.singleOrNull()?.logicalCenterPx
             Modifier
                 .lyricFloatUpDraw(
                     clock = spec.renderClock,
@@ -1295,14 +1256,12 @@ private fun ProgressiveLyricText(
                     textScalePx = spec.textScalePx,
                     segmentIndex = spec.segmentIndex,
                     lineGeometry = spec.lineGeometry,
-                    // A one-grapheme timed token is already one shaped draw unit. Replaying it
-                    // through a clip rect buys nothing and is the common CJK per-character path.
-                    slices = if (singleGlyphCenter == null) lyricGlyphSlices else emptyList(),
-                    wholeLocalCenterPx = singleGlyphCenter,
+                    // An unsplit shaped run must move as a whole. A horizontal clip can pass
+                    // through a glyph's painted pixels and lift only half of that character.
+                    wholeLocalCenterPx = widthPx * 0.5f,
                 )
                 .graphicsLayer {
-                    // The DrawModifierNode replays this cached shaped-text layer through the small
-                    // number of lyric clip runs. Choreographer invalidates only the outer draw node.
+                    // Choreographer invalidates only the outer draw node.
                     clip = false
                 }
                 .lyricSubpixelTextLayer(
@@ -1314,52 +1273,16 @@ private fun ProgressiveLyricText(
         lyricFloatUpRenderSpec != null -> {
             val spec = lyricFloatUpRenderSpec
             Modifier.drawWithContent {
-                val slices = lyricGlyphSlices
                 val framePositionMs = spec.positionFractionState?.value
                     ?: (spec.positionState?.value ?: spec.fallbackPositionMs).toFloat()
-                if (slices.isEmpty()) {
+                val liftFraction = spec.lineGeometry.fractionForLocalCenter(
+                    slotIndex = spec.segmentIndex,
+                    localCenterPx = widthPx * 0.5f,
+                    positionMs = framePositionMs,
+                    textScalePx = spec.textScalePx,
+                )
+                translate(top = -spec.peakLiftPx * liftFraction) {
                     this@drawWithContent.drawContent()
-                } else {
-                    var runLeft = slices.first().leftPx
-                    var runRight = slices.first().rightPx
-                    var runLiftFraction = spec.lineGeometry.fractionForLocalCenter(
-                        slotIndex = spec.segmentIndex,
-                        localCenterPx = slices.first().logicalCenterPx,
-                        positionMs = framePositionMs,
-                        textScalePx = spec.textScalePx,
-                    )
-
-                    fun drawRun(left: Float, right: Float, liftFraction: Float) {
-                        clipRect(
-                            left = left,
-                            top = -spec.peakLiftPx - 1f,
-                            right = right,
-                            bottom = size.height + 1f,
-                        ) {
-                            translate(top = -spec.peakLiftPx * liftFraction) {
-                                this@drawWithContent.drawContent()
-                            }
-                        }
-                    }
-
-                    for (index in 1 until slices.size) {
-                        val slice = slices[index]
-                        val liftFraction = spec.lineGeometry.fractionForLocalCenter(
-                            slotIndex = spec.segmentIndex,
-                            localCenterPx = slice.logicalCenterPx,
-                            positionMs = framePositionMs,
-                            textScalePx = spec.textScalePx,
-                        )
-                        if (liftFraction == runLiftFraction) {
-                            runRight = slice.rightPx
-                        } else {
-                            drawRun(runLeft, runRight, runLiftFraction)
-                            runLeft = slice.leftPx
-                            runRight = slice.rightPx
-                            runLiftFraction = liftFraction
-                        }
-                    }
-                    drawRun(runLeft, runRight, runLiftFraction)
                 }
             }.graphicsLayer { clip = false }
         }
@@ -1373,16 +1296,13 @@ private fun ProgressiveLyricText(
             // the white bloom remains behind the final karaoke color exactly like setShadowLayer().
             Text(
                 text = text,
+                softWrap = true,
                 color = dimColor,
                 style = baseStyle,
                 onTextLayout = {
                     val measuredWidth = it.size.width.toFloat().coerceAtLeast(1f)
                     widthPx = measuredWidth
                     onWidthMeasured?.invoke(measuredWidth)
-                    if (lyricFloatUpRenderSpec != null) {
-                        val slices = resolveLyricGlyphSlices(text, it, rtl)
-                        if (lyricGlyphSlices != slices) lyricGlyphSlices = slices
-                    }
                 }
             )
             // Keep both layers mounted at 0%, 100% and every intermediate progress value. Only
@@ -1391,6 +1311,7 @@ private fun ProgressiveLyricText(
             val directHighlight = directHighlightRenderSpec
             Text(
                 text = text,
+                softWrap = true,
                 modifier = if (directHighlight != null) {
                     Modifier.directKaraokeHighlight(
                         clock = directHighlight.clock,
@@ -1405,12 +1326,12 @@ private fun ProgressiveLyricText(
                 },
                 color = when {
                     directHighlight != null -> highlightColor
-                    p >= 0.999f -> highlightColor
+                    p >= 1f -> highlightColor
                     else -> Color.Transparent
                 },
                 style = when {
                     directHighlight != null -> style
-                    p >= 0.999f -> style
+                    p >= 1f -> style
                     else -> style.copy(brush = requireNotNull(brush))
                 },
             )
@@ -1456,57 +1377,18 @@ private fun Modifier.lyricSubpixelTextLayer(paddingPx: Float): Modifier = drawWi
     }
 }
 
-/** Preserve shaped glyphs and logical reading order when partitioning the cached text layer. */
-private fun resolveLyricGlyphSlices(
-    text: String,
-    layout: TextLayoutResult,
-    rtl: Boolean,
-): List<LyricGlyphSliceSpec> {
-    if (text.isEmpty() || layout.size.width <= 0) return emptyList()
-    val iterator = BreakIterator.getCharacterInstance(Locale.ROOT)
-    iterator.setText(text)
-    // Horizontal slices cannot represent two physical rows: keep a wrapped token whole.
-    if (layout.lineCount > 1) return listOf(LyricGlyphSliceSpec(0f, layout.size.width.toFloat(), layout.size.width * 0.5f))
-    val bounds = ArrayList<Pair<Float, Float>>()
-    var start = iterator.first()
-    var end = iterator.next()
-    while (end != BreakIterator.DONE) {
-        var left = Float.POSITIVE_INFINITY
-        var right = Float.NEGATIVE_INFINITY
-        var offset = start
-        while (offset < end && offset < text.length) {
-            val box = layout.getBoundingBox(offset)
-            left = minOf(left, box.left)
-            right = maxOf(right, box.right)
-            offset++
-        }
-        if (left.isFinite() && right.isFinite()) {
-            bounds += left to right
-        }
-        start = end
-        end = iterator.next()
-    }
-    if (bounds.isEmpty()) return emptyList()
-
-    // Clip partitions must be in physical left-to-right order so the original shaped Text is
-    // neither overlapped nor punched with gaps. The curve itself receives logical centres.
-    return LyricFloatUpSpec.buildGlyphSlicesFromBounds(
-        bounds = bounds,
-        widthPx = layout.size.width.toFloat(),
-        rtl = rtl,
-    )
-}
-
 // ========== StaticLyricText ==========
 
 @Composable
-private fun StaticLyricText(text: String, color: Color, style: TextStyle) {
+private fun StaticLyricText(text: String, color: Color, style: TextStyle, modifier: Modifier = Modifier) {
     Layout(
-        content = { Text(text = text, color = color, style = style) }
+        modifier = modifier,
+        content = { Text(text = text.trimEnd('\n'), color = color, style = style, softWrap = true) }
     ) { measurables, constraints ->
         val placeable = measurables.first().measure(constraints.copy(minWidth = 0, minHeight = 0))
         val baseline = placeable[FirstBaseline].takeIf { it != AlignmentLine.Unspecified } ?: placeable.height
-        layout(placeable.width, placeable.height, alignmentLines = mapOf(FirstBaseline to baseline, LastBaseline to baseline)) {
+        val lastBaseline = placeable[LastBaseline].takeIf { it != AlignmentLine.Unspecified } ?: baseline
+        layout(placeable.width, placeable.height, alignmentLines = mapOf(FirstBaseline to baseline, LastBaseline to lastBaseline)) {
             placeable.placeRelative(0, 0)
         }
     }
@@ -1519,6 +1401,9 @@ private fun BaselineFlowRow(
     modifier: Modifier = Modifier,
     textAlign: TextAlign,
     wrapTexts: List<String> = emptyList(),
+    sequentialWrap: Boolean = false,
+    fillAvailableWidth: Boolean = true,
+    rowSpacing: Int = 0,
     onChildPlaced: ((index: Int, leftPx: Float, widthPx: Float, lineIndex: Int) -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
@@ -1535,7 +1420,8 @@ private fun BaselineFlowRow(
                 isSpace = text.isNotEmpty() && text.isBlank(),
             )
         }
-        val breaks = balancedLyricBreaks(wrapTokens, maxWidth)
+        val breaks = if (sequentialWrap) flowLyricBreaks(wrapTokens, maxWidth)
+            else balancedLyricBreaks(wrapTokens, maxWidth)
         val lines = mutableListOf<List<Pair<Int, Placeable>>>()
         var currentLine = mutableListOf<Pair<Int, Placeable>>()
         placeables.forEachIndexed { index, placeable ->
@@ -1561,14 +1447,18 @@ private fun BaselineFlowRow(
         }
 
         val maxLineW = lines.maxOfOrNull { line -> line.sumOf { it.second.width } } ?: 0
-        val layoutWidth = if (constraints.maxWidth != Int.MAX_VALUE) {
+        val layoutWidth = if (fillAvailableWidth && constraints.maxWidth != Int.MAX_VALUE) {
             constraints.maxWidth.coerceAtLeast(constraints.minWidth)
         } else {
-            maxLineW.coerceAtLeast(constraints.minWidth)
+            maxLineW.coerceIn(constraints.minWidth, constraints.maxWidth)
         }
-        val layoutHeight = lineHeights.sum().coerceIn(constraints.minHeight, constraints.maxHeight)
+        val layoutHeight = (lineHeights.sum() + rowSpacing * (lines.size - 1).coerceAtLeast(0))
+            .coerceIn(constraints.minHeight, constraints.maxHeight)
 
-        layout(layoutWidth, layoutHeight) {
+        val firstBaseline = lineBaselines.firstOrNull() ?: 0
+        val lastBaseline = if (lines.isEmpty()) firstBaseline else
+            lineHeights.dropLast(1).sum() + rowSpacing * (lines.size - 1) + lineBaselines.last()
+        layout(layoutWidth, layoutHeight, mapOf(FirstBaseline to firstBaseline, LastBaseline to lastBaseline)) {
             var y = 0
             lines.forEachIndexed { lineIdx, line ->
                 val baseline = lineBaselines[lineIdx]
@@ -1591,7 +1481,7 @@ private fun BaselineFlowRow(
                     placeable.placeRelative(x = x, y = y + baseline - childBaseline)
                     x += placeable.width
                 }
-                y += lineHeights[lineIdx]
+                y += lineHeights[lineIdx] + rowSpacing
             }
         }
     }
@@ -1735,30 +1625,40 @@ private fun wordTimingState(
     bounds = wordTimingBounds(word, nextWordBeginMs, lineEndMs),
 )
 
-private fun amEmphasisTargetScale(rawDurationMs: Long): Float {
-    val normalized = (
+private fun lyricFallbackEmphasisFactor(rawDurationMs: Long): Float =
+    (
         rawDurationMs.coerceIn(
-            AM_KARAOKE_EMPHASIS_MIN_DURATION_MS,
-            AM_KARAOKE_EMPHASIS_SCALE_MAX_DURATION_MS,
-        ) - AM_KARAOKE_EMPHASIS_MIN_DURATION_MS
-        ).toFloat() /
-        (AM_KARAOKE_EMPHASIS_SCALE_MAX_DURATION_MS - AM_KARAOKE_EMPHASIS_MIN_DURATION_MS).toFloat()
-    return 1f + AM_KARAOKE_EMPHASIS_MAX_SCALE_DELTA * normalized.coerceIn(0f, 1f)
-}
+            KARAOKE_EMPHASIS_FALLBACK_MIN_DURATION_MS,
+            KARAOKE_EMPHASIS_FALLBACK_SCALE_MAX_DURATION_MS,
+        ) - KARAOKE_EMPHASIS_FALLBACK_MIN_DURATION_MS
+    ).toFloat()
+        .div(
+            (KARAOKE_EMPHASIS_FALLBACK_SCALE_MAX_DURATION_MS -
+                KARAOKE_EMPHASIS_FALLBACK_MIN_DURATION_MS).toFloat()
+        )
+        .coerceIn(0f, 1f)
 
-private fun amGlyphLiftStartMs(
+private fun lyricEmphasisTargetScale(rawDurationMs: Long): Float =
+    1f + KARAOKE_EMPHASIS_SCALE_MAX_DELTA * lyricFallbackEmphasisFactor(rawDurationMs)
+
+internal fun longNoteGlowAlpha(
+    emphasisFraction: Float,
+): Float = KARAOKE_EMPHASIS_GLOW_MAX *
+    emphasisFraction.coerceIn(0f, 1f)
+
+private fun lyricGlyphLiftStartMs(
     rawDurationMs: Long,
     glyphCount: Int,
     glyphIndex: Int,
 ): Float {
     if (glyphCount <= 0 || glyphIndex <= 0) return 0f
     val rawDuration = rawDurationMs.toFloat().coerceAtLeast(1f)
-    val staggerStep = ((AM_KARAOKE_EMPHASIS_STAGGER_FRACTION * rawDuration) / glyphCount.toFloat())
-        .coerceAtMost(AM_KARAOKE_EMPHASIS_MAX_STAGGER_MS)
+    val staggerStep = ((KARAOKE_EMPHASIS_STAGGER_FRACTION * rawDuration) / glyphCount.toFloat())
+        .coerceAtMost(KARAOKE_EMPHASIS_MAX_STAGGER_MS)
     return staggerStep * glyphIndex
 }
 
-private fun amGlyphEmphasisFraction(
+private fun lyricGlyphEmphasisFraction(
     elapsedMs: Float,
     rawDurationMs: Long,
     glyphCount: Int,
@@ -1767,28 +1667,27 @@ private fun amGlyphEmphasisFraction(
     if (elapsedMs <= 0f || glyphCount <= 0) return 0f
     val rawDuration = rawDurationMs.toFloat().coerceAtLeast(1f)
     val animatorDuration = rawDurationMs
-        .coerceAtMost(AM_KARAOKE_EMPHASIS_ANIMATION_MAX_DURATION_MS)
+        .coerceAtMost(KARAOKE_EMPHASIS_ANIMATION_MAX_DURATION_MS)
         .toFloat()
         .coerceAtLeast(1f)
-    val growStart = amGlyphLiftStartMs(rawDurationMs, glyphCount, glyphIndex)
+    val growStart = lyricGlyphLiftStartMs(rawDurationMs, glyphCount, glyphIndex)
     if (elapsedMs < growStart) return 0f
 
-    // C11983A: size6 = rawDuration / (glyphCount / 2f), and return animator starts at
-    // currentGlyphStart + size6. Its onAnimationStart cancels the grow animator.
-    val returnOffset = rawDuration / (glyphCount.toFloat() / 2f)
-    val returnStart = growStart + returnOffset
+    // Start the second animator after 2*duration/glyphCount, with the same duration.
+    // Its update listener captures the current scale/shadow and eases them back to zero.
+    val returnStart = growStart + rawDuration * 2f / glyphCount.toFloat()
     val growLinear = ((elapsedMs - growStart) / animatorDuration).coerceIn(0f, 1f)
-    val grow = AM_KARAOKE_EMPHASIS_EASING.transform(growLinear)
+    val grow = KARAOKE_EMPHASIS_EASING.transform(growLinear)
     if (elapsedMs < returnStart) return grow
 
     val growAtReturnLinear = ((returnStart - growStart) / animatorDuration).coerceIn(0f, 1f)
-    val growAtReturn = AM_KARAOKE_EMPHASIS_EASING.transform(growAtReturnLinear)
+    val growAtReturn = KARAOKE_EMPHASIS_EASING.transform(growAtReturnLinear)
     val returnLinear = ((elapsedMs - returnStart) / animatorDuration).coerceIn(0f, 1f)
-    val returnEase = AM_KARAOKE_EMPHASIS_EASING.transform(returnLinear)
+    val returnEase = KARAOKE_EMPHASIS_EASING.transform(returnLinear)
     return (growAtReturn * (1f - returnEase)).coerceIn(0f, 1f)
 }
 
-private fun amGlyphSpacingTranslations(halfGrowth: FloatArray, rtl: Boolean): FloatArray {
+private fun lyricGlyphSpacingTranslations(halfGrowth: FloatArray, rtl: Boolean): FloatArray {
     val count = halfGrowth.size
     if (count <= 1) return FloatArray(count)
     val translations = FloatArray(count)
@@ -1822,36 +1721,24 @@ private fun amGlyphSpacingTranslations(halfGrowth: FloatArray, rtl: Boolean): Fl
 private fun isAMLongNoteEmphasisEligible(
     text: String,
     durationMs: Long,
-    glyphCount: Int,
 ): Boolean {
     if (text.isBlank()) return false
-    if (durationMs < AM_KARAOKE_EMPHASIS_MIN_DURATION_MS) return false
-    if (glyphCount <= 0) return false
-    if (glyphCount !in 1..AM_KARAOKE_EMPHASIS_MAX_GLYPHS) return false
-
-    return true
+    return durationMs >= KARAOKE_EMPHASIS_FALLBACK_MIN_DURATION_MS &&
+        splitGraphemeClusters(text).size in 1..KARAOKE_EMPHASIS_MAX_GLYPHS
 }
 
-private fun shouldSplitAMLongNoteEmphasis(
-    text: String,
-    glyphs: List<String>,
-): Boolean {
-    if (glyphs.size <= 1) return false
-    val blocks = unicodeBlocksOf(text)
-    if (blocks.any { it in AM_KARAOKE_SHAPED_SCRIPT_BLOCKS }) return false
-    // CJK/Kana can use a per-character lane once there is more than one visible glyph.
-    return true
-}
-
-private fun unicodeBlocksOf(text: String): Set<Character.UnicodeBlock> {
-    val result = LinkedHashSet<Character.UnicodeBlock>()
-    var index = 0
-    while (index < text.length) {
-        val codePoint = Character.codePointAt(text, index)
-        Character.UnicodeBlock.of(codePoint)?.let(result::add)
-        index += Character.charCount(codePoint)
+internal fun longNoteVisualParts(text: String): List<String> {
+    val glyphs = splitGraphemeClusters(text)
+    if (glyphs.size !in 2..KARAOKE_EMPHASIS_MAX_GLYPHS) return listOf(text)
+    var offset = 0
+    while (offset < text.length) {
+        val codePoint = Character.codePointAt(text, offset)
+        if (Character.UnicodeBlock.of(codePoint) in KARAOKE_SHAPED_SCRIPT_BLOCKS) {
+            return listOf(text)
+        }
+        offset += Character.charCount(codePoint)
     }
-    return result
+    return glyphs
 }
 
 private fun splitGraphemeClusters(text: String): List<String> {

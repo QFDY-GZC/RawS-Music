@@ -16,6 +16,10 @@ internal data class VirtualListProviderNavigationFrame(
     val retainedTransform: RetainedSceneItemTransform? = null,
     val currentTransform: RetainedSceneItemTransform? = null,
     val onPopulationPublished: (() -> Unit)? = null,
+    val settledSharedTarget: com.rawsmusic.core.ui.scene.SharedCoverSnapshot? = null,
+    /** In-scene provider argument; null leaves the outer route's holder bank unchanged. */
+    val physicalProviderIdentity: String? = null,
+    val readyForMotion: Boolean = false,
 )
 
 internal val LocalVirtualListProviderNavigationFrame =

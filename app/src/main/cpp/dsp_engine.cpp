@@ -9,6 +9,7 @@
 #include <cmath>
 #include <math.h>
 #include "raw_fft_convolver.h"
+#include "raw_algorithmic_reverb.h"
 #include "android_dvc_processor.h"
 #include "auto_peak_limiter.h"
 #include "experimental_gain.h"
@@ -1502,6 +1503,7 @@ private:
 // JNI 引擎框架 (预分配内存)
 // ==========================================
 class DSPChain {
+    rawsmusic::dsp::AlgorithmicReverb m_reverb;
     std::unique_ptr<AndroidDvcProcessor> m_androidDvc;
     std::unique_ptr<RealtimeStemSeparator> m_realtimeStemSeparator;
     std::unique_ptr<StereoWidthProcessor> m_expander;
@@ -1550,6 +1552,7 @@ public:
                  m_moogLadder(std::make_unique<MoogLadderFilter>()) {}
 
     void init(int sampleRate, int channels) {
+        m_reverb.init(sampleRate);
         m_sampleRate = sampleRate;
         m_channels = channels;
         m_androidDvc->setSampleRate(sampleRate);
@@ -1646,6 +1649,7 @@ public:
             }
         }
 
+        if (m_reverb.isActive()) m_reverb.process(samples, numFrames, channels);
         // 9. 扬声器外放效果：在最终混合信号上识别低中频瞬态。
         if (m_speakerOutputEffect->isEnabled()) {
             m_speakerOutputEffect->process(samples, numFrames, channels);
@@ -1693,7 +1697,7 @@ public:
     }
 
     bool hasActiveEffects() const {
-        return m_androidDvc->isEnabled() ||
+        return m_reverb.isActive() || m_androidDvc->isEnabled() ||
                m_realtimeStemSeparator->isActive() ||
                m_bassBoost->isEnabled() ||
                m_trebleBoost->isEnabled() ||
@@ -1748,6 +1752,7 @@ public:
     TrebleBoost* getTrebleBoost() { return m_trebleBoost.get(); }
     Surround360* getSurround360() { return m_surround360.get(); }
     Panoramic360* getPanoramic360() { return m_panoramic360.get(); }
+    rawsmusic::dsp::AlgorithmicReverb& getReverb() { return m_reverb; }
     RawFftConvolver* getConvolver() { return m_convolver.get(); }
     SpeakerOutputEffect* getSpeakerOutputEffect() { return m_speakerOutputEffect.get(); }
     ExperimentalGainProcessor* getExperimentalGain() { return m_experimentalGain.get(); }
@@ -2323,4 +2328,23 @@ Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetPanoramic360Params
     if (handle == 0) return;
     auto* chain = reinterpret_cast<DSPChain*>(handle);
     chain->getPanoramic360()->setParams(intensity, azimuthDeg, elevationDeg);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetReverbEnabled(JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    if(handle)reinterpret_cast<DSPChain*>(handle)->getReverb().setEnabled(enabled==JNI_TRUE);
+}
+extern "C" JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeSetReverbParams(JNIEnv* env, jobject, jlong handle, jfloatArray params) {
+    if(!handle||!params||env->GetArrayLength(params)!=12)return;
+    jfloat v[12];env->GetFloatArrayRegion(params,0,12,v); if(env->ExceptionCheck())return;
+    rawsmusic::dsp::ReverbParams p;
+    p.space=std::isfinite(v[0])?static_cast<int>(std::clamp(v[0],0.f,4.f)):0;
+    p.mix=v[1];p.size=v[2];p.decay=v[3];p.preDelay=v[4];p.damping=v[5];p.diffusion=v[6];
+    p.width=v[7];p.lowCut=v[8];p.highCut=v[9];p.earlyLate=v[10];p.gainDb=v[11];
+    reinterpret_cast<DSPChain*>(handle)->getReverb().setParams(p);
+}
+extern "C" JNIEXPORT void JNICALL
+Java_com_rawsmusic_module_player_dsp_NativeDSPEngine_nativeResetReverb(JNIEnv*, jobject, jlong handle) {
+    if(handle)reinterpret_cast<DSPChain*>(handle)->getReverb().reset();
 }

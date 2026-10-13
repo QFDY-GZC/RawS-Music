@@ -23,6 +23,8 @@ import androidx.compose.ui.window.Dialog
 import com.rawsmusic.R
 import com.rawsmusic.lyric.DesktopLyricService
 import com.rawsmusic.module.data.prefs.AppPreferences
+import com.rawsmusic.module.player.lyrics.BluetoothLyricBridge
+import com.rawsmusic.module.player.lyrics.BluetoothLyricMetadataField
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ColorPicker
@@ -86,6 +88,9 @@ fun LiquidGlassStatusBarLyricScreen(
     var lyricGetterEnabled by remember { mutableStateOf(lyricsPrefs.lyricGetterEnabled) }
     var bluetoothLyricEnabled by remember { mutableStateOf(lyricsPrefs.bluetoothLyricEnabled) }
     var bluetoothLyricTranslation by remember { mutableStateOf(lyricsPrefs.bluetoothLyricTranslation) }
+    var bluetoothLyricMetadataField by remember {
+        mutableStateOf(BluetoothLyricMetadataField.fromId(lyricsPrefs.bluetoothLyricMetadataField))
+    }
 
     val overlayPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -137,6 +142,12 @@ fun LiquidGlassStatusBarLyricScreen(
     val verticalEntries = verticalLabels.map { DropdownItem(title = it) }
     val secondaryEntries = secondaryLabels.map { DropdownItem(title = it) }
     val colorEntries = colorLabels.map { DropdownItem(title = it) }
+    val bluetoothMetadataLabels = listOf(
+        stringResource(R.string.settings_car_lyrics_field_artist),
+        stringResource(R.string.settings_car_lyrics_field_title),
+        stringResource(R.string.settings_car_lyrics_field_dual),
+    )
+    val bluetoothMetadataEntries = bluetoothMetadataLabels.map { DropdownItem(title = it) }
 
     SettingsPage(title = stringResource(R.string.settings_status_bar_lyric_title), onBack = onBack) {
         SettingsSection(stringResource(R.string.desktop_lyric_section)) {
@@ -503,12 +514,29 @@ fun LiquidGlassStatusBarLyricScreen(
             )
             SwitchRow(stringResource(R.string.settings_bluetooth_car_lyrics), bluetoothLyricEnabled) { checked ->
                 bluetoothLyricEnabled = checked
-                lyricsPrefs.bluetoothLyricEnabled = checked
+                BluetoothLyricBridge.setEnabled(checked)
             }
             SwitchRow(stringResource(R.string.settings_car_lyrics_translation), bluetoothLyricTranslation, enabled = bluetoothLyricEnabled) { checked ->
                 bluetoothLyricTranslation = checked
-                lyricsPrefs.bluetoothLyricTranslation = checked
+                BluetoothLyricBridge.setTranslationEnabled(checked)
             }
+            WindowSpinnerPreference(
+                title = stringResource(R.string.settings_car_lyrics_field),
+                summary = bluetoothMetadataLabels[bluetoothLyricMetadataField.ordinal],
+                items = bluetoothMetadataEntries,
+                selectedIndex = bluetoothLyricMetadataField.ordinal,
+                enabled = bluetoothLyricEnabled,
+                onSelectedIndexChange = { selected ->
+                    bluetoothLyricMetadataField = BluetoothLyricMetadataField.entries.getOrElse(selected) {
+                        BluetoothLyricMetadataField.ARTIST
+                    }
+                    BluetoothLyricBridge.setMetadataField(bluetoothLyricMetadataField)
+                },
+            )
+            SettingsInfoEntry(
+                title = stringResource(R.string.settings_car_lyrics_compatibility_title),
+                description = stringResource(R.string.settings_car_lyrics_compatibility_desc),
+            )
         }
     }
 

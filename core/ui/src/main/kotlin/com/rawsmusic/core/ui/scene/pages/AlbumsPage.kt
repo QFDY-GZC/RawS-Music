@@ -32,6 +32,8 @@ import com.rawsmusic.core.ui.widget.virtuallist.formatVirtualListDuration
 import com.rawsmusic.core.ui.widget.virtuallist.rememberComposeVirtualListState
 import com.rawsmusic.core.ui.widget.virtuallist.stableVirtualListHash64
 import com.rawsmusic.core.ui.widget.virtuallist.retainedMappedList
+import com.rawsmusic.core.ui.widget.virtuallist.VIRTUAL_LIST_UNKNOWN_ALBUM_SENTINEL
+import com.rawsmusic.core.ui.widget.virtuallist.VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL
 import com.rawsmusic.module.data.prefs.CollectionSortPreferences
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -51,6 +53,8 @@ fun AlbumsPage(
     detailListState: ComposeVirtualListState = rememberComposeVirtualListState("album_detail_songs"),
     modifier: Modifier = Modifier
 ) {
+    val unknownAlbumLabel = stringResource(com.rawsmusic.core.ui.R.string.player_unknown_album)
+    val unknownArtistLabel = stringResource(com.rawsmusic.core.ui.R.string.common_unknown_artist)
     val albums by produceState(
         initialValue = LibrarySceneGroupingWarmup.albums(songs),
         key1 = songs,
@@ -89,7 +93,7 @@ fun AlbumsPage(
         }
 
         CollectionHeroDetailPage(
-            hero = album.toHeroData(),
+            hero = album.toHeroData(unknownAlbumLabel, unknownArtistLabel),
             listScene = NavScene.ALBUMS,
             detailScene = NavScene.ALBUM_DETAIL,
             songListState = detailListState,
@@ -119,8 +123,10 @@ private fun AlbumListPage(
     modifier: Modifier = Modifier
 ) {
     val coverRegistry = LocalSharedCoverRegistry.current
+    val unknownAlbumLabel = stringResource(com.rawsmusic.core.ui.R.string.player_unknown_album)
+    val unknownArtistLabel = stringResource(com.rawsmusic.core.ui.R.string.common_unknown_artist)
 
-    val items = remember(albums) {
+    val items = remember(albums, unknownAlbumLabel, unknownArtistLabel) {
         retainedMappedList(albums) { album ->
             AlbumVirtualListItem(
                 key = album.key,
@@ -128,7 +134,9 @@ private fun AlbumListPage(
                 artist = album.artist,
                 cover = album.coverKey,
                 songCount = album.songCount,
-                totalDurationMs = album.totalDurationMs
+                totalDurationMs = album.totalDurationMs,
+                unknownAlbumLabel = unknownAlbumLabel,
+                unknownArtistLabel = unknownArtistLabel,
             )
         }
     }
@@ -187,6 +195,7 @@ private fun AlbumListPage(
         if (LocalReferenceLibraryProviderPublicationOnly.current) return@LibraryListScaffold
 
         RawAlphabetIndex(
+            sceneId = NavScene.ALBUMS.name,
             data = alphabetIndexData,
             scrollActiveProvider = { state.isListScrollInProgress },
             modifier = Modifier
@@ -218,13 +227,15 @@ internal data class AlbumGroupUi(
     val songCount: Int get() = songs.size
     val sharedElementId: String get() = "cover:album:${stableVirtualListHash64(key)}"
 
-    fun toHeroData(): CollectionHeroData {
+    fun toHeroData(unknownAlbumLabel: String, unknownArtistLabel: String): CollectionHeroData {
         return CollectionHeroData(
             stableKey = key,
             sharedElementId = sharedElementId,
             coverKey = coverKey,
-            title = name,
-            subtitle = artist.ifBlank { "未知艺术家" },
+            title = name.takeUnless { it == VIRTUAL_LIST_UNKNOWN_ALBUM_SENTINEL }
+                .orEmpty().ifBlank { unknownAlbumLabel },
+            subtitle = artist.takeUnless { it == VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL }
+                .orEmpty().ifBlank { unknownArtistLabel },
             meta = "$songCount | ${formatVirtualListDuration(totalDurationMs)}",
             songs = songs
         )
@@ -232,8 +243,8 @@ internal data class AlbumGroupUi(
 
     companion object {
         fun empty(key: String): AlbumGroupUi {
-            val name = key.substringAfter(ALBUM_KEY_SEPARATOR, key).ifBlank { "未知专辑" }
-            val artist = key.substringBefore(ALBUM_KEY_SEPARATOR, "未知艺术家")
+            val name = key.substringAfter(ALBUM_KEY_SEPARATOR, key).ifBlank { VIRTUAL_LIST_UNKNOWN_ALBUM_SENTINEL }
+            val artist = key.substringBefore(ALBUM_KEY_SEPARATOR, VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL)
             return AlbumGroupUi(
                 key = key,
                 name = name,
@@ -250,19 +261,20 @@ internal fun List<AudioFile>.toAlbumGroups(): List<AlbumGroupUi> {
     return asSequence()
         .filter { it.album.isNotBlank() || it.albumArtPath.isNotBlank() || it.displayName.isNotBlank() }
         .groupBy { song ->
-            val albumName = song.album.ifBlank { "未知专辑" }
+            val albumName = song.album.ifBlank { VIRTUAL_LIST_UNKNOWN_ALBUM_SENTINEL }
             val artistName = song.albumArtist
                 .ifBlank { song.artist }
-                .ifBlank { "未知艺术家" }
+                .ifBlank { VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL }
             "$artistName$ALBUM_KEY_SEPARATOR$albumName"
         }
         .map { (key, albumSongs) ->
             val first = albumSongs.firstOrNull()
-            val albumName = first?.album?.ifBlank { "未知专辑" } ?: "未知专辑"
+            val albumName = first?.album?.ifBlank { VIRTUAL_LIST_UNKNOWN_ALBUM_SENTINEL }
+                ?: VIRTUAL_LIST_UNKNOWN_ALBUM_SENTINEL
             val artistName = if (first != null) {
-                first.albumArtist.ifBlank { first.artist }.ifBlank { "未知艺术家" }
+                first.albumArtist.ifBlank { first.artist }.ifBlank { VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL }
             } else {
-                "未知艺术家"
+                VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL
             }
             val coverSong = albumSongs.firstOrNull { it.albumArtPath.isNotBlank() } ?: first
             AlbumGroupUi(

@@ -3,6 +3,7 @@ package com.rawsmusic.module.data.prefs
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.room.withTransaction
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.FAVORITES_PLAYLIST_ID
 import com.rawsmusic.core.common.model.UserPlaylist
@@ -71,7 +72,7 @@ class PlaylistStore private constructor(private val context: Context) {
 
     init {
         databaseScope.launch {
-            runCatching {
+            try {
                 val legacy = legacyPlaylists
                 when {
                     legacy != null -> {
@@ -81,8 +82,11 @@ class PlaylistStore private constructor(private val context: Context) {
                     dao.countPlaylists() == 0 -> replaceRoom(listOf(createFavoritesPlaylist()))
                 }
                 _playlists.value = loadRoomSnapshot()
+                ready.complete(Unit)
+            } catch (error: Throwable) {
+                ready.completeExceptionally(error)
+                throw error
             }
-            ready.complete(Unit)
         }
     }
 
@@ -92,15 +96,23 @@ class PlaylistStore private constructor(private val context: Context) {
 
     fun isFavorite(song: AudioFile): Boolean = song.playlistIdentityKey() in favoriteSongKeys()
 
-    suspend fun toggleFavorite(song: AudioFile): Boolean {
-        ready.await()
-        val favorite = _playlists.value.firstOrNull { it.isFavorites } ?: return false
-        return if (favorite.songs.any { it.key == song.playlistIdentityKey() }) {
-            removeSongFromPlaylist(favorite.id, song.playlistIdentityKey())
-            false
-        } else {
-            addSongToPlaylist(favorite.id, song)
-            true
+    suspend fun toggleFavorite(song: AudioFile): Boolean = withDatabase {
+        mutationMutex.withLock {
+            val favorite = _playlists.value.firstOrNull { it.isFavorites } ?: return@withLock false
+            val key = song.playlistIdentityKey()
+            val removing = favorite.songs.any { it.key == key }
+            val now = System.currentTimeMillis()
+            val songs = if (removing) favorite.songs.filterNot { it.key == key }
+                else favorite.songs + song.toUserPlaylistSong()
+            MusicDatabase.getInstance(context).withTransaction {
+                if (removing) dao.deleteSong(favorite.id, key)
+                else dao.insertSongs(listOf(songs.last().toEntity(favorite.id, favorite.songs.size)))
+                dao.touchPlaylist(favorite.id, now)
+            }
+            _playlists.value = _playlists.value.map {
+                if (it.id == favorite.id) it.copy(songs = songs, updatedAt = now) else it
+            }
+            !removing
         }
     }
 
@@ -119,11 +131,13 @@ class PlaylistStore private constructor(private val context: Context) {
         }
     }
 
-    suspend fun deletePlaylist(id: String) = withDatabase {
-        if (id == FAVORITES_PLAYLIST_ID) return@withDatabase
+    suspend fun deletePlaylist(id: String): Boolean = withDatabase {
+        if (id == FAVORITES_PLAYLIST_ID) return@withDatabase false
         mutationMutex.withLock {
+            if (_playlists.value.none { it.id == id }) return@withLock false
             dao.deletePlaylist(id)
             _playlists.value = _playlists.value.filterNot { it.id == id }
+            true
         }
     }
 
@@ -149,13 +163,17 @@ class PlaylistStore private constructor(private val context: Context) {
     suspend fun addSongToPlaylist(playlistId: String, song: AudioFile) =
         addSongsToPlaylist(playlistId, listOf(song))
 
-    suspend fun addSongsToPlaylist(playlistId: String, songs: Collection<AudioFile>) = withDatabase {
+    suspend fun addSongsToPlaylist(playlistId: String, songs: Collection<AudioFile>) {
+        addSongsToPlaylistAndReportAddedKeys(playlistId, songs)
+    }
+
+    suspend fun addSongsToPlaylistAndReportAddedKeys(playlistId: String, songs: Collection<AudioFile>): Set<String> = withDatabase {
         val incoming = songs.map { it.toUserPlaylistSong() }
         mutationMutex.withLock {
-            val playlist = _playlists.value.firstOrNull { it.id == playlistId } ?: return@withLock
+            val playlist = _playlists.value.firstOrNull { it.id == playlistId } ?: return@withLock emptySet<String>()
             val keys = playlist.songs.mapTo(mutableSetOf()) { it.key }
             val additions = incoming.filter { keys.add(it.key) }
-            if (additions.isEmpty()) return@withLock
+            if (additions.isEmpty()) return@withLock emptySet<String>()
 
             val now = System.currentTimeMillis()
             dao.insertSongs(additions.mapIndexed { index, song ->
@@ -169,13 +187,14 @@ class PlaylistStore private constructor(private val context: Context) {
                     current
                 }
             }
+            additions.mapTo(mutableSetOf()) { it.key }
         }
     }
 
-    suspend fun removeSongFromPlaylist(playlistId: String, songKey: String) = withDatabase {
+    suspend fun removeSongFromPlaylist(playlistId: String, songKey: String): Boolean = withDatabase {
         mutationMutex.withLock {
-            val playlist = _playlists.value.firstOrNull { it.id == playlistId } ?: return@withLock
-            if (playlist.songs.none { it.key == songKey }) return@withLock
+            val playlist = _playlists.value.firstOrNull { it.id == playlistId } ?: return@withLock false
+            if (playlist.songs.none { it.key == songKey }) return@withLock false
             val now = System.currentTimeMillis()
             dao.deleteSong(playlistId, songKey)
             dao.touchPlaylist(playlistId, now)
@@ -189,6 +208,7 @@ class PlaylistStore private constructor(private val context: Context) {
                     current
                 }
             }
+            true
         }
     }
 
@@ -309,8 +329,24 @@ class PlaylistStore private constructor(private val context: Context) {
     private suspend fun <T> withDatabase(block: suspend () -> T): T =
         withContext(databaseDispatcher) {
             ready.await()
-            block()
+            BackupWriteGate.withExclusive { block() }
         }
+
+    suspend fun awaitBackupReady() = ready.await()
+
+    /** Caller holds BackupWriteGate; do not reacquire it when refreshing verified persistent data. */
+    suspend fun reloadAfterBackup() = withContext(databaseDispatcher) {
+        ready.await()
+        mutationMutex.withLock { _playlists.value = loadRoomSnapshot() }
+    }
+
+    /** Caller holds BackupWriteGate, allowing a consistent snapshot across both durable stores. */
+    suspend fun exportJsonUnderBackupGate(): JSONObject = withContext(databaseDispatcher) {
+        ready.await()
+        JSONObject().put("playlists", JSONArray().also { array ->
+            loadRoomSnapshot().forEach { array.put(playlistToJson(it)) }
+        })
+    }
 
     private suspend fun replaceRoom(playlists: List<UserPlaylist>) {
         dao.replaceAll(

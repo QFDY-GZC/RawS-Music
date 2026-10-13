@@ -48,12 +48,14 @@ Java_com_rawsmusic_module_player_NativeAutomaticCrossfadeProcessor_nativeArm(
     jclass,
     jlong handle,
     jint duration_ms,
-    jint pivot_ms
+    jint pivot_ms,
+    jint gentle_ms
 ) {
     if (auto* processor = from_handle(handle)) {
         processor->arm(
             duration_ms,
-            pivot_ms
+            pivot_ms,
+            gentle_ms
         );
         rawsmusic::transition_trace::record(
             rawsmusic::transition_trace::EventCode::AutoCrossfadeArm,
@@ -78,6 +80,22 @@ Java_com_rawsmusic_module_player_NativeAutomaticCrossfadeProcessor_nativeRetime(
             0
         );
     }
+}
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_rawsmusic_module_player_NativeAutomaticCrossfadeProcessor_nativeOutgoingGain(
+    JNIEnv*, jclass, jlong handle
+) {
+    if (auto* processor = from_handle(handle)) return processor->outgoing_gain();
+    return 1.f;
+}
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_rawsmusic_module_player_NativeAutomaticCrossfadeProcessor_nativeIncomingGain(
+    JNIEnv*, jclass, jlong handle
+) {
+    if (auto* processor = from_handle(handle)) return processor->incoming_gain();
+    return 0.f;
 }
 
 extern "C" JNIEXPORT void JNICALL

@@ -20,6 +20,7 @@ internal class SeekTransitionCoordinator(
     private val armFadeIn: (durationMs: Int, reason: String) -> Unit,
     private val seekFadeMs: () -> Int,
     backend: SeekBarrierBackend? = null,
+    private val armOutputBarrier: (Request) -> Unit = {},
 ) : AutoCloseable {
 
     data class Request(
@@ -61,7 +62,11 @@ internal class SeekTransitionCoordinator(
     /** Waits for native render-clock fade-out before allowing decoder mutation. */
     fun awaitDecoderBarrier(request: Request): Boolean {
         if (!isCurrent(request.serial)) return false
-        if (!request.requireFadeOut) return canStartDecoder(request.serial)
+        if (!request.requireFadeOut) {
+            if (!canStartDecoder(request.serial)) return false
+            armOutputBarrier(request)
+            return true
+        }
 
         val completed = fadeOutBlocking(
             seekFadeMs().coerceAtLeast(1),
@@ -77,7 +82,11 @@ internal class SeekTransitionCoordinator(
             "SeekBarrier: fade-out serial=${request.serial} completed=$completed advanced=$advanced " +
                 "snapshot=${barrier.snapshot()}",
         )
-        return advanced && canStartDecoder(request.serial)
+        if (!advanced || !canStartDecoder(request.serial)) return false
+        // Fade-out advances on rendered PCM. Blocking/discarding reads before it completes
+        // drains the producer at decode speed and can turn a seek into a natural next-track EOF.
+        armOutputBarrier(request)
+        return true
     }
 
     fun canStartDecoder(serial: Long): Boolean = barrier.canStartDecoder(serial)

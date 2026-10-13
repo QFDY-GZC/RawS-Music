@@ -98,6 +98,7 @@ import com.rawsmusic.core.ui.widget.utils.InteractiveHighlight
 import com.rawsmusic.core.ui.widget.flow.darkAlbumGradient
 import com.rawsmusic.module.data.prefs.BottomBarMaterial
 import com.rawsmusic.module.data.prefs.BottomBarStyle
+import com.rawsmusic.module.data.prefs.BottomNavigationCompactStyle
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.module.data.prefs.MiniPlayerSecondaryAction
 import io.github.proify.lyricon.lyric.model.Song
@@ -139,6 +140,7 @@ fun GlassBottomChrome(
     playbackDurationMs: Long,
     coverPath: String?,
     currentSong: AudioFile?,
+    automaticCrossfadeTargetPath: String? = null,
     previousSong: AudioFile?,
     nextSong: AudioFile?,
     queueCurrentIndex: Int,
@@ -146,7 +148,7 @@ fun GlassBottomChrome(
     accentColor: Color,
     tabScenes: List<NavScene>,
     selectedTabIndex: Int,
-    onTabSelected: (Int) -> Unit,
+    onTabSelected: (NavScene) -> Unit,
     onSearchSelected: () -> Unit,
     isSearchSelected: Boolean,
     onOpenPlayer: () -> Unit,
@@ -191,16 +193,16 @@ fun GlassBottomChrome(
     val latestExpandStart by rememberUpdatedState(onExpandDragStart)
     val latestExpandProgress by rememberUpdatedState(onExpandDragProgress)
     val latestExpandEnd by rememberUpdatedState(onExpandDragEnd)
-    var miniBounds by remember { mutableStateOf<Rect?>(null) }
+    val gestureGeometry = remember { BottomChromeGestureGeometry() }
     var dragProgress by remember { mutableFloatStateOf(0f) }
 
     val geometry = environment.geometry
     val compact = environment.layoutClass == BottomChromeLayoutClass.Compact
     // UIKit only minimizes this tab-bar form factor on iPhone/compact layouts.
-    val minimizeProgress = if (compact) {
-        scrollState.renderVisibilityProgress.coerceIn(0f, 1f)
-    } else {
-        0f
+    val morphProgressState = remember(scrollState, compact) {
+        derivedStateOf {
+            smoothStep(if (compact) scrollState.renderVisibilityProgress.coerceIn(0f, 1f) else 0f)
+        }
     }
     // PlayerSceneController updates this clock at display refresh rate. Keep the float out of
     // composition: reference player feeds its transition ratio into retained View/RenderNode properties,
@@ -214,30 +216,42 @@ fun GlassBottomChrome(
     val playerSheetVisible by remember(playerSceneProgressState) {
         derivedStateOf { playerProgressProvider() > 0.001f }
     }
-    val morphProgress = smoothStep(minimizeProgress)
+    val morphProgress by morphProgressState
     val selectedIndex = selectedTabIndex.coerceIn(0, tabScenes.lastIndex.coerceAtLeast(0))
     val selectedScene = tabScenes.getOrNull(selectedIndex) ?: tabScenes.firstOrNull()
     // iOS 26 uses a dedicated UISearchTab. Keep Search as the trailing compact control even when
     // Raw's configurable expanded tab list does not contain SEARCH; if Search itself is selected,
     // do not duplicate it as a leading compact control.
     val searchSelected = isSearchSelected || selectedScene == NavScene.SEARCH
-    val leadingCompactTabVisible = selectedScene != null && !searchSelected
-    val trailingSearchVisible = environment.hasNavigation
+    val adaptiveCompact = navigationStyle.compactStyle == BottomNavigationCompactStyle.ADAPTIVE
+    val leadingCompactTabVisible =
+        selectedScene != null &&
+            !searchSelected &&
+            (!adaptiveCompact || navigationStyle.compactLeadingButtonEnabled)
+    val trailingSearchVisible =
+        environment.hasNavigation &&
+            (!adaptiveCompact || navigationStyle.compactTrailingButtonEnabled)
 
-    fun settleExpandedAfterSelection() {
-        if (compact && minimizeProgress > 0.001f) {
-            scope.launch { scrollState.settleTo(BottomChromeStableMode.Expanded) }
+    val latestTabSelected by rememberUpdatedState(onTabSelected)
+    val latestSearchSelected by rememberUpdatedState(onSearchSelected)
+    val settleExpandedAfterSelection = remember(scope, scrollState, compact) {
+        {
+            if (compact && scrollState.renderVisibilityProgress > 0.001f) {
+                scope.launch { scrollState.settleTo(BottomChromeStableMode.Expanded) }
+            }
         }
     }
-
-    fun selectTabAndExpand(index: Int) {
-        onTabSelected(index)
-        settleExpandedAfterSelection()
+    val selectTabAndExpand: (NavScene) -> Unit = remember(settleExpandedAfterSelection) {
+        { scene ->
+            latestTabSelected(scene)
+            settleExpandedAfterSelection()
+        }
     }
-
-    fun selectSearchAndExpand() {
-        onSearchSelected()
-        settleExpandedAfterSelection()
+    val selectSearchAndExpand: () -> Unit = remember(settleExpandedAfterSelection) {
+        {
+            latestSearchSelected()
+            settleExpandedAfterSelection()
+        }
     }
 
     BoxWithConstraints(
@@ -257,9 +271,29 @@ fun GlassBottomChrome(
         val navigationLeadingMargin = navigationStyle.leadingMarginDp.dp
         val navigationTrailingMargin = navigationStyle.trailingMarginDp.dp
         val expandedHorizontalPadding = expandedLeadingMargin + expandedTrailingMargin
-        val expandedMiniWidth = (rootWidth - expandedHorizontalPadding)
+        val wideInline = environment.wideInlineLayout && !compact &&
+            environment.hasMiniPlayer && environment.hasNavigation
+        val preferredWideChromeWidth = environment.regularNavigationMaxWidth +
+            inlineGap + environment.regularAccessoryMaxWidth
+        val wideChromeWidth = (rootWidth - 32.dp)
             .coerceAtLeast(1.dp)
-            .let { if (compact) it else it.coerceAtMost(environment.regularAccessoryMaxWidth) }
+            .coerceAtMost(environment.regularChromeMaxWidth)
+            .coerceAtMost(preferredWideChromeWidth)
+        val wideChromeLeft = (rootWidth - wideChromeWidth) / 2f
+        val wideNavigationWidth = minOf(
+            environment.regularNavigationMaxWidth,
+            (wideChromeWidth * 0.4f).coerceAtLeast(320.dp),
+        )
+        val wideMiniWidth = (wideChromeWidth - wideNavigationWidth - inlineGap)
+            .coerceAtLeast(1.dp)
+            .coerceAtMost(environment.regularAccessoryMaxWidth)
+        val expandedMiniWidth = if (wideInline) {
+            wideMiniWidth
+        } else {
+            (rootWidth - expandedHorizontalPadding)
+                .coerceAtLeast(1.dp)
+                .let { if (compact) it else it.coerceAtMost(environment.regularAccessoryMaxWidth) }
+        }
 
         val inlineLeadingReserve = navigationLeadingMargin +
             (if (leadingCompactTabVisible) compactTabSize + inlineGap else 0.dp)
@@ -294,7 +328,10 @@ fun GlassBottomChrome(
         } else {
             0.dp
         }
-        val miniOpticalShiftX = if (compact) {
+        val miniOpticalShiftX = if (wideInline) {
+            val wideMiniCenter = wideChromeLeft + wideChromeWidth - wideMiniWidth / 2f
+            wideMiniCenter - rootWidth / 2f
+        } else if (compact) {
             lerpDp(expandedMiniCenterShift, inlineMiniCenterShift, morphProgress)
         } else {
             0.dp
@@ -335,12 +372,16 @@ fun GlassBottomChrome(
         )
         val mediaControlVisibility = ((0.72f - morphProgress) / 0.56f).coerceIn(0f, 1f)
 
-        val expandedHorizontalModifier = Modifier
-            .padding(start = navigationLeadingMargin, end = navigationTrailingMargin)
-            .let { base ->
-                if (compact) base.fillMaxWidth()
-                else base.widthIn(max = environment.regularAccessoryMaxWidth).fillMaxWidth()
-            }
+        val expandedHorizontalModifier = if (wideInline) {
+            Modifier.width(wideNavigationWidth)
+        } else {
+            Modifier
+                .padding(start = navigationLeadingMargin, end = navigationTrailingMargin)
+                .let { base ->
+                    if (compact) base.fillMaxWidth()
+                    else base.widthIn(max = environment.regularAccessoryMaxWidth).fillMaxWidth()
+                }
+        }
 
         if (environment.hasNavigation && tabScenes.isNotEmpty()) {
             GlassNavigationSurface(
@@ -351,21 +392,20 @@ fun GlassBottomChrome(
                 accentColor = accentColor,
                 tabScenes = tabScenes,
                 selectedTabIndex = selectedIndex,
-                onTabSelected = ::selectTabAndExpand,
-                minimizeProgress = morphProgress,
+                onTabSelected = selectTabAndExpand,
+                morphProgressState = morphProgressState,
                 playerProgressProvider = playerProgressProvider,
                 playerSheetVisible = playerSheetVisible,
-                surfaceAlpha = 1f - morphProgress,
                 isLight = isLight,
                 performanceMode = performanceMode,
                 modifier = expandedHorizontalModifier
-                    .align(Alignment.BottomCenter)
+                    .align(if (wideInline) Alignment.BottomStart else Alignment.BottomCenter)
                     .padding(bottom = geometry.navigationBottomInset)
                     .offset {
                         IntOffset(
-                            0,
+                            if (wideInline) with(density) { wideChromeLeft.toPx().roundToInt() } else 0,
                             with(density) {
-                                (geometry.navigationMinimizeTravel * morphProgress).toPx().roundToInt()
+                                (geometry.navigationMinimizeTravel * morphProgressState.value).toPx().roundToInt()
                             },
                         )
                     }
@@ -381,7 +421,7 @@ fun GlassBottomChrome(
             if (compact && morphProgress > 0.001f) {
                 val compactAlpha = compactControlAlpha
                 if (leadingCompactTabVisible) GlassCompactTabButton(
-                    scene = selectedScene ?: tabScenes.first(),
+                    scene = selectedScene,
                     selected = true,
                     alpha = compactAlpha,
                     playerProgressProvider = playerProgressProvider,
@@ -392,7 +432,8 @@ fun GlassBottomChrome(
                     accentColor = accentColor,
                     isLight = isLight,
                     performanceMode = performanceMode,
-                    onClick = { selectTabAndExpand(selectedIndex) },
+                    onClick = { selectTabAndExpand(selectedScene) },
+                    enabled = morphProgress >= 0.5f && compactAlpha > 0.12f && !playerSheetVisible,
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(
@@ -414,7 +455,8 @@ fun GlassBottomChrome(
                         accentColor = accentColor,
                         isLight = isLight,
                         performanceMode = performanceMode,
-                        onClick = ::selectSearchAndExpand,
+                        onClick = selectSearchAndExpand,
+                        enabled = morphProgress >= 0.5f && compactAlpha > 0.12f && !playerSheetVisible,
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
                             .padding(
@@ -428,7 +470,8 @@ fun GlassBottomChrome(
         }
 
         if (environment.hasMiniPlayer) {
-            val miniGestureModifier = Modifier.pointerInput(windowInfo.containerSize.width, miniWidth) {
+            // Width changes during every morph frame, not the gesture owner's identity.
+            val miniGestureModifier = Modifier.pointerInput(windowInfo.containerSize.width) {
                 val velocityTracker = VelocityTracker()
                 detectVerticalDragGestures(
                     onDragStart = { position ->
@@ -440,7 +483,7 @@ fun GlassBottomChrome(
                     onVerticalDrag = { change, dragAmount ->
                         velocityTracker.addPosition(change.uptimeMillis, change.position)
                         // The measured accessory top is the exact sheet travel owned by the host.
-                        val travel = (miniBounds?.top ?: size.height.toFloat()).coerceAtLeast(1f)
+                        val travel = (gestureGeometry.bounds?.top ?: size.height.toFloat()).coerceAtLeast(1f)
                         dragProgress = (dragProgress - dragAmount / travel).coerceIn(0f, 1f)
                         latestExpandProgress(dragProgress)
                         change.consume()
@@ -479,16 +522,23 @@ fun GlassBottomChrome(
                     .graphicsLayer {
                         // PLAYER and bottom chrome share the controller's single transition clock.
                         val playerProgress = playerProgressProvider()
-                        translationY = with(density) { 18.dp.toPx() } * playerProgress
                         alpha = (1f - playerProgress * 1.35f).coerceIn(0f, 1f)
-                        val scale = 1f - 0.018f * playerProgress
-                        scaleX = scale
-                        scaleY = scale
+                        // The material draws more than its foreground shape: backdrop lens,
+                        // chromatic refraction, highlight and shadow all have their own pixels.
+                        // When width/corner parameters change, relying on drawBackdrop's outline
+                        // alone leaves those effects outside the new accessory edge (a rectangular
+                        // color block above and a colored trail below the rounded corner).
+                        // Clip the *whole* physical MiniPlayer RenderNode to the same live shape.
+                        shape = miniShape
+                        clip = true
+                        // This holder is the shared artwork's collapsed endpoint. Do not move
+                        // or scale it underneath the actor and publish those animated bounds
+                        // as a new source rectangle during a fast return.
                     }
                     .then(miniGestureModifier)
                     .onGloballyPositioned { coordinates ->
                         val bounds = coordinates.boundsInRoot()
-                        miniBounds = bounds
+                        gestureGeometry.bounds = bounds
                         onMiniPlayerBoundsChanged(bounds)
                     }
                     .then(
@@ -514,6 +564,7 @@ fun GlassBottomChrome(
                     playbackDurationMs = playbackDurationMs,
                     coverPath = coverPath,
                     currentSong = currentSong,
+                    automaticCrossfadeTargetPath = automaticCrossfadeTargetPath,
                     previousSong = previousSong,
                     nextSong = nextSong,
                     queueCurrentIndex = queueCurrentIndex,
@@ -606,17 +657,20 @@ private fun GlassNavigationSurface(
     accentColor: Color,
     tabScenes: List<NavScene>,
     selectedTabIndex: Int,
-    onTabSelected: (Int) -> Unit,
-    minimizeProgress: Float,
+    onTabSelected: (NavScene) -> Unit,
+    morphProgressState: State<Float>,
     playerProgressProvider: () -> Float,
     playerSheetVisible: Boolean,
-    surfaceAlpha: Float,
     isLight: Boolean,
     performanceMode: Boolean,
     height: Dp,
     modifier: Modifier = Modifier,
 ) {
     val staticForeground = usesReferenceStaticForeground()
+    // Only interaction topology changes at the threshold. Continuous visuals read in layer phase.
+    val expandedInteractionsEnabled by remember(morphProgressState) {
+        derivedStateOf { morphProgressState.value < 0.5f }
+    }
     val selectedColor = if (staticForeground) Color.White else accentColor
     val unselectedColor = if (staticForeground) Color.White.copy(alpha = 0.66f)
         else if (isLight) Color.Black.copy(alpha = 0.62f) else Color.White.copy(alpha = 0.66f)
@@ -633,7 +687,15 @@ private fun GlassNavigationSurface(
     val offsetAnimation = remember { Animatable(0f) }
 
     BoxWithConstraints(
-        modifier = modifier.height(height),
+        modifier = modifier
+            .height(height)
+            // The navigation's selector, tinted recording layer and refracted glass must share
+            // the configured outline. The background alone being rounded does not constrain the
+            // selector's second backdrop recording or its chromatic/lens spill at the corners.
+            .graphicsLayer {
+                this.shape = shape
+                clip = true
+            },
         contentAlignment = Alignment.CenterStart,
     ) {
         val tabsCount = tabScenes.size.coerceAtLeast(1)
@@ -671,7 +733,7 @@ private fun GlassNavigationSurface(
                     val changed = currentIndex != targetIndex
                     currentIndex = targetIndex
                     animateToValue(targetIndex.toFloat())
-                    if (changed) onTabSelected(targetIndex)
+                    if (changed) tabScenes.getOrNull(targetIndex)?.let(onTabSelected)
                     animationScope.launch {
                         offsetAnimation.animateTo(
                             0f,
@@ -737,14 +799,11 @@ private fun GlassNavigationSurface(
         // same 8dp relationship when users customize the navigation height instead of shrinking the
         // selector a second time during the bottom-chrome morph.
         val selectorHeight = (height - 8.dp).coerceAtLeast(24.dp)
-        val surfaceVisualAlpha = surfaceAlpha.coerceIn(0f, 1f)
-        val morphScale = 1f - 0.035f * minimizeProgress
         // Material and geometry are independent owners. LIQUID_GLASS must use the real
         // refraction/recording-lane renderer regardless of whether the bottom chrome geometry is
         // NORMAL or FLOATING; keeping this tied to BottomBarStyle made the Appearance material
         // selector look ineffective whenever the current geometry happened to be NORMAL.
         val floatingDemoStyle = bottomBarMaterial == BottomBarMaterial.LIQUID_GLASS
-        val commonSurfaceAlpha = surfaceVisualAlpha * (1f - playerProgressProvider()).coerceIn(0f, 1f)
 
         // Source demo layer 1: the visible 64dp glass row. Its content stays neutral; the selected
         // accent is produced by the tinted recording + selector above it, not by recoloring this row.
@@ -752,9 +811,10 @@ private fun GlassNavigationSurface(
             modifier = Modifier
                 .graphicsLayer {
                     translationX = panelOffset
-                    alpha = commonSurfaceAlpha
-                    scaleX = morphScale
-                    scaleY = morphScale
+                    alpha = (1f - morphProgressState.value).coerceIn(0f, 1f) *
+                        (1f - playerProgressProvider()).coerceIn(0f, 1f)
+                    scaleX = 1f - 0.035f * morphProgressState.value
+                    scaleY = scaleX
                 }
                 .then(
                     if (floatingDemoStyle) {
@@ -824,12 +884,12 @@ private fun GlassNavigationSurface(
                             interactionSource = null,
                             indication = null,
                             enabled = !selectorMotion.isUserDragging &&
-                                surfaceAlpha > 0.12f && !playerSheetVisible,
+                                expandedInteractionsEnabled && !playerSheetVisible,
                         ) {
                             if (currentIndex != index) {
                                 currentIndex = index
                                 selectorMotion.animateToValue(index.toFloat())
-                                onTabSelected(index)
+                                onTabSelected(scene)
                             }
                         },
                     contentAlignment = Alignment.Center,
@@ -852,7 +912,7 @@ private fun GlassNavigationSurface(
                             maxLines = 1,
                             overflow = TextOverflow.Clip,
                             modifier = Modifier.graphicsLayer {
-                                alpha = (1f - minimizeProgress).coerceIn(0f, 1f)
+                                alpha = (1f - morphProgressState.value).coerceIn(0f, 1f)
                             },
                         )
                     }
@@ -931,7 +991,7 @@ private fun GlassNavigationSurface(
                                 maxLines = 1,
                                 overflow = TextOverflow.Clip,
                                 modifier = Modifier.graphicsLayer {
-                                    alpha = (1f - minimizeProgress).coerceIn(0f, 1f)
+                                    alpha = (1f - morphProgressState.value).coerceIn(0f, 1f)
                                 },
                             )
                         }
@@ -950,12 +1010,13 @@ private fun GlassNavigationSurface(
                 .height(selectorHeight)
                 .align(Alignment.CenterStart)
                 .graphicsLayer {
-                    alpha = commonSurfaceAlpha
-                    scaleX = morphScale
-                    scaleY = morphScale
+                    alpha = (1f - morphProgressState.value).coerceIn(0f, 1f) *
+                        (1f - playerProgressProvider()).coerceIn(0f, 1f)
+                    scaleX = 1f - 0.035f * morphProgressState.value
+                    scaleY = scaleX
                 }
                 .then(
-                    if (surfaceAlpha > 0.12f && !playerSheetVisible) {
+                    if (expandedInteractionsEnabled && !playerSheetVisible) {
                         if (performanceMode) selectorMotion.modifier
                         else interactiveHighlight.gestureModifier.then(selectorMotion.modifier)
                     } else {
@@ -1043,6 +1104,7 @@ private fun GlassCompactTabButton(
     isLight: Boolean,
     performanceMode: Boolean,
     onClick: () -> Unit,
+    enabled: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val interactionSource = remember(scene) { MutableInteractionSource() }
@@ -1070,6 +1132,8 @@ private fun GlassCompactTabButton(
                     (1f - playerProgressProvider()).coerceIn(0f, 1f)
                 scaleX = pressScale
                 scaleY = pressScale
+                this.shape = shape
+                clip = true
             }
             .then(
                 Modifier.glassSurfaceModifier(
@@ -1084,6 +1148,7 @@ private fun GlassCompactTabButton(
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
+                enabled = enabled,
                 onClick = onClick,
             ),
         contentAlignment = Alignment.Center,

@@ -51,8 +51,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.rawsmusic.module.data.prefs.PlayerHiResBadgeSettings
+import com.rawsmusic.module.data.prefs.AppPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -65,7 +67,7 @@ private const val ARTWORK_LOCAL_UPDATE_MS = 50
 private const val ARTWORK_PROGRAMMATIC_POSITION_MS = 550
 private const val ARTWORK_GESTURE_SETTLE_MS = 650
 private const val AUTO_CROSSFADE_ARTWORK_FADE_OUT_MS = 1_000
-private const val AUTO_CROSSFADE_ARTWORK_FADE_IN_MS = 1_200
+internal const val AUTO_CROSSFADE_ARTWORK_FADE_IN_MS = 1_200
 private const val ARTWORK_MAX_COMMANDS = 16
 private const val ARTWORK_FRAME_HEADER = 4
 private const val ARTWORK_COMMAND_STRIDE = 4
@@ -285,6 +287,40 @@ internal fun isNaturalPlaybackArtworkAdvance(
     manualNavigationBinding: Boolean,
     hasManualDirectionHint: Boolean,
 ): Boolean = queueAdvanced && !manualNavigationBinding && !hasManualDirectionHint
+
+/**
+ * A retained adjacent artwork holder is a source of *geometry/direction*, not a user action.
+ * Automatic renderer crossfade commits normally find the next song in that already-mounted
+ * holder. Treating its presence as a manual direction hint routes precisely those commits into
+ * the configured swipe/button animation instead of the automatic artwork dissolve.
+ */
+internal data class PlaybackArtworkAdvanceClassification(
+    val queueAdvanced: Boolean,
+    val isNaturalQueueAdvance: Boolean,
+)
+
+internal fun classifyPlaybackArtworkAdvance(
+    queueIndexAdvanced: Boolean,
+    queueSize: Int,
+    manualNavigationBinding: Boolean,
+    manualDirectionHint: PlayerArtworkDirection?,
+    physicalAdjacentDirection: PlayerArtworkDirection?,
+): PlaybackArtworkAdvanceClassification {
+    val advanced = queueIndexAdvanced ||
+        (queueSize > 1 && (
+            manualNavigationBinding ||
+                manualDirectionHint != null ||
+                physicalAdjacentDirection != null
+        ))
+    return PlaybackArtworkAdvanceClassification(
+        queueAdvanced = advanced,
+        isNaturalQueueAdvance = isNaturalPlaybackArtworkAdvance(
+            queueAdvanced = advanced,
+            manualNavigationBinding = manualNavigationBinding,
+            hasManualDirectionHint = manualDirectionHint != null,
+        ),
+    )
+}
 
 /** Long auto artwork dissolve belongs only to a genuine natural advance while Auto Crossfade is on. */
 internal fun shouldUseAutomaticCrossfadeArtwork(
@@ -534,11 +570,6 @@ class PlaybackArtworkTransitionState internal constructor(
         topologyChanged: Boolean,
         pixelsChangedToken: Int = 0,
     ) {
-        if (topologyChanged) {
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.TOPOLOGY_NOTIFY)
-        } else if (pixelsChangedToken != 0) {
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.PIXEL_NOTIFY)
-        }
         var index = 0
         while (index < presentationObservers.size) {
             presentationObservers[index].onPresentationChanged(topologyChanged, pixelsChangedToken)
@@ -567,21 +598,6 @@ class PlaybackArtworkTransitionState internal constructor(
         }
     }
 
-    private fun updateArtworkPerfState(reason: String) {
-        PlaybackArtworkPerfTrace.setState(
-            "reason=$reason dir=$direction ratio=${"%.3f".format(ratio)} gesture=$isGestureActive " +
-                "settling=$isSettling pending=$pendingCommit manual=$manualProgrammaticTransition " +
-                "cur=${PlaybackArtworkPerfTrace.keyTag(currentKey)}/$currentToken " +
-                "target=${PlaybackArtworkPerfTrace.keyTag(targetKey)}/$targetToken " +
-                "queueTargets=${queuedProgrammaticTargets.size} prev=${gesturePreviousSlot?.token ?: 0} " +
-                "next=${gestureNextSlot?.token ?: 0}"
-        )
-    }
-
-    private fun beginArtworkPerf(kind: String, detail: String) {
-        PlaybackArtworkPerfTrace.begin(kind, detail)
-        updateArtworkPerfState(kind)
-    }
 
     internal var direction by mutableStateOf(PlayerArtworkDirection.Next)
         private set
@@ -721,11 +737,6 @@ class PlaybackArtworkTransitionState internal constructor(
         val key = expectedKey?.takeIf { it.isNotBlank() } ?: return false
         armManualNavigation(direction, key, expectedQueueIndex)
         if (key == currentKey) return false
-        beginArtworkPerf(
-            kind = "manual_${direction.name.lowercase()}",
-            detail = "key=${PlaybackArtworkPerfTrace.keyTag(key)} qIndex=$expectedQueueIndex ratio=${"%.3f".format(ratio)}",
-        )
-        PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.MANUAL_REQUEST)
         if (
             manualProgrammaticTransition &&
             isSettling &&
@@ -738,18 +749,27 @@ class PlaybackArtworkTransitionState internal constructor(
             if (queuedProgrammaticTargets.none { it.key == key }) {
                 queuedProgrammaticTargets.addLast(ProgrammaticRetarget(direction, key))
             }
-            PlaybackArtworkPerfTrace.mark(
-                "manual_queue",
-                "key=${PlaybackArtworkPerfTrace.keyTag(key)} queued=${queuedProgrammaticTargets.size}",
-            )
             restartProgrammaticChainFromCurrentFraction()
             return true
         }
         manualProgrammaticTransition = true
         if (!isSettling) programmaticVelocityPagesPerSecond = 0f
         if (key == targetKey) {
+            // A renderer acknowledgement may have re-enabled targetAutoSettle while the
+            // old gesture rollback job still runs. The motion curve identifies that job.
+            val resumeReturningTarget = isSettling &&
+                targetSettleCurve == ArtworkSettleCurve.Gesture && !isGestureActive
             targetAutoSettle = true
-            requestTargetAutoSettle()
+            if (resumeReturningTarget) {
+                // Next -> Previous -> Next can reuse the same retained target while its
+                // rollback still owns transitionJob. Reusing the holder must also replace
+                // that old destination; otherwise finishSettle(0) drops the confirmed target.
+                targetSettleDurationMs = ARTWORK_PROGRAMMATIC_POSITION_MS
+                targetSettleCurve = ArtworkSettleCurve.Programmatic
+                settleTo(1f, 0f)
+            } else {
+                requestTargetAutoSettle()
+            }
             return true
         }
         beginTarget(direction, key, autoSettle = true, fadeOnly = false, autoCrossfadeFade = false, settleDurationMs = ARTWORK_PROGRAMMATIC_POSITION_MS, settleCurve = ArtworkSettleCurve.Programmatic)
@@ -817,10 +837,6 @@ class PlaybackArtworkTransitionState internal constructor(
         targetAutoSettle = false
         targetSettleDurationMs = ARTWORK_GESTURE_SETTLE_MS
         targetSettleCurve = ArtworkSettleCurve.Gesture
-        PlaybackArtworkPerfTrace.mark(
-            "manual_reverse",
-            "ratio=${"%.3f".format(ratio)} cur=${PlaybackArtworkPerfTrace.keyTag(currentKey)} target=${PlaybackArtworkPerfTrace.keyTag(targetKey)}",
-        )
         settleTo(0f, 0f)
         return true
     }
@@ -971,10 +987,6 @@ class PlaybackArtworkTransitionState internal constructor(
             // Keep the three moving holders on the active playback tier. A source/original viewer
             // wrapper larger than the selected 1024/1536 policy is normalized asynchronously.
             handle.release()
-            PlaybackArtworkPerfTrace.mark(
-                "pager_cache_oversize_deferred",
-                "key=${PlaybackArtworkPerfTrace.keyTag(key)} bitmap=${bitmap.width}x${bitmap.height} preferred=$preferredSide",
-            )
             return null
         }
         return handle
@@ -1056,10 +1068,6 @@ class PlaybackArtworkTransitionState internal constructor(
                 gestureOwned = true,
             )
         )
-        PlaybackArtworkPerfTrace.mark(
-            "gesture_chain_confirm",
-            "key=${PlaybackArtworkPerfTrace.keyTag(key)} queued=${queuedProgrammaticTargets.size} qIndex=$queueIndex",
-        )
         // Only the first future page has a free physical third holder. Later identities remain logical
         // until the preceding boundary rotates that holder, exactly like the existing button chain.
         if (queuedProgrammaticTargets.size == 1) {
@@ -1081,11 +1089,6 @@ class PlaybackArtworkTransitionState internal constructor(
 
     private fun beginEdgeGesture(direction: PlayerArtworkDirection): Boolean {
         if (closed || currentKey.isBlank() || targetKey.isNotBlank()) return false
-        beginArtworkPerf(
-            kind = "gesture_edge_${direction.name.lowercase()}",
-            detail = "cur=${PlaybackArtworkPerfTrace.keyTag(currentKey)} queueSize=$queueSize",
-        )
-        PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.GESTURE_BEGIN)
         transitionJob?.cancel()
         manualProgrammaticTransition = false
         isSettling = false
@@ -1110,6 +1113,9 @@ class PlaybackArtworkTransitionState internal constructor(
 
     /** Starts a user-controlled artwork drag. */
     fun beginGesture(direction: PlayerArtworkDirection, expectedKey: String?): Boolean {
+        // This entry belongs to player artwork swipes, not programmatic transport or home paging.
+        // Check once at gesture capture, preserving long presses and vertical scene navigation.
+        if (AppPreferences.UI.playerSwipeToChangeTrackDisabled) return false
         val key = expectedKey?.takeIf { it.isNotBlank() }
         if (key == null) return beginEdgeGesture(direction)
         if (key == currentKey && queueSize <= 1 && targetKey.isBlank()) {
@@ -1140,11 +1146,6 @@ class PlaybackArtworkTransitionState internal constructor(
         } else {
             0f
         }
-        beginArtworkPerf(
-            kind = "gesture_${direction.name.lowercase()}",
-            detail = "key=${PlaybackArtworkPerfTrace.keyTag(key)} ratio=${"%.3f".format(ratio)} pending=$pendingCommit settling=$isSettling",
-        )
-        PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.GESTURE_BEGIN)
         transitionJob?.cancel()
         manualProgrammaticTransition = false
         isSettling = false
@@ -1164,7 +1165,6 @@ class PlaybackArtworkTransitionState internal constructor(
             // Previous drag must be able to grab that same pair immediately. Swap only their logical
             // roles and invert the fraction: Next(A current, B target, r) is pixel-identical to
             // Previous(B current, A target, 1-r). The two retained Holder Views do not move/rebind.
-            PlaybackArtworkPerfTrace.mark("gesture_reverse_grab", "ratio=${"%.3f".format(ratio)}")
             rebaseCommittedSettleForReverseGesture(direction)
             gestureBaseRatio = ratio
             gestureOriginSignedPosition = -direction.sign.toFloat() * ratio
@@ -1176,10 +1176,6 @@ class PlaybackArtworkTransitionState internal constructor(
             // that physical pair and lets the next pointer continue through B into C; it does not
             // publish B as a transient idle layout first. Keep pendingCommit=true until the exact
             // holder boundary is crossed, and prewarm C in the parked third-slot lane.
-            PlaybackArtworkPerfTrace.mark(
-                "gesture_continue_settle",
-                "next=${PlaybackArtworkPerfTrace.keyTag(key)} ratio=${"%.3f".format(ratio)}",
-            )
             continuedGestureTargetKey = key
             continuedGestureDirection = direction
             continuedGestureStartRatio = ratio.coerceIn(0f, 1f)
@@ -1479,11 +1475,6 @@ class PlaybackArtworkTransitionState internal constructor(
         if (!isGestureActive || closed) return false
         if (edgeGestureWithoutTarget) {
             val releaseDirection = direction
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.GESTURE_END)
-            PlaybackArtworkPerfTrace.mark(
-                "gesture_edge_end",
-                "ratio=${"%.3f".format(ratio)} velocity=${velocityPxPerSecond.toInt()}",
-            )
             isGestureActive = false
             edgeGestureWithoutTarget = false
             pendingCommit = false
@@ -1507,12 +1498,6 @@ class PlaybackArtworkTransitionState internal constructor(
                 gestureTravelProgress = travelProgress,
                 direction = continuationDirection,
                 velocityPxPerSecond = velocityPxPerSecond,
-            )
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.GESTURE_END)
-            PlaybackArtworkPerfTrace.mark(
-                "gesture_followup_end",
-                "commit=$rapidCommit travel=${"%.3f".format(travelProgress)} ratio=${"%.3f".format(ratio)} " +
-                    "velocity=${velocityPxPerSecond.toInt()} queued=${queuedProgrammaticTargets.size}",
             )
             isGestureActive = false
 
@@ -1592,11 +1577,6 @@ class PlaybackArtworkTransitionState internal constructor(
             direction = direction,
             velocityPxPerSecond = velocityPxPerSecond,
         )
-        PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.GESTURE_END)
-        PlaybackArtworkPerfTrace.mark(
-            "gesture_end",
-            "commit=$commit ratio=${"%.3f".format(effectiveProgress)} velocity=${velocityPxPerSecond.toInt()} width=${artworkWidthPx.toInt()}",
-        )
         isGestureActive = false
         pendingCommit = commit
         pendingGestureCommit = null
@@ -1623,7 +1603,6 @@ class PlaybackArtworkTransitionState internal constructor(
                 isSettling = false
                 setRatioFromUi(1f)
                 publishFrame(0L)
-                PlaybackArtworkPerfTrace.mark("gesture_endpoint_hold", "key=${PlaybackArtworkPerfTrace.keyTag(targetKey)}")
             } else {
                 settleTo(1f, towardTargetSpeed)
             }
@@ -1662,18 +1641,31 @@ class PlaybackArtworkTransitionState internal constructor(
         settleTo(0f, 0f)
     }
 
+    private var retainedGestureOutgoingKey = ""
+    private var retainedGestureCommitKey = ""
+    private var retainedGestureBindingDeadlineMs = 0L
+
+    /** A vertical gesture can promote artwork before transport metadata reaches Compose. */
+    internal fun retainGestureCommitUntilBinding(outgoingKey: String, committedKey: String) {
+        retainedGestureOutgoingKey = outgoingKey
+        retainedGestureCommitKey = committedKey
+        retainedGestureBindingDeadlineMs = SystemClock.uptimeMillis() + 4_000L
+    }
+
     internal fun bindSong(key: String, queueIndex: Int, newQueueSize: Int) {
+        val bindingNowMs = SystemClock.uptimeMillis()
+        val bindingLeaseActive = bindingNowMs <= retainedGestureBindingDeadlineMs
+        val explicitManual = pendingManualNavigationKeys[key]?.let { it >= bindingNowMs } == true
+        if (ignoreStalePromotedGestureBinding(key, currentKey, retainedGestureOutgoingKey,
+                retainedGestureCommitKey, bindingLeaseActive, explicitManual)) return
+        if (!bindingLeaseActive || key == retainedGestureCommitKey ||
+            (key.isNotBlank() && key != retainedGestureOutgoingKey) || explicitManual) {
+            retainedGestureOutgoingKey = ""
+            retainedGestureCommitKey = ""
+            retainedGestureBindingDeadlineMs = 0L
+        }
         queueSize = newQueueSize.coerceAtLeast(0)
         if (closed || key.isBlank()) return
-        val artworkPerfWasActiveAtBind = PlaybackArtworkPerfTrace.isActive()
-        if (artworkPerfWasActiveAtBind) {
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.BIND_SONG)
-            PlaybackArtworkPerfTrace.mark(
-                "bind_song",
-                "key=${PlaybackArtworkPerfTrace.keyTag(key)} index=$queueIndex size=$queueSize cur=${PlaybackArtworkPerfTrace.keyTag(currentKey)} target=${PlaybackArtworkPerfTrace.keyTag(targetKey)}",
-            )
-        }
-
         val oldIndex = lastQueueIndex
         lastQueueIndex = queueIndex
         boundSongKey = key
@@ -1688,10 +1680,6 @@ class PlaybackArtworkTransitionState internal constructor(
         }
 
         if (queuedProgrammaticTargets.any { it.key == key }) {
-            PlaybackArtworkPerfTrace.mark(
-                "bind_queued_future",
-                "key=${PlaybackArtworkPerfTrace.keyTag(key)} queued=${queuedProgrammaticTargets.size}",
-            )
             // The newest player identity may arrive before the visual scroller crosses the previous
             // physical page. ArtworkPagerMotion does not snap that page to centre first; the existing fractional
             // scroller owns the crossing and will install this exact key at the boundary.
@@ -1710,7 +1698,6 @@ class PlaybackArtworkTransitionState internal constructor(
         }
         if (key == currentKey) return
         if (key == targetKey) {
-            PlaybackArtworkPerfTrace.mark("bind_matches_target", "token=$targetToken ratio=${"%.3f".format(ratio)}")
             targetAutoSettle = true
             if (pendingCommit && ratio >= 0.9995f) {
                 // Direct manipulation already placed the physical artwork holder at its final position.
@@ -1753,37 +1740,16 @@ class PlaybackArtworkTransitionState internal constructor(
         // the new key is misclassified as a same-position metadata refresh and snaps with no ArtworkPager
         // motion. Natural advances are resolved by callers from the exact currentSong identity in
         // the same queue snapshot.
-        val queueAdvanced = queueIndexAdvanced ||
-            (queueSize > 1 && (
-                manualNavigationBinding ||
-                    hinted != null ||
-                    physicalAdjacentDirection != null
-            ))
-        if (!queueIndexAdvanced && physicalAdjacentDirection != null) {
-            PlaybackArtworkPerfTrace.mark(
-                "bind_physical_adjacent_owner",
-                "key=${PlaybackArtworkPerfTrace.keyTag(key)} dir=$physicalAdjacentDirection index=$queueIndex",
-            )
-        }
-        val isNaturalQueueAdvance = isNaturalPlaybackArtworkAdvance(
-            queueAdvanced = queueAdvanced,
+        val advance = classifyPlaybackArtworkAdvance(
+            queueIndexAdvanced = queueIndexAdvanced,
+            queueSize = queueSize,
             manualNavigationBinding = manualNavigationBinding,
-            hasManualDirectionHint = hinted != null || physicalAdjacentDirection != null,
+            manualDirectionHint = hinted,
+            physicalAdjacentDirection = physicalAdjacentDirection,
         )
+        val queueAdvanced = advance.queueAdvanced
+        val isNaturalQueueAdvance = advance.isNaturalQueueAdvance
         val isManualProgrammaticAdvance = queueAdvanced && !isNaturalQueueAdvance
-        if (queueAdvanced) {
-            if (!artworkPerfWasActiveAtBind) {
-                beginArtworkPerf(
-                    kind = if (isNaturalQueueAdvance) "natural_${resolvedDirection.name.lowercase()}" else "program_bind_${resolvedDirection.name.lowercase()}",
-                    detail = "key=${PlaybackArtworkPerfTrace.keyTag(key)} oldIndex=$oldIndex newIndex=$queueIndex",
-                )
-                PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.BIND_SONG)
-            }
-            PlaybackArtworkPerfTrace.mark(
-                "queue_advance",
-                "manual=$isManualProgrammaticAdvance natural=$isNaturalQueueAdvance dir=$resolvedDirection $oldIndex->$queueIndex",
-            )
-        }
         if (
             isManualProgrammaticAdvance &&
             manualProgrammaticTransition &&
@@ -1800,10 +1766,6 @@ class PlaybackArtworkTransitionState internal constructor(
             if (queuedProgrammaticTargets.none { it.key == key }) {
                 queuedProgrammaticTargets.addLast(ProgrammaticRetarget(resolvedDirection, key))
             }
-            PlaybackArtworkPerfTrace.mark(
-                "bind_extend_chain",
-                "key=${PlaybackArtworkPerfTrace.keyTag(key)} queued=${queuedProgrammaticTargets.size} ratio=${"%.3f".format(ratio)}",
-            )
             // The first future page is the one physical third ArtworkImageNode. Later queue entries stay
             // logical until a boundary frees that holder; Reference never overwrites C with D while
             // the A->B page is still using C as its retained neighbour.
@@ -2013,6 +1975,15 @@ class PlaybackArtworkTransitionState internal constructor(
     internal fun foregroundArtworkBitmap(): Bitmap? =
         visual(currentToken) ?: visual(targetToken)
 
+    /**
+     * Read-only bridge for overlay hosts that live outside the core:ui Gradle module.
+     *
+     * Overlays must reuse the exact foreground artwork owner rather than starting a parallel
+     * BitmapProvider request. This keeps player -> popup shared-art handoff pixel-identical across
+     * module boundaries while retaining mutation ownership inside PlaybackArtworkTransitionState.
+     */
+    fun overlayArtworkBitmap(): Bitmap? = foregroundArtworkBitmap()
+
     internal fun foregroundArtworkBitmapForKey(key: String): Bitmap? =
         sequenceOf(currentToken, targetToken)
             .mapNotNull { visuals[it] }
@@ -2201,12 +2172,6 @@ class PlaybackArtworkTransitionState internal constructor(
             destinationPages = destinationPages,
             retainedVelocityPagesPerSecond = retainedVelocity,
         )
-        PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.PROGRAMMATIC_CHAIN_RESTART)
-        PlaybackArtworkPerfTrace.mark(
-            "chain_restart",
-            "start=${"%.3f".format(startFraction)} pages=${"%.2f".format(destinationPages)} queued=$queuedCountAtStart velocity=${"%.2f".format(retainedVelocity)} duration=${durationMs}ms",
-        )
-        updateArtworkPerfState("chain_restart")
 
         transitionJob = scope.launch {
             // The target holder is already attached. Do not burn the first Choreographer callback
@@ -2256,11 +2221,6 @@ class PlaybackArtworkTransitionState internal constructor(
 
     private fun commitProgrammaticBoundaryWithoutStopping() {
         if (targetKey.isBlank() || !targetHolderReadyForMotion()) return
-        PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.PROGRAMMATIC_BOUNDARY)
-        PlaybackArtworkPerfTrace.mark(
-            "chain_boundary",
-            "from=${PlaybackArtworkPerfTrace.keyTag(currentKey)} to=${PlaybackArtworkPerfTrace.keyTag(targetKey)} token=$targetToken",
-        )
         val outgoingKey = currentKey
         val outgoingToken = currentToken
         val outgoingQuality = currentQuality
@@ -2302,11 +2262,6 @@ class PlaybackArtworkTransitionState internal constructor(
         }
         targetToken = parkedTarget?.also { targetQuality = it.quality }?.token ?: 0
         if (targetToken != 0) {
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.TARGET_INSTALL_HOT)
-            PlaybackArtworkPerfTrace.mark(
-                "target_hot",
-                "key=${PlaybackArtworkPerfTrace.keyTag(next.key)} token=$targetToken q=$targetQuality",
-            )
             NativePlayerArtworkBridge.setArtwork(
                 nativeHandle,
                 targetToken,
@@ -2319,12 +2274,6 @@ class PlaybackArtworkTransitionState internal constructor(
         } else {
             installCachedTarget(next.key)
             if (targetToken == 0) {
-                PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.TARGET_INSTALL_COLD)
-                PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.COLD_TARGET_WAIT)
-                PlaybackArtworkPerfTrace.mark(
-                    "target_cold",
-                    "key=${PlaybackArtworkPerfTrace.keyTag(next.key)} queued=${queuedProgrammaticTargets.size}",
-                )
                 // Boundary commit intentionally did not publish. A true cold third-holder miss
                 // still needs exactly one topology update for the newly-current artwork.
                 publishFrame(0L)
@@ -2406,8 +2355,6 @@ class PlaybackArtworkTransitionState internal constructor(
         val outgoingKey = currentKey
         val outgoingToken = currentToken
         val outgoingQuality = currentQuality
-        if (manualProgrammaticTransition && targetSettleCurve == ArtworkSettleCurve.Programmatic) {
-        }
         NativePlayerArtworkBridge.setRatio(nativeHandle, 1f)
         generation += 1
         NativePlayerArtworkBridge.commit(nativeHandle, generation, 0)
@@ -2671,21 +2618,9 @@ class PlaybackArtworkTransitionState internal constructor(
         if (oldCurrentToken != 0 && oldCurrentToken != currentToken) visuals.remove(oldCurrentToken)?.release()
         if (oldTargetToken != 0 && oldTargetToken != currentToken) visuals.remove(oldTargetToken)?.release()
         releaseUnusedVisuals()
-        if (PlaybackArtworkPerfTrace.isActive()) {
-            PlaybackArtworkPerfTrace.mark(
-                "bind_offscreen_direct",
-                "key=${PlaybackArtworkPerfTrace.keyTag(key)} token=$currentToken",
-            )
-            PlaybackArtworkPerfTrace.discard()
-        }
     }
 
     private fun resetToBoundSong(key: String) {
-        if (PlaybackArtworkPerfTrace.isActive()) {
-            PlaybackArtworkPerfTrace.mark("reset_bound_song", "key=${PlaybackArtworkPerfTrace.keyTag(key)}")
-            updateArtworkPerfState("reset_bound_song")
-            PlaybackArtworkPerfTrace.discard()
-        }
         val oldCurrentToken = currentToken
         val oldCurrentKey = currentKey
         transitionJob?.cancel()
@@ -2769,12 +2704,6 @@ class PlaybackArtworkTransitionState internal constructor(
             // Exactly one provider owner while the three ArtworkImageNodes are attached. The state may
             // retain a second ref-counted wrapper after the holder callback, but never starts a
             // parallel decode/request for navigation or parked/future identities.
-            if (PlaybackArtworkPerfTrace.isActive()) {
-                PlaybackArtworkPerfTrace.mark(
-                    "art_request_holder_owned",
-                    "key=${PlaybackArtworkPerfTrace.keyTag(key)}",
-                )
-            }
             return
         }
         val preferredSide = BitmapProvider.preferredPlaybackTargetSide()
@@ -2788,15 +2717,8 @@ class PlaybackArtworkTransitionState internal constructor(
             return
         }
         if (residentCoverage >= preferredSide) {
-            if (PlaybackArtworkPerfTrace.isActive()) {
-                PlaybackArtworkPerfTrace.mark(
-                    "art_request_skip_resident",
-                    "key=${PlaybackArtworkPerfTrace.keyTag(key)} q=$residentQuality side=$residentCoverage preferred=$preferredSide",
-                )
-            }
             return
         }
-        PlaybackArtworkPerfTrace.artworkRequest(key)
 
         // Reference baseline implementation ArtworkImageNode.image provider callback issues one provider request for a bound physical
         // holder. The provider owns cache/source selection and returns the wrapper; ArtworkImageNode then
@@ -2818,11 +2740,6 @@ class PlaybackArtworkTransitionState internal constructor(
             if (loads[key] === load) loads.remove(key)
             if (bitmap != null && !bitmap.isRecycled) {
                 val quality = ArtworkDisplayResolver.qualityForPlaybackBitmap(bitmap)
-                PlaybackArtworkPerfTrace.artworkArrived(
-                    key = key,
-                    quality = quality,
-                    lane = "provider_single",
-                )
                 val handle = BitmapProvider.acquireLoaded(
                     key = key,
                     bitmap = bitmap,
@@ -2833,11 +2750,6 @@ class PlaybackArtworkTransitionState internal constructor(
                 )
                 if (handle != null) acceptHandle(key, handle, quality)
             } else if (providerRequest?.terminalNoArt == true) {
-                PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.ARTWORK_TERMINAL)
-                PlaybackArtworkPerfTrace.mark(
-                    "art_terminal",
-                    "key=${PlaybackArtworkPerfTrace.keyTag(key)} lane=provider_single",
-                )
                 acceptTerminalNoArtwork(key)
             }
         }
@@ -2852,20 +2764,6 @@ class PlaybackArtworkTransitionState internal constructor(
         if (closed || handle?.isValid != true) {
             handle?.release()
             return
-        }
-        if (PlaybackArtworkPerfTrace.isActive()) {
-            val role = when {
-                key == currentKey -> "current"
-                key == targetKey -> "target"
-                key == gesturePreviousSlot?.key -> "previous"
-                key == gestureNextSlot?.key -> "next"
-                queuedProgrammaticTargets.any { it.key == key } -> "queued"
-                else -> "other"
-            }
-            PlaybackArtworkPerfTrace.mark(
-                "accept_handle",
-                "key=${PlaybackArtworkPerfTrace.keyTag(key)} q=$quality role=$role bitmap=${handle.bitmap.width}x${handle.bitmap.height}",
-            )
         }
 
         when (key) {
@@ -2929,6 +2827,17 @@ class PlaybackArtworkTransitionState internal constructor(
                 else if (pendingCommit && !isGestureActive && !isSettling) settleTo(1f, 0f)
             }
             boundSongKey -> {
+                // Decoding is not a transport acknowledgement. After a gesture promotes B,
+                // boundSongKey may still be A until Compose binds B. Keep A in its parked
+                // holder; treating its late wrapper as an external switch starts B -> A.
+                if (shouldParkOutgoingGestureCallback(key, currentKey, boundSongKey,
+                        retainedGestureOutgoingKey, retainedGestureCommitKey,
+                        SystemClock.uptimeMillis() <= retainedGestureBindingDeadlineMs)) {
+                    val parked = parkedGestureSlotForKey(key)
+                    if (parked != null) acceptParkedArtworkHandle(key, handle, quality, parked.first)
+                    else handle.release()
+                    return
+                }
                 val queuedDirection = queuedProgrammaticTargets.firstOrNull { it.key == key }?.direction
                 if (queuedDirection != null) {
                     // The player may confirm C before the absolute A -> B -> C scroller reaches B.
@@ -3175,12 +3084,6 @@ class PlaybackArtworkTransitionState internal constructor(
     private fun settleTo(end: Float, towardTargetSpeed: Float) {
         transitionJob?.cancel()
         if (closed) return
-        if (!PlaybackArtworkPerfTrace.isActive()) {
-            beginArtworkPerf(
-                kind = "settle",
-                detail = "target=${PlaybackArtworkPerfTrace.keyTag(targetKey)} end=${"%.2f".format(end)}",
-            )
-        }
         val target = end.coerceIn(0f, 1f)
         val start = ratio.coerceIn(0f, 1f)
         val distance = abs(target - start)
@@ -3219,11 +3122,6 @@ class PlaybackArtworkTransitionState internal constructor(
         } else {
             ARTWORK_GESTURE_SETTLE_MS
         }
-        PlaybackArtworkPerfTrace.mark(
-            "settle_start",
-            "start=${"%.3f".format(start)} end=${"%.3f".format(target)} duration=${durationMs}ms curve=$targetSettleCurve velocity=${"%.2f".format(towardTargetSpeed)}",
-        )
-        updateArtworkPerfState("settle_start")
 
         transitionJob = scope.launch {
             // The target holder is already attached. Do not burn the first Choreographer callback
@@ -3313,14 +3211,8 @@ class PlaybackArtworkTransitionState internal constructor(
             publishFrame(0L)
             releaseUnusedVisuals()
             applyDeferredGestureTargetKeys()
-            updateArtworkPerfState("settle_duplicate_neutral")
-            PlaybackArtworkPerfTrace.stop("settle_duplicate_neutral")
             return
         }
-        PlaybackArtworkPerfTrace.mark(
-            "settle_finish",
-            "end=${"%.3f".format(end)} cur=${PlaybackArtworkPerfTrace.keyTag(currentKey)} target=${PlaybackArtworkPerfTrace.keyTag(targetKey)} token=$targetToken",
-        )
         isSettling = false
         clearContinuedGesture()
         programmaticVelocityPagesPerSecond = 0f
@@ -3357,8 +3249,6 @@ class PlaybackArtworkTransitionState internal constructor(
                 publishFrame(0L)
                 releaseUnusedVisuals()
                 applyDeferredGestureTargetKeys()
-                updateArtworkPerfState("settle_stale_target")
-                PlaybackArtworkPerfTrace.discard()
                 return
             }
             val committedKey = targetKey
@@ -3424,19 +3314,12 @@ class PlaybackArtworkTransitionState internal constructor(
             releaseUnusedVisuals()
             applyDeferredGestureTargetKeys()
         }
-        updateArtworkPerfState(if (end >= 1f) "settle_commit" else "settle_rollback")
-        if (end >= 1f) {
-            PlaybackArtworkPerfTrace.stop("settle_commit")
-        } else {
-            PlaybackArtworkPerfTrace.discard()
-        }
     }
 
     private fun writeUiRatioState(value: Float) {
         val clamped = value.coerceIn(0f, 1f)
         presentationRatio = clamped
         ratio = clamped
-        PlaybackArtworkPerfTrace.ratioFrame(clamped)
     }
 
     private fun updateUiRatio(value: Float) {
@@ -3455,7 +3338,6 @@ class PlaybackArtworkTransitionState internal constructor(
         presentationRatio = clamped
         notifyPresentationObservers(topologyChanged = false)
         ratio = clamped
-        PlaybackArtworkPerfTrace.ratioFrame(clamped)
     }
 
     private fun setRatioFromUi(value: Float) {
@@ -3555,7 +3437,6 @@ class PlaybackArtworkTransitionState internal constructor(
 
     override fun close() {
         if (closed) return
-        if (PlaybackArtworkPerfTrace.isActive()) PlaybackArtworkPerfTrace.discard()
         closed = true
         clearContinuedGesture()
         presentationObservers.clear()
@@ -3967,7 +3848,16 @@ internal fun playerArtworkTitleTransform(
     progress: Float,
     itemExtentPx: Float,
     density: Float,
-): ForegroundItemTransform = playerArtworkForegroundTransform(
+    fadeOnly: Boolean = false,
+    automaticCrossfade: Boolean = false,
+): ForegroundItemTransform = if (fadeOnly) plainArtworkAlphaTransform(
+    when (role) {
+        PlayerArtworkItemRole.Current -> if (automaticCrossfade)
+            automaticCrossfadeArtworkOutAlpha(progress) else 1f - progress.coerceIn(0f, 1f)
+        PlayerArtworkItemRole.Target -> if (automaticCrossfade)
+            automaticCrossfadeArtworkInAlpha(progress) else progress.coerceIn(0f, 1f)
+    }
+) else playerArtworkForegroundTransform(
     style = style,
     role = role,
     direction = direction,
@@ -4023,11 +3913,6 @@ fun PlaybackArtworkTransition(
     hiResBadgeSettings: PlayerHiResBadgeSettings = PlayerHiResBadgeSettings(),
     hiResArtworkKeys: Set<String> = emptySet(),
 ) {
-    SideEffect {
-        if (PlaybackArtworkPerfTrace.isActive()) {
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.ARTWORK_PAGER_COMPOSE_COMMIT)
-        }
-    }
     if (animationStyle == PlayerArtworkAnimationStyle.PerspectiveDepth) {
         // ArtworkPager is a View pager, not a Compose scene graph. Keep the exact three physical artwork
         // holders in Android View space so every ratio tick becomes property writes on existing
@@ -4036,6 +3921,7 @@ fun PlaybackArtworkTransition(
         val insetPx = with(density) { contentInset.roundToPx() }
         val radiusPx = with(density) { cornerRadius.toPx() }
         val elevationPx = with(density) { contentElevation.toPx() }
+        val badgeTextSizePx = with(density) { 10.sp.toPx() }
         AndroidView(
             factory = { context ->
                 ArtworkPagerView(context).apply {
@@ -4045,6 +3931,7 @@ fun PlaybackArtworkTransition(
                         localScale = contentScaleFactor,
                         radiusPx = radiusPx,
                         elevationPx = elevationPx,
+                        badgeTextSizePx = badgeTextSizePx,
                         hiResBadgeSettings = hiResBadgeSettings,
                         hiResArtworkKeys = hiResArtworkKeys,
                     )
@@ -4057,6 +3944,7 @@ fun PlaybackArtworkTransition(
                     localScale = contentScaleFactor,
                     radiusPx = radiusPx,
                     elevationPx = elevationPx,
+                    badgeTextSizePx = badgeTextSizePx,
                     hiResBadgeSettings = hiResBadgeSettings,
                     hiResArtworkKeys = hiResArtworkKeys,
                 )
@@ -4233,6 +4121,7 @@ fun PlaybackArtworkTransition(
                         PlayerHiResBadgeOverlay(
                             corner = hiResBadgeSettings.corner,
                             customBitmap = customBadgeBitmap,
+                            sizeScale = hiResBadgeSettings.sizeScale,
                             contentInset = contentInset,
                             contentScaleFactor = contentScaleFactor,
                         )
@@ -4256,11 +4145,6 @@ fun PlaybackArtworkMetadataTransition(
     modifier: Modifier = Modifier,
     content: @Composable (artworkKey: String, isInteractiveCurrent: Boolean) -> Unit,
 ) {
-    SideEffect {
-        if (PlaybackArtworkPerfTrace.isActive()) {
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.ARTWORK_METADATA_COMPOSE_COMMIT)
-        }
-    }
     val currentKey = state.foregroundCurrentKey()
     val targetKey = state.foregroundTargetKey()
     val currentToken = state.foregroundCurrentToken()

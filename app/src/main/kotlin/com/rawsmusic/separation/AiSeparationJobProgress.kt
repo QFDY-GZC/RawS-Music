@@ -75,11 +75,17 @@ object AiSeparationJobProgressBus {
         }
     }
 
-    fun requestCancel(taskId: String = mutable.value.taskId) {
+    fun requestCancel(
+        taskId: String = mutable.value.taskId,
+        message: String? = null,
+    ) {
         synchronized(lock) {
             val current = mutable.value
             if (current.active && current.taskId == taskId) {
-                mutable.value = current.copy(cancelRequested = true, message = "正在取消 AI 分离")
+                mutable.value = current.copy(
+                    cancelRequested = true,
+                    message = message ?: current.message,
+                )
             }
         }
     }

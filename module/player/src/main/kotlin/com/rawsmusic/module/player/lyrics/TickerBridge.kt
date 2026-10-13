@@ -332,10 +332,10 @@ object TickerBridge {
 
         val channel = NotificationChannel(
             CHANNEL_ID_HEADS_UP,
-            "悬浮歌词",
+            context.getString(R.string.notification_channel_floating_lyrics),
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            description = "非魅族设备上以悬浮通知形式显示歌词"
+            description = context.getString(R.string.notification_channel_floating_lyrics_description)
             setSound(null, null)
             enableVibration(false)
             setShowBadge(false)
@@ -432,10 +432,10 @@ object TickerBridge {
 
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Flyme 状态栏歌词",
+            context.getString(R.string.notification_channel_flyme_lyrics),
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "用于向 Flyme 状态栏推送歌词"
+            description = context.getString(R.string.notification_channel_flyme_lyrics_description)
             setSound(null, null)
             enableVibration(false)
             setShowBadge(false)

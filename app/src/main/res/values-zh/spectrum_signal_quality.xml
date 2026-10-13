@@ -1,0 +1,35 @@
+<resources>
+    <string name="spectrum_signal_grade_unrated">暂无法评级</string>
+    <string name="spectrum_signal_grade_poor">差</string>
+    <string name="spectrum_signal_grade_fair">一般</string>
+    <string name="spectrum_signal_grade_high">较高</string>
+    <string name="spectrum_signal_grade_review">较高 · 来源待核对</string>
+    <string name="spectrum_signal_grade_reference">较高 · 参考一致</string>
+    <string name="spectrum_signal_summary">%1$s %2$s</string>
+    <string name="spectrum_signal_good">实测信号未见明显电平、声道或频带问题。</string>
+    <string name="spectrum_signal_reference">实测未见明显问题，且完整 PCM 与所选参考一致。</string>
+    <string name="spectrum_signal_missing">音频过短或必要实测数据不足，暂无法评定。</string>
+    <string name="spectrum_signal_silence">信号几乎静音，没有足够内容评定。</string>
+    <string name="spectrum_signal_incomplete">实际解码长度与记录时长明显不符，需要检查文件完整性。</string>
+    <string name="spectrum_signal_rail">存在大量连续满幅样本，削波风险明显。</string>
+    <string name="spectrum_signal_strong_dc">直流偏置明显，占用了大量有效电平余量。</string>
+    <string name="spectrum_signal_dc">检测到值得处理的直流偏置。</string>
+    <string name="spectrum_signal_true_peak">真实峰值超过满幅，存在重建过载风险。</string>
+    <string name="spectrum_signal_phase">左右声道明显负相关，合并为单声道时会衰减。</string>
+    <string name="spectrum_signal_balance">左右声道平均电平差异较大，需要核对混音。</string>
+    <string name="spectrum_signal_compressed">峰均比偏低，信号动态较紧；也可能与编配有关。</string>
+    <string name="spectrum_signal_bandwidth">可测频带较窄，解析范围受限；语音或旧录音可能本就如此。</string>
+    <string name="spectrum_signal_source_review">电平与声道表现较好，但频带或精度出现低规格来源线索。</string>
+    <string name="spectrum_signal_grade_basis">等级依据</string>
+    <string name="spectrum_signal_grade_rules">等级来自当前解码信号的实测筛查：明显连续满幅或强直流偏置评为“差”；过载风险、声道抵消、强压缩、频带限制等评为“一般”；未触发规则评为“较高”。响度、LRA、码率和格式标签不会单独证明音质优劣。来源线索会另行标明。此等级不评价音乐内容与个人听感。</string>
+    <string name="spectrum_signal_loudness_title">响度与真实峰值</string>
+    <string name="spectrum_signal_loudness_values">综合响度：%1$s LUFS\n响度范围：%2$s LU\n真实峰值：%3$s dBTP\nLUFS 和 LRA 描述响度与变化，数值大或小本身不代表好坏。</string>
+    <string name="spectrum_signal_channels_title">声道与直流偏置</string>
+    <string name="spectrum_signal_channels_values">左／右直流偏置：%1$s%% / %2$s%%\n去直流后的声道相关性：%3$s\n中置／侧向 RMS：%4$s / %5$s dBFS\n单声道、静音或零方差信号的相关性不作判断。接近 1 不等于劣质立体声。</string>
+    <string name="spectrum_signal_coverage_title">完整性与静音统计</string>
+    <string name="spectrum_signal_coverage_values">已解码：%1$s 秒；记录时长：%2$s 秒\n近静音（双声道均 ≤ −100 dBFS）：%3$s%%\n最长连续近静音：%4$s 秒\n精确整数极值：%5$d 帧 / %6$d 帧\n静音可能来自前奏、间奏或结尾；整数极值不单独证明可闻削波。</string>
+    <string name="spectrum_signal_analysis_scope">本次分析：%1$d Hz，%2$d 声道，FFT %3$d 点。原始声道较多时仅评估下混信号；DSD／重采样结果仅代表已解码的 PCM。</string>
+    <string name="spectrum_signal_not_measured">未测得</string>
+    <string name="spectrum_signal_lossless_encoding">无损编码</string>
+    <string name="spectrum_signal_lossy_encoding">有损编码</string>
+</resources>

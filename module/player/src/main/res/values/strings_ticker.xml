@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel_floating_lyrics">Floating lyrics</string>
+    <string name="notification_channel_floating_lyrics_description">Shows lyrics as floating notifications on non-Meizu devices</string>
+    <string name="notification_channel_flyme_lyrics">Flyme status-bar lyrics</string>
+    <string name="notification_channel_flyme_lyrics_description">Sends lyrics to the Flyme status bar</string>
+</resources>

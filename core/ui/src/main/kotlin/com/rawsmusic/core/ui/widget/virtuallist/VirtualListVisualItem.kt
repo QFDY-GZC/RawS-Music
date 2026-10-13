@@ -24,14 +24,25 @@ interface VirtualListVisualItem {
 internal const val VIRTUAL_LIST_COLLECTION_ENCODING = "raws_collection"
 internal const val VIRTUAL_LIST_COLLECTION_OTHER_ENCODING = "raws_collection_other"
 internal const val VIRTUAL_LIST_FOLDER_ENCODING = "raws_collection_folder"
+internal const val VIRTUAL_LIST_ARTIST_ALL_SONGS_ENCODING = "raws_artist_all_songs"
+
+// Stable grouping sentinels inherited by older library snapshots. Never render these directly;
+// presentation code supplies locale-specific labels to the item models below.
+internal const val VIRTUAL_LIST_UNKNOWN_ALBUM_SENTINEL = "未知专辑"
+internal const val VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL = "未知艺术家"
+internal const val VIRTUAL_LIST_UNKNOWN_GENRE_SENTINEL = "未知流派"
+internal const val VIRTUAL_LIST_UNKNOWN_YEAR_SENTINEL = "未知年份"
+internal const val VIRTUAL_LIST_UNKNOWN_COMPOSER_SENTINEL = "未知作曲家"
 
 internal enum class VirtualListArtworkRadiusType {
     TRACK,
     ALBUM,
     OTHER,
+    ARTIST_ALL_SONGS,
 }
 
 internal fun AudioFile.virtualListArtworkRadiusType(): VirtualListArtworkRadiusType = when (encodingFormat) {
+    VIRTUAL_LIST_ARTIST_ALL_SONGS_ENCODING -> VirtualListArtworkRadiusType.ARTIST_ALL_SONGS
     VIRTUAL_LIST_COLLECTION_OTHER_ENCODING -> VirtualListArtworkRadiusType.OTHER
     VIRTUAL_LIST_COLLECTION_ENCODING,
     VIRTUAL_LIST_FOLDER_ENCODING -> VirtualListArtworkRadiusType.ALBUM
@@ -41,7 +52,8 @@ internal fun AudioFile.virtualListArtworkRadiusType(): VirtualListArtworkRadiusT
 internal fun AudioFile.hasVirtualListCollectionMetaIcon(): Boolean =
     encodingFormat == VIRTUAL_LIST_COLLECTION_ENCODING ||
         encodingFormat == VIRTUAL_LIST_COLLECTION_OTHER_ENCODING ||
-        encodingFormat == VIRTUAL_LIST_FOLDER_ENCODING
+        encodingFormat == VIRTUAL_LIST_FOLDER_ENCODING ||
+        encodingFormat == VIRTUAL_LIST_ARTIST_ALL_SONGS_ENCODING
 
 
 internal fun <S, T> retainedMappedList(
@@ -113,16 +125,42 @@ data class AlbumVirtualListItem(
     val artist: String,
     val cover: String,
     val songCount: Int,
-    val totalDurationMs: Long
+    val totalDurationMs: Long,
+    val unknownAlbumLabel: String,
+    val unknownArtistLabel: String,
 ) : VirtualListVisualItem {
 
     override val stableId: Long get() = stableVirtualListHash64(key)
     override val stableKey: String get() = key
     override val sharedCoverElementId: String get() = "cover:album:$stableId"
     override val coverKey: String get() = cover
-    override val title: String get() = name.ifBlank { "未知专辑" }
-    override val subtitle: String get() = artist.ifBlank { "未知艺术家" }
+    override val title: String
+        get() = name.takeUnless { it == VIRTUAL_LIST_UNKNOWN_ALBUM_SENTINEL }
+            .orEmpty().ifBlank { unknownAlbumLabel }
+    override val subtitle: String
+        get() = artist.takeUnless { it == VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL }
+            .orEmpty().ifBlank { unknownArtistLabel }
     override val meta: String get() = "$songCount | ${formatVirtualListDuration(totalDurationMs)}"
+}
+
+/**
+ * Artist-detail provider item for the all-songs entry.
+ *
+ * This is deliberately not an album and not a fake song. It exists as a dedicated provider item
+ * immediately before the artist's first real album.
+ */
+data class ArtistAllSongsVirtualListItem(
+    val artistKey: String,
+    override val title: String,
+    val cover: String,
+    val songCountText: String,
+) : VirtualListVisualItem {
+    override val stableId: Long = stableVirtualListHash64("artist-all-songs:$artistKey")
+    override val stableKey: String = "artist-all-songs:$artistKey"
+    override val sharedCoverElementId: String = "cover:artist-all-songs:${stableVirtualListHash64(artistKey)}"
+    override val coverKey: String = cover
+    override val subtitle: String = ""
+    override val meta: String = songCountText
 }
 
 data class ArtistVirtualListItem(
@@ -131,15 +169,19 @@ data class ArtistVirtualListItem(
     val cover: String,
     val songCount: Int,
     val albumCount: Int,
-    val totalDurationMs: Long
+    val totalDurationMs: Long,
+    val unknownArtistLabel: String,
+    val albumCountLabel: String,
 ) : VirtualListVisualItem {
 
     override val stableId: Long get() = stableVirtualListHash64(key)
     override val stableKey: String get() = key
     override val sharedCoverElementId: String get() = "cover:artist:$stableId"
     override val coverKey: String get() = cover
-    override val title: String get() = name.ifBlank { "未知艺术家" }
-    override val subtitle: String get() = "$albumCount 张专辑"
+    override val title: String
+        get() = name.takeUnless { it == VIRTUAL_LIST_UNKNOWN_ARTIST_SENTINEL }
+            .orEmpty().ifBlank { unknownArtistLabel }
+    override val subtitle: String get() = albumCountLabel
     override val meta: String get() = "$songCount | ${formatVirtualListDuration(totalDurationMs)}"
 }
 
@@ -148,15 +190,19 @@ data class GenreVirtualListItem(
     val name: String,
     val cover: String,
     val songCount: Int,
-    val totalDurationMs: Long
+    val totalDurationMs: Long,
+    val unknownGenreLabel: String,
+    val categoryLabel: String,
 ) : VirtualListVisualItem {
 
     override val stableId: Long get() = stableVirtualListHash64(key)
     override val stableKey: String get() = key
     override val sharedCoverElementId: String get() = "cover:genre:$stableId"
     override val coverKey: String get() = cover
-    override val title: String get() = name.ifBlank { "未知流派" }
-    override val subtitle: String get() = "流派"
+    override val title: String
+        get() = name.takeUnless { it == VIRTUAL_LIST_UNKNOWN_GENRE_SENTINEL }
+            .orEmpty().ifBlank { unknownGenreLabel }
+    override val subtitle: String get() = categoryLabel
     override val meta: String get() = "$songCount | ${formatVirtualListDuration(totalDurationMs)}"
 }
 
@@ -165,15 +211,19 @@ data class YearVirtualListItem(
     val name: String,
     val cover: String,
     val songCount: Int,
-    val totalDurationMs: Long
+    val totalDurationMs: Long,
+    val unknownYearLabel: String,
+    val categoryLabel: String,
 ) : VirtualListVisualItem {
 
     override val stableId: Long get() = stableVirtualListHash64(key)
     override val stableKey: String get() = key
     override val sharedCoverElementId: String get() = "cover:year:$stableId"
     override val coverKey: String get() = cover
-    override val title: String get() = name.ifBlank { "未知年份" }
-    override val subtitle: String get() = "年份"
+    override val title: String
+        get() = name.takeUnless { it == VIRTUAL_LIST_UNKNOWN_YEAR_SENTINEL }
+            .orEmpty().ifBlank { unknownYearLabel }
+    override val subtitle: String get() = categoryLabel
     override val meta: String get() = "$songCount | ${formatVirtualListDuration(totalDurationMs)}"
 }
 
@@ -182,15 +232,19 @@ data class ComposerVirtualListItem(
     val name: String,
     val cover: String,
     val songCount: Int,
-    val totalDurationMs: Long
+    val totalDurationMs: Long,
+    val unknownComposerLabel: String,
+    val categoryLabel: String,
 ) : VirtualListVisualItem {
 
     override val stableId: Long get() = stableVirtualListHash64(key)
     override val stableKey: String get() = key
     override val sharedCoverElementId: String get() = "cover:composer:$stableId"
     override val coverKey: String get() = cover
-    override val title: String get() = name.ifBlank { "未知作曲家" }
-    override val subtitle: String get() = "作曲家"
+    override val title: String
+        get() = name.takeUnless { it == VIRTUAL_LIST_UNKNOWN_COMPOSER_SENTINEL }
+            .orEmpty().ifBlank { unknownComposerLabel }
+    override val subtitle: String get() = categoryLabel
     override val meta: String get() = "$songCount | ${formatVirtualListDuration(totalDurationMs)}"
 }
 

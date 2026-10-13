@@ -42,6 +42,7 @@ object SafMusicScanner {
     )
 
     private class TreeScanAccumulator {
+        val seenFiles = HashSet<String>()
         val skippedDirectories = linkedSetOf<String>()
         val directorySnapshots = linkedMapOf<String, Long>()
     }
@@ -51,13 +52,21 @@ object SafMusicScanner {
 
     /** Reads tags only after the cold-start fingerprint gate marks this SAF file as changed/new. */
     fun enrichSong(context: Context, raw: AudioFile): AudioFile {
-        val uri = runCatching { Uri.parse(raw.path) }.getOrNull() ?: return raw
+        return enrichSongOutcome(context, raw).song
+    }
+
+    fun enrichSongOutcome(context: Context, raw: AudioFile): MetadataScanOutcome {
+        if (com.rawsmusic.core.common.sacd.SacdIsoBridge.isIso(raw)) {
+            val enriched = com.rawsmusic.core.common.sacd.SacdIsoBridge.enrichContainer(raw)
+            return MetadataScanOutcome(enriched, enriched.format.equals("SACD-ISO", true))
+        }
+        val uri = runCatching { Uri.parse(raw.path) }.getOrNull() ?: return MetadataScanOutcome(raw, false)
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(context, uri)
             val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                 ?.toLongOrNull()?.coerceAtLeast(0L) ?: raw.duration
-            raw.copy(
+            MetadataScanOutcome(raw.copy(
                 duration = duration,
                 title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
                     .orEmpty().ifBlank { raw.title },
@@ -75,10 +84,10 @@ object SafMusicScanner {
                     ?.take(4)?.toIntOrNull() ?: raw.year,
                 trackNumber = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)
                     ?.substringBefore('/')?.toIntOrNull() ?: raw.trackNumber
-            )
+            ), completed = duration > 0L)
         } catch (error: Throwable) {
             Log.w(TAG, "incremental SAF enrich failed: $uri", error)
-            raw
+            MetadataScanOutcome(raw, false)
         } finally {
             runCatching { retriever.release() }
         }
@@ -88,14 +97,16 @@ object SafMusicScanner {
         context: Context,
         quickScan: Boolean = false,
         incrementalDirectoryScan: Boolean = false,
-        baselineSongs: List<AudioFile> = emptyList()
+        baselineSongs: List<AudioFile> = emptyList(),
+        directorySnapshotsBaseline: Map<String, Long> = emptyMap(),
+        baselineIndex: ScanPathIndex = ScanPathIndex(baselineSongs)
     ): ScanReport {
         val result = mutableListOf<AudioFile>()
         val successful = linkedSetOf<String>()
         val failed = linkedMapOf<String, String>()
         var skippedDirectoryCount = 0
         val directorySnapshots = linkedMapOf<String, Long>()
-        val directoryState = if (incrementalDirectoryScan) DirectoryScanState.index() else null
+        val directoryState = if (incrementalDirectoryScan) DirectoryScanState.index(directorySnapshotsBaseline) else null
 
         AppPreferences.Scanner.musicFolderUris.forEach { rawUri ->
             val treeUri = runCatching { Uri.parse(rawUri) }.getOrNull()
@@ -112,7 +123,7 @@ object SafMusicScanner {
                     result,
                     quickScan,
                     incrementalDirectoryScan,
-                    baselineSongs,
+                    baselineIndex,
                     directoryState
                 )
             }
@@ -127,7 +138,7 @@ object SafMusicScanner {
                         result,
                         quickScan,
                         incrementalDirectoryScan,
-                        baselineSongs,
+                        baselineIndex,
                         directoryState
                     )
                 }
@@ -154,7 +165,6 @@ object SafMusicScanner {
             successful += rawUri
         }
 
-        if (incrementalDirectoryScan) DirectoryScanState.commit(directorySnapshots)
 
         return ScanReport(
             songs = result.distinctBy(::scanIdentity),
@@ -171,7 +181,7 @@ object SafMusicScanner {
         out: MutableList<AudioFile>,
         quickScan: Boolean,
         incrementalDirectoryScan: Boolean,
-        baselineSongs: List<AudioFile>,
+        baselineSongs: ScanPathIndex,
         directoryState: DirectoryScanState.Index?
     ): TreeScanReport {
         val rootDocumentId = DocumentsContract.getTreeDocumentId(treeUri)
@@ -190,7 +200,7 @@ object SafMusicScanner {
             accumulator,
             directoryState
         )
-        appendReusedBaselineSongs(out, baselineSongs, accumulator.skippedDirectories)
+        appendReusedBaselineSongs(out, baselineSongs, accumulator.skippedDirectories, accumulator.seenFiles)
         return TreeScanReport(accumulator.skippedDirectories, accumulator.directorySnapshots)
     }
 
@@ -203,14 +213,14 @@ object SafMusicScanner {
         visited: MutableSet<String>,
         quickScan: Boolean,
         incrementalDirectoryScan: Boolean,
-        baselineSongs: List<AudioFile>,
+        baselineSongs: ScanPathIndex,
         accumulator: TreeScanAccumulator,
         directoryState: DirectoryScanState.Index?
     ) {
         if (!visited.add(parentDocumentId)) return
 
         val folderUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentDocumentId)
-        val hasBaseline = baselineSongs.any { isSongUnderSafDirectory(it.path, folderUri) }
+        val hasBaseline = baselineSongs.hasRowsUnder(folderUri.toString())
         val skipUnchangedFiles = incrementalDirectoryScan && directoryState?.canSkip(
                 DirectoryScanState.safKey(folderUri.toString()),
                 folderModifiedAt,
@@ -254,6 +264,7 @@ object SafMusicScanner {
                     isDirectory = mime == DocumentsContract.Document.MIME_TYPE_DIR
                 )
 
+                if (!entry.isDirectory) accumulator.seenFiles += entry.uri.toString()
                 if (entry.isDirectory) {
                     scanDocumentChildren(
                         context,
@@ -283,7 +294,7 @@ object SafMusicScanner {
         out: MutableList<AudioFile>,
         quickScan: Boolean,
         incrementalDirectoryScan: Boolean,
-        baselineSongs: List<AudioFile>,
+        baselineSongs: ScanPathIndex,
         directoryState: DirectoryScanState.Index?
     ): TreeScanReport {
         val root = DocumentFile.fromTreeUri(context, treeUri)
@@ -301,7 +312,7 @@ object SafMusicScanner {
             accumulator,
             directoryState
         )
-        appendReusedBaselineSongs(out, baselineSongs, accumulator.skippedDirectories)
+        appendReusedBaselineSongs(out, baselineSongs, accumulator.skippedDirectories, accumulator.seenFiles)
         return TreeScanReport(accumulator.skippedDirectories, accumulator.directorySnapshots)
     }
 
@@ -312,14 +323,14 @@ object SafMusicScanner {
         visitedFolders: MutableSet<String>,
         quickScan: Boolean,
         incrementalDirectoryScan: Boolean,
-        baselineSongs: List<AudioFile>,
+        baselineSongs: ScanPathIndex,
         accumulator: TreeScanAccumulator,
         directoryState: DirectoryScanState.Index?
     ) {
         val folderUri = folder.uri.toString()
         if (!visitedFolders.add(folderUri)) return
         val folderModifiedAt = folder.lastModified()
-        val hasBaseline = baselineSongs.any { isSongUnderSafDirectory(it.path, folder.uri) }
+        val hasBaseline = baselineSongs.hasRowsUnder(folder.uri.toString())
         val skipUnchangedFiles = incrementalDirectoryScan && directoryState?.canSkip(
                 DirectoryScanState.safKey(folderUri),
                 folderModifiedAt,
@@ -332,6 +343,7 @@ object SafMusicScanner {
         folder.listFiles().forEach { file ->
             val name = file.name.orEmpty()
             if (shouldSkipName(name)) return@forEach
+            if (file.isFile) accumulator.seenFiles += file.uri.toString()
             when {
                 file.isDirectory -> scanDocumentFileRecursive(
                     context,
@@ -390,17 +402,16 @@ object SafMusicScanner {
 
     private fun appendReusedBaselineSongs(
         out: MutableList<AudioFile>,
-        baselineSongs: List<AudioFile>,
-        skippedDirectories: Set<String>
+        baselineSongs: ScanPathIndex,
+        skippedDirectories: Set<String>,
+        seenFiles: Set<String>
     ) {
         if (skippedDirectories.isEmpty()) return
-        baselineSongs.physicalScanRows().filter { song ->
-            skippedDirectories.any { directory -> isSongDirectlyUnderSafDirectory(song.path, Uri.parse(directory)) }
-        }.forEach(out::add)
+        skippedDirectories.flatMap(baselineSongs::directRows).physicalScanRows().filter { it.path in seenFiles }.forEach(out::add)
     }
 
-    private fun shouldScanSafFile(entry: SafEntry, baselineSongs: List<AudioFile>): Boolean {
-        val candidates = baselineSongs.filter { it.path.equals(entry.uri.toString(), ignoreCase = true) }
+    private fun shouldScanSafFile(entry: SafEntry, baselineSongs: ScanPathIndex): Boolean {
+        val candidates = baselineSongs.rowsForPath(entry.uri.toString())
         return candidates.isEmpty() || candidates.any { old ->
             old.fileSize != entry.size ||
                 old.dateModified <= 0L ||
@@ -542,7 +553,7 @@ object SafMusicScanner {
     private val AUDIO_EXTENSIONS = setOf(
         "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus",
         "ape", "wv", "tta", "tak", "alac", "aiff", "aif",
-        "dsf", "dff", "mka", "mpc", "ac3", "eac3", "ec3", "truehd", "thd", "mlp"
+        "dsf", "dff", "mka", "mpc", "ac3", "eac3", "ec3", "truehd", "thd", "mlp", "iso"
     )
 
     private val VIDEO_EXTENSIONS = setOf(

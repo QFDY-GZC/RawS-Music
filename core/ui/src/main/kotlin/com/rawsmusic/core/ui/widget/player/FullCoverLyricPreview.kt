@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -79,6 +80,7 @@ internal fun FullCoverLyricPreview(
         durationMs = durationMs,
     )
     val lines = remember(song) { song?.lyrics.orEmpty() }
+    val japaneseGlyphDocument = remember(lines) { isJapaneseLyricDocument(lines) }
     val interludes = remember(lines) { calculateLyricInterludes(lines) }
     val lyricTimeline = remember(lines, interludes) { LyricTimelineIndex(lines, interludes) }
     val visibleIndices = remember(lines) { visibleLyricLineIndices(lines) }
@@ -92,75 +94,77 @@ internal fun FullCoverLyricPreview(
         buildFullCoverLyricPresentation(lines, visibleIndices, currentIndex)
     }
 
-    AnimatedContent(
-        targetState = presentation,
-        transitionSpec = {
-            (slideInVertically(
-                initialOffsetY = { height -> height / 5 },
-                animationSpec = tween(280, easing = FullCoverLyricMotionEasing),
-            ) + fadeIn(tween(220, easing = FullCoverLyricMotionEasing))) togetherWith
-                (slideOutVertically(
-                    targetOffsetY = { height -> -height / 6 },
-                    animationSpec = tween(220, easing = FullCoverLyricMotionEasing),
-                ) + fadeOut(tween(180, easing = FullCoverLyricMotionEasing)))
-        },
-        label = "full-cover-live-lyric",
-        modifier = modifier,
-    ) { state ->
-        Column(modifier = Modifier.fillMaxWidth()) {
-            state.rows.forEach { row ->
-                when (row) {
-                    is FullCoverLyricRow.Timed -> {
-                        val rowModifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSeek(row.line.begin) }
-                            .padding(vertical = if (row.active) 3.dp else 2.dp)
-                        if (row.active && !row.line.words.isNullOrEmpty()) {
-                            KaraokeLyricLine(
-                                line = row.line,
-                                positionMs = smoothPositionMs,
-                                highlightColor = Color.White,
-                                dimColor = Color.White.copy(alpha = 0.38f),
-                                fontSize = 18.sp,
-                                lineHeight = 23.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                textAlign = TextAlign.End,
-                                wordLiftDp = 0.45.dp,
-                                wordLiftScale = 0.015f,
-                                glowEnabled = true,
-                                liftEnabled = true,
-                                modifier = rowModifier,
-                            )
-                        } else {
-                            Text(
-                                text = row.primary,
-                                color = Color.White.copy(alpha = if (row.active) 0.96f else 0.48f),
-                                fontSize = if (row.active) 18.sp else 14.sp,
-                                lineHeight = if (row.active) 23.sp else 19.sp,
-                                fontWeight = if (row.active) FontWeight.SemiBold else FontWeight.Medium,
-                                textAlign = TextAlign.End,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = FullCoverLyricShadowStyle,
-                                modifier = rowModifier,
-                            )
+    CompositionLocalProvider(LocalJapaneseLyricDocument provides japaneseGlyphDocument) {
+        AnimatedContent(
+            targetState = presentation,
+            transitionSpec = {
+                (slideInVertically(
+                    initialOffsetY = { height -> height / 5 },
+                    animationSpec = tween(280, easing = FullCoverLyricMotionEasing),
+                ) + fadeIn(tween(220, easing = FullCoverLyricMotionEasing))) togetherWith
+                    (slideOutVertically(
+                        targetOffsetY = { height -> -height / 6 },
+                        animationSpec = tween(220, easing = FullCoverLyricMotionEasing),
+                    ) + fadeOut(tween(180, easing = FullCoverLyricMotionEasing)))
+            },
+            label = "full-cover-live-lyric",
+            modifier = modifier,
+        ) { state ->
+            Column(modifier = Modifier.fillMaxWidth()) {
+                state.rows.forEach { row ->
+                    when (row) {
+                        is FullCoverLyricRow.Timed -> {
+                            val rowModifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSeek(row.line.begin) }
+                                .padding(vertical = if (row.active) 3.dp else 2.dp)
+                            if (row.active && !row.line.words.isNullOrEmpty()) {
+                                KaraokeLyricLine(
+                                    line = row.line,
+                                    positionMs = smoothPositionMs,
+                                    highlightColor = Color.White,
+                                    dimColor = Color.White.copy(alpha = 0.38f),
+                                    fontSize = 18.sp,
+                                    lineHeight = 23.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    textAlign = TextAlign.End,
+                                    wordLiftDp = 0.45.dp,
+                                    wordLiftScale = 0.015f,
+                                    glowEnabled = true,
+                                    liftEnabled = true,
+                                    modifier = rowModifier,
+                                )
+                            } else {
+                                Text(
+                                    text = row.primary,
+                                    color = Color.White.copy(alpha = if (row.active) 0.96f else 0.48f),
+                                    fontSize = if (row.active) 18.sp else 14.sp,
+                                    lineHeight = if (row.active) 23.sp else 19.sp,
+                                    fontWeight = if (row.active) FontWeight.SemiBold else FontWeight.Medium,
+                                    textAlign = TextAlign.End,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = FullCoverLyricShadowStyle.copy(localeList = lyricGlyphLocales(row.primary)),
+                                    modifier = rowModifier,
+                                )
+                            }
                         }
-                    }
 
-                    is FullCoverLyricRow.Translation -> Text(
-                        text = row.text,
-                        color = Color.White.copy(alpha = 0.72f),
-                        fontSize = 14.sp,
-                        lineHeight = 19.sp,
-                        fontWeight = FontWeight.Medium,
-                        textAlign = TextAlign.End,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = FullCoverLyricShadowStyle,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 3.dp),
-                    )
+                        is FullCoverLyricRow.Translation -> Text(
+                            text = row.text,
+                            color = Color.White.copy(alpha = 0.72f),
+                            fontSize = 14.sp,
+                            lineHeight = 19.sp,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = TextAlign.End,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = FullCoverLyricShadowStyle.copy(localeList = lyricGlyphLocales(row.text, inheritOriginal = false)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 3.dp),
+                        )
+                    }
                 }
             }
         }

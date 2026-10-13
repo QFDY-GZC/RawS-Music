@@ -16,8 +16,6 @@ internal class PlayerVolumeControlCoordinator(
     private val callbacks: Callbacks,
 ) {
     data class ReplayGainSettings(
-        val normalizationEnabled: Boolean,
-        val replayGainEnabled: Boolean,
         val replayGainMode: Int,
     )
 
@@ -39,8 +37,6 @@ internal class PlayerVolumeControlCoordinator(
     fun applyReplayGain(song: AudioFile, settings: ReplayGainSettings) {
         val decision = PlaybackVolumePlanner.replayGain(
             song = song,
-            normalizationEnabled = settings.normalizationEnabled,
-            replayGainEnabled = settings.replayGainEnabled,
             replayGainMode = settings.replayGainMode,
         )
         replayGainModifier = decision.linearGain
@@ -103,7 +99,9 @@ internal class PlayerVolumeControlCoordinator(
             replayGain = replayGainModifier,
             duck = callbacks.duckFactor(),
         )
-        if (!callbacks.isReleased()) callbacks.setAndroidSoftwareGain(composed)
+        if (!callbacks.isReleased()) {
+            callbacks.setAndroidSoftwareGain(composed)
+        }
     }
 
     internal fun replayGainModifierForTest(): Float = replayGainModifier

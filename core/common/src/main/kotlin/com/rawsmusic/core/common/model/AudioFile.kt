@@ -100,5 +100,6 @@ data class AudioFile(
 
     /** DSD 格式判定 */
     val isDsdFormat: Boolean
-        get() = format.equals("DSD", true) || format.equals("DSF", true) || format.equals("DFF", true)
+        get() = format.equals("DSD", true) || format.equals("DSF", true) || format.equals("DFF", true) ||
+            format.equals("SACD-ISO", true)
 }

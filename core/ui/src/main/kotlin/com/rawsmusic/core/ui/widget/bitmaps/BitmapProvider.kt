@@ -24,7 +24,6 @@ import com.rawsmusic.core.common.artwork.ArtworkResolutionPolicy
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.net.RemoteHttpStreamRegistry
 import com.rawsmusic.core.common.taglib.TagLibBridge
-import com.rawsmusic.core.common.utils.PlayerSwitchTrace
 import com.rawsmusic.core.common.utils.PowerTraceLogger
 import com.rawsmusic.core.ui.perf.TransitionPerfEvent
 import com.rawsmusic.core.ui.perf.TransitionPerfStage
@@ -183,8 +182,7 @@ object BitmapProvider {
     private val diskWriterExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "RawSMusic-DiskWriter").apply { priority = Thread.MIN_PRIORITY }
     }
-    private val diskWriterPendingKeys =
-        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+    private val diskWriteAdmission = BitmapDiskWriteAdmission()
 
     // A visible list holder requests the provider's source record directly. Source extraction is
     // still confined to this worker lane; the holder never performs file work on the UI thread and
@@ -308,6 +306,7 @@ object BitmapProvider {
         providerAliasKey: String = "",
         aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
         exactTarget: Boolean = false,
+        externalArtworkPath: String = "",
         callback: (ArtworkHandle?) -> Unit,
     ): BitmapRequest {
         return loadInternal(
@@ -322,6 +321,7 @@ object BitmapProvider {
             providerAliasKey = providerAliasKey,
             aspectPolicy = aspectPolicy,
             exactTarget = exactTarget,
+            externalArtworkPath = externalArtworkPath,
         )
     }
 
@@ -516,13 +516,6 @@ object BitmapProvider {
         val seq = traceSeq.incrementAndGet()
         request.traceSeq = seq
         trace("REQUEST seq=$seq surface=$surface priority=$priority aspect=$aspectPolicy allowHiRes=$allowHiRes input=${targetWidth}x${targetHeight} actual=${actualWidth}x${actualHeight} bucket=$bucket provider=${providerKey.tailForTrace()} decode=${key.tailForTrace()}")
-        if (PlayerSwitchTrace.isActive()) {
-            PlayerSwitchTrace.mark(
-                "provider_request",
-                "seq=$seq surface=$surface priority=$priority size=${actualWidth}x${actualHeight} key=${Integer.toHexString(key.hashCode())}",
-            )
-        }
-
         if (key.isBlank()) {
             trace("SKIP_BLANK seq=$seq size=${actualWidth}x${actualHeight} priority=$priority")
             PowerTraceLogger.bitmapRequest(
@@ -551,12 +544,6 @@ object BitmapProvider {
                 !needsPlaybackWrapperNormalization(surface, cached, actualWidth, actualHeight, aspectPolicy)) {
                 val tier = if (exactCached === cached) "exact" else "source"
                 trace("CACHE_HIT seq=$seq tier=$tier size=${actualWidth}x${actualHeight} priority=$priority key=${key.tailForTrace()}")
-                if (PlayerSwitchTrace.isActive()) {
-                    PlayerSwitchTrace.mark(
-                        "provider_cache_hit",
-                        "seq=$seq tier=$tier bitmap=${cached.width}x${cached.height} key=${Integer.toHexString(key.hashCode())}",
-                    )
-                }
                 PowerTraceLogger.bitmapRequest(
                     state = "cache_hit",
                     priority = priority.name,
@@ -656,12 +643,6 @@ object BitmapProvider {
                 return completeAdmission(request)
             }
             trace("JOIN_IN_FLIGHT seq=$seq size=${actualWidth}x${actualHeight} priority=$priority cacheKey=${request.cacheKey.tailForTrace()} key=${key.tailForTrace()}")
-            if (PlayerSwitchTrace.isActive()) {
-                PlayerSwitchTrace.mark(
-                    "provider_join_in_flight",
-                    "seq=$seq priority=$priority key=${Integer.toHexString(key.hashCode())}",
-                )
-            }
             TransitionPerfTrace.count(TransitionPerfEvent.ARTWORK_JOINED)
             PowerTraceLogger.bitmapRequest(
                 state = "join_in_flight",
@@ -673,12 +654,6 @@ object BitmapProvider {
             return completeAdmission(request)
         }
         TransitionPerfTrace.count(TransitionPerfEvent.ARTWORK_QUEUED)
-        if (PlayerSwitchTrace.isActive()) {
-            PlayerSwitchTrace.mark(
-                "provider_queued",
-                "seq=$seq priority=$priority key=${Integer.toHexString(key.hashCode())}",
-            )
-        }
         PowerTraceLogger.bitmapRequest(
             state = "queued",
             priority = priority.name,
@@ -770,15 +745,10 @@ object BitmapProvider {
         val delayed = request.priority.level >= BitmapRequest.Priority.LOADING_PREFETCH.level
         trace("ENQUEUE seq=${request.traceSeq} worker=$selectedWorkerIndex front=$front size=${request.targetWidth}x${request.targetHeight} priority=${request.priority} key=${request.key.tailForTrace()}")
 
-        if (front) {
-            handler.sendMessageAtFrontOfQueue(msg)
-        } else if (delayMs > 0L) {
-            handler.sendMessageDelayed(msg, delayMs)
-        } else if (delayed) {
-            // Keep the handler responsive to newly visible rows without creating another decoder.
-            handler.sendMessageDelayed(msg, 24L)
-        } else {
-            handler.sendMessage(msg)
+        when (val dispatch = resolveArtworkDispatch(front, delayed, delayMs)) {
+            ArtworkDispatch.Front -> handler.sendMessageAtFrontOfQueue(msg)
+            ArtworkDispatch.Immediate -> handler.sendMessage(msg)
+            is ArtworkDispatch.Delayed -> handler.sendMessageDelayed(msg, dispatch.delayMs)
         }
     }
 
@@ -1140,6 +1110,16 @@ object BitmapProvider {
         return ArtworkSourceIndex.sourcePathFor(providerKey, acceptedKinds)
             ?: ArtworkSourceIndex.sourcePathFor(rawKey, acceptedKinds)
             ?: ArtworkSourceIndex.sourcePathFor(key, acceptedKinds)
+    }
+
+    /** Export-only path to the selected encoded image, even when a cached thumbnail hid its source. */
+    fun originalArtworkSourcePathForExport(key: String): String? {
+        originalArtworkSourcePath(key)?.let { return it }
+        val path = pathPartFromArtworkKey(key)
+        if (path.isBlank()) return null
+        val file = File(path)
+        if (file.isFile && file.canRead() && isImageFile(path)) return file.absolutePath
+        return prepareNativeEmbeddedArtworkSource(path)?.filePath
     }
 
     /**
@@ -2129,12 +2109,17 @@ object BitmapProvider {
         aspectPolicy: ArtworkAspectPolicy = ArtworkAspectPolicy.Crop,
         onIndexerReady: ((Bitmap?) -> Unit)? = null
     ): ArtworkDecodeResult {
+        val previousConfig = threadLocalPreferredConfigOverride.get()
+        if (Build.VERSION.SDK_INT >= 34 && surface == ArtworkSurface.Playback) {
+            threadLocalPreferredConfigOverride.set(Bitmap.Config.ARGB_8888)
+        }
         return try {
             val cacheStorageKey = artworkAspectCacheSourceKey(storageKey, aspectPolicy)
-            decodeDiskThumbnail(cacheStorageKey, targetWidth, targetHeight, aspectPolicy)?.let {
+            val allowThumbnail = Build.VERSION.SDK_INT < 34 || surface != ArtworkSurface.Playback
+            if (allowThumbnail) decodeDiskThumbnail(cacheStorageKey, targetWidth, targetHeight, aspectPolicy)?.let {
                 return ArtworkDecodeResult(bitmap = it, terminalNoArt = false)
             }
-            if (storageKey != decodeKey) {
+            if (allowThumbnail && storageKey != decodeKey) {
                 decodeDiskThumbnail(artworkAspectCacheSourceKey(decodeKey, aspectPolicy), targetWidth, targetHeight, aspectPolicy)?.let {
                     return ArtworkDecodeResult(bitmap = it, terminalNoArt = false)
                 }
@@ -2275,6 +2260,8 @@ object BitmapProvider {
             // Do not poison the source record and suppress later binds.
             ArtworkDecodeResult.LightweightMiss
         } finally {
+            if (previousConfig == null) threadLocalPreferredConfigOverride.remove()
+            else threadLocalPreferredConfigOverride.set(previousConfig)
             if (surface == ArtworkSurface.Indexer) {
                 val side = maxOf(targetWidth, targetHeight)
                     .coerceAtLeast(AlbumArtTiers.LOW_RES_MIN_SIDE)
@@ -3262,13 +3249,18 @@ object BitmapProvider {
             return
         }
         val dedupKey = "${key}_${targetWidth}x${targetHeight}"
-        if (!diskWriterPendingKeys.add(dedupKey)) return // already queued
-        diskWriterExecutor.execute {
-            try {
-                saveDiskThumbnailInternal(key, targetWidth, targetHeight, bitmap)
-            } finally {
-                diskWriterPendingKeys.remove(dedupKey)
+        val byteCount = runCatching { bitmap.allocationByteCount.toLong() }.getOrDefault(0L)
+        if (!diskWriteAdmission.tryAcquire(dedupKey, byteCount)) return
+        try {
+            diskWriterExecutor.execute {
+                try {
+                    saveDiskThumbnailInternal(key, targetWidth, targetHeight, bitmap)
+                } finally {
+                    diskWriteAdmission.release(dedupKey)
+                }
             }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            diskWriteAdmission.release(dedupKey)
         }
     }
 
@@ -3374,6 +3366,11 @@ object BitmapProvider {
         targetHeight: Int,
         aspectPolicy: ArtworkAspectPolicy,
     ): Bitmap? {
+        if (source.hasNativeArtworkHdr()) {
+            // Bitmap transformation APIs transform the gainmap with the base image. Drawing into
+            // our ordinary software Canvas/pool only copies SDR pixels and loses that relationship.
+            return scaleNativeHdrArtwork(source, targetWidth, targetHeight, aspectPolicy)
+        }
         return if (aspectPolicy == ArtworkAspectPolicy.KeepAspect) {
             scaleBitmapFitCenter(source, targetWidth, targetHeight)
         } else {
@@ -3403,6 +3400,29 @@ object BitmapProvider {
 
     private fun softwareScaleTargetConfig(source: Bitmap): Bitmap.Config =
         if (source.config == Bitmap.Config.RGB_565) Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888
+
+    private fun scaleNativeHdrArtwork(
+        source: Bitmap, width: Int, height: Int, policy: ArtworkAspectPolicy,
+    ): Bitmap? = try {
+        if (width <= 0 || height <= 0) null
+        else if (policy == ArtworkAspectPolicy.KeepAspect) {
+            val target = resolveArtworkScaledSize(source.width, source.height, width, height, policy)
+            Bitmap.createScaledBitmap(source, target.width, target.height, true)
+        } else {
+            val aspect = width.toDouble() / height
+            val cropWidth = minOf(source.width, (source.height * aspect).toInt().coerceAtLeast(1))
+            val cropHeight = minOf(source.height, (source.width / aspect).toInt().coerceAtLeast(1))
+            val cropped = Bitmap.createBitmap(source, (source.width - cropWidth) / 2,
+                (source.height - cropHeight) / 2, cropWidth, cropHeight)
+            val scaled = Bitmap.createScaledBitmap(cropped, width, height, true)
+            if (cropped !== source && cropped !== scaled) cropped.recycle()
+            scaled
+        }
+    } catch (error: OutOfMemoryError) {
+        Log.e(TAG, "HDR artwork scale out of memory", error); null
+    } catch (error: RuntimeException) {
+        Log.e(TAG, "HDR artwork scale failed", error); null
+    }
 
     private fun scaleBitmapFitCenter(
         source: Bitmap,
@@ -3805,13 +3825,6 @@ object BitmapProvider {
                         return
                     }
                     trace("DECODE_START seq=${request.traceSeq} size=${request.targetWidth}x${request.targetHeight} priority=${request.priority} thread=${Thread.currentThread().name} key=${request.key.tailForTrace()}")
-                    if (PlayerSwitchTrace.isActive()) {
-                        PlayerSwitchTrace.mark(
-                            "provider_decode_start",
-                            "seq=${request.traceSeq} surface=${request.surface} priority=${request.priority} size=${request.targetWidth}x${request.targetHeight} key=${Integer.toHexString(request.decodeKey.hashCode())}",
-                        )
-                    }
-
                     if (request.isCancelled && !hasWaitingRequests(flightKey)) {
                         trace("DECODE_ABORT_CANCELLED seq=${request.traceSeq} cacheKey=${cacheKey.tailForTrace()}")
                         waitingRequests.remove(flightKey)
@@ -3882,12 +3895,6 @@ object BitmapProvider {
                             }
                         } else {
                             trace("DECODE_SKIP_CACHE_READY seq=${request.traceSeq} tier=$tier bitmap=${cached.width}x${cached.height} key=${request.key.tailForTrace()}")
-                            if (PlayerSwitchTrace.isActive()) {
-                                PlayerSwitchTrace.mark(
-                                    "provider_worker_cache_hit",
-                                    "seq=${request.traceSeq} tier=$tier bitmap=${cached.width}x${cached.height}",
-                                )
-                            }
                             deliverResult(request, cached)
                             return
                         }
@@ -3973,12 +3980,6 @@ object BitmapProvider {
                             key = request.key
                         )
                         trace("DECODE_DONE seq=${request.traceSeq} result=${bitmap != null} elapsed=${elapsed}ms bitmap=${bitmap?.width}x${bitmap?.height} thread=${Thread.currentThread().name} key=${request.key.tailForTrace()}")
-                        if (PlayerSwitchTrace.isActive()) {
-                            PlayerSwitchTrace.mark(
-                                "provider_decode_done",
-                                "seq=${request.traceSeq} result=${bitmap != null} elapsed=${elapsed}ms bitmap=${bitmap?.width}x${bitmap?.height} source=$providerSourceString",
-                            )
-                        }
                     } catch (e: Exception) {
                         // An exception is a transient provider failure, not proof that the file
                         // has no artwork. Install the not-found sentinel only after
@@ -3986,12 +3987,6 @@ object BitmapProvider {
                         // permission, or file race hide the cover for the whole TTL.
                         request.terminalNoArt = false
                         trace("DECODE_ERROR seq=${request.traceSeq} error=${e.javaClass.simpleName}:${e.message} provider=${request.key.tailForTrace()} decode=${request.decodeKey.tailForTrace()}")
-                        if (PlayerSwitchTrace.isActive()) {
-                            PlayerSwitchTrace.mark(
-                                "provider_decode_error",
-                                "seq=${request.traceSeq} type=${e.javaClass.simpleName} message=${e.message.orEmpty()}",
-                            )
-                        }
                         Log.e(TAG, "worker decode failed: ${request.decodeKey.takeLast(80)}", e)
                     } finally {
                         activeWorkerDecodeCount.decrementAndGet()
@@ -4036,12 +4031,6 @@ object BitmapProvider {
                         runCatching { preparedBitmap.prepareToDraw() }
                     }
                     trace("DELIVER seq=${request.traceSeq} result=${bitmap != null} waiters=${waitingRequests[flightKey]?.size ?: 0} key=${request.key.tailForTrace()}")
-                    if (PlayerSwitchTrace.isActive()) {
-                        PlayerSwitchTrace.mark(
-                            "provider_deliver",
-                            "seq=${request.traceSeq} result=${bitmap != null} waiters=${waitingRequests[flightKey]?.size ?: 0}",
-                        )
-                    }
                     deliverResult(request, bitmap, providerSourceString)
                 }
 

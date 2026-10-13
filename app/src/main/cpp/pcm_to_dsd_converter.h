@@ -153,13 +153,8 @@ private:
     };
 
     struct P2dKernelSpec {
-        int order;
         float input_gain;
         float clip;
-        std::array<float, ErrorFeedbackState::MAX_TAPS> feedback_coeffs;
-        float error_limit;
-        float decision_limit;
-        float dither_scale;
     };
 
     DsdConfig config_;
@@ -171,6 +166,9 @@ private:
     std::vector<float> source_cache_;
 
     ErrorFeedbackState ef_state_;
+    // Two persistent, non-leaky integrators. Double precision preserves quiet PCM input
+    // next to the +/-1 feedback; state is never reset at a conversion block boundary.
+    std::array<double, 2> modulator_integrators_{};
 
     uint32_t convertRealtimeP2d(const void* pcm_data, uint32_t sample_count, int bit_depth,
                                 uint8_t* dsd_output, uint32_t dsd_size);
@@ -188,7 +186,7 @@ private:
     const P2dKernelSpec& kernelSpec() const;
     bool isSilenceBlock(const std::vector<float>& samples) const;
 
-    // PCM work-rate pre-stage. Its CIFB kernels accept only
+    // PCM work-rate pre-stage. The fixed-ratio packer accepts only
     // power-of-two ratios R8..R128. For DSD256+ from 44.1/48 kHz sources,
     // one or more persistent 2x halfband stages raise the PCM work rate so
     // the final P2D kernel remains at or below R128.
@@ -215,11 +213,6 @@ private:
     // boundaries do not reset the SDM trajectory.
     std::array<float, ErrorFeedbackState::MAX_TAPS> ef_hist_;
     uint8_t silence_phase_;
-
-    // Continuous low-rate assist factor derived from nominal DSD multiplier and
-    // actual oversampling ratio. This keeps low-rate cleanup generic instead of
-    // introducing a DSD64-only branch.
-    float low_rate_assist_;
 
     // Common PCM families map to exact R8/R16/R32/R64/R128... ratios. Keep
     // that ratio outside the realtime loop and preserve the interpolation

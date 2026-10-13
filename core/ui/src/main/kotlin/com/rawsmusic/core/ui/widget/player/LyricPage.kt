@@ -13,8 +13,10 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -49,6 +52,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -60,6 +64,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -70,6 +75,10 @@ import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricTimingEditorTarget
 import com.rawsmusic.core.ui.R
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.rawsmusic.core.ui.scene.LocalAppBackdrop
 import com.rawsmusic.core.ui.widget.PlayerLyricsArtworkAnchor
 import com.rawsmusic.core.ui.widget.PlayerLyricsArtworkSource
 import com.rawsmusic.core.ui.widget.PlayerLyricsArtworkVisibility
@@ -93,6 +102,8 @@ import top.yukonga.miuix.kmp.basic.Switch
 import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
+import com.rawsmusic.core.ui.widget.export.LyricShareDialog
+import com.rawsmusic.core.ui.widget.export.LyricShareMode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
@@ -129,6 +140,8 @@ fun LyricPage(
     onHeaderCoverVisibilityChange: (Boolean) -> Unit = {},
     onArtworkAnchorChanged: (PlayerLyricsArtworkAnchor?) -> Unit = {},
     artworkTransitionState: PlaybackArtworkTransitionState? = null,
+    audioVisualizerEnabled: Boolean? = null,
+    onAudioVisualizerEnabledChange: ((Boolean) -> Unit)? = null,
     renderBackdrop: Boolean = true,
     contentAlpha: Float = 1f,
     // PLAYER and PLAYER<->LYRIC transition frames keep this page composed for geometry/state
@@ -147,11 +160,16 @@ fun LyricPage(
     )
     val lyricTextColor = resolvedLyricColor.primary
     var showLyricMore by remember { mutableStateOf(false) }
+    var lyricShareMode by remember { mutableStateOf<LyricShareMode?>(null) }
+    var lyricMoreAnchorBounds by remember { mutableStateOf<Rect?>(null) }
     var lyricMoreOverlayMounted by remember { mutableStateOf(false) }
     var lyricFontSizeSp by remember { mutableStateOf(AppPreferences.UI.lyricFontSizeSp) }
     val lyricBottomPaddingDp by LyricLayoutPreferences.bottomPaddingDp.collectAsState()
     val lyricTopLayoutStyle by LyricLayoutPreferences.topLayoutStyle.collectAsState()
     var lyricBlurEnabled by remember { mutableStateOf(AppPreferences.UI.lyricBlurEnabled) }
+    var relativeLineProgressEnabled by remember {
+        mutableStateOf(AppPreferences.UI.lyricRelativeLineProgressEnabled)
+    }
     var lyricHighlightAllEnabled by remember {
         mutableStateOf(AppPreferences.UI.lyricHighlightAllEnabled)
     }
@@ -159,6 +177,14 @@ fun LyricPage(
     val karaokeLiftEnabled = AppPreferences.UI.lyricKaraokeLiftEnabled
     var lyricTextPosition by remember {
         mutableStateOf(LyricTextPosition.from(AppPreferences.UI.lyricTextPosition))
+    }
+    val inlineSettingsRevision = InlinePlayerLyricSettings.revision
+    LaunchedEffect(inlineSettingsRevision) {
+        // This scene may remain mounted while the tablet's inline menu changes shared options.
+        lyricBlurEnabled = AppPreferences.UI.lyricBlurEnabled
+        relativeLineProgressEnabled = AppPreferences.UI.lyricRelativeLineProgressEnabled
+        lyricHighlightAllEnabled = AppPreferences.UI.lyricHighlightAllEnabled
+        lyricTextPosition = LyricTextPosition.from(AppPreferences.UI.lyricTextPosition)
     }
     val actionScope = rememberCoroutineScope()
     var headerHeightPx by remember { mutableStateOf(1f) }
@@ -365,6 +391,14 @@ fun LyricPage(
         }
     }
 
+    val lyricContentBackdrop = rememberLayerBackdrop()
+    val inheritedBackdrop = LocalAppBackdrop.current
+    val popupBackdrop = if (inheritedBackdrop != null) {
+        rememberCombinedBackdrop(inheritedBackdrop, lyricContentBackdrop)
+    } else {
+        lyricContentBackdrop
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -395,6 +429,7 @@ fun LyricPage(
                 .fillMaxSize()
                 .rawStableStatusBarsPadding()
                 .graphicsLayer { alpha = contentAlpha.coerceIn(0f, 1f) }
+                .layerBackdrop(lyricContentBackdrop)
         ) {
             val fixedTopPadding = when (lyricTopLayoutStyle) {
                 LyricTopLayoutStyle.Current -> 96.dp
@@ -419,6 +454,7 @@ fun LyricPage(
                             ),
                             moreIconRes = moreIconRes,
                             onMore = { if (interactionEnabled) openLyricMore() },
+                            onMoreBoundsChanged = { lyricMoreAnchorBounds = it },
                             showCover = showHeaderCover && !lyricMoreOverlayMounted,
                             coverGestureModifier = headerSwipeModifier,
                             onCoverBoundsChanged = { scrollingHeaderCoverRect = it },
@@ -440,8 +476,10 @@ fun LyricPage(
                 secondaryColor = resolvedLyricColor.secondary,
                 rainbowText = resolvedLyricColor.rainbow,
                 fontSizeSp = lyricFontSizeSp,
+                lineHorizontalPadding = 18.dp,
                 textPosition = lyricTextPosition,
                 blurEnabled = lyricBlurEnabled,
+                relativeLineProgressEnabled = relativeLineProgressEnabled,
                 highlightAll = lyricHighlightAllEnabled,
                 karaokeGlowEnabled = karaokeGlowEnabled,
                 karaokeLiftEnabled = karaokeLiftEnabled,
@@ -507,6 +545,7 @@ fun LyricPage(
                             ),
                             moreIconRes = moreIconRes,
                             onMore = { if (interactionEnabled) openLyricMore() },
+                            onMoreBoundsChanged = { lyricMoreAnchorBounds = it },
                             showCover = showHeaderCover && !lyricMoreOverlayMounted,
                             coverGestureModifier = headerSwipeModifier,
                             onCoverBoundsChanged = { fixedHeaderCoverRect = it },
@@ -528,6 +567,7 @@ fun LyricPage(
                             ),
                             moreIconRes = moreIconRes,
                             onMore = { if (interactionEnabled) openLyricMore() },
+                            onMoreBoundsChanged = { lyricMoreAnchorBounds = it },
                             modifier = headerSwipeModifier
                                 .padding(start = 18.dp, top = 4.dp, end = 18.dp)
                         )
@@ -537,18 +577,24 @@ fun LyricPage(
             }
         }
 
+        CompositionLocalProvider(LocalAppBackdrop provides popupBackdrop) {
         LyricMoreOverlayDialog(
             show = showLyricMore,
+            anchorBounds = lyricMoreAnchorBounds,
             onDismissRequest = ::closeLyricMore,
+            onReopenRequest = ::openLyricMore,
             currentSong = currentSong,
             coverPath = coverPath,
             displayTranslation = displayTranslation,
             displayRoma = displayRoma,
             blurEnabled = lyricBlurEnabled,
+            relativeLineProgressEnabled = relativeLineProgressEnabled,
             highlightAllEnabled = lyricHighlightAllEnabled,
             fontSizeSp = lyricFontSizeSp,
             textPosition = lyricTextPosition,
             artworkTransitionState = artworkTransitionState,
+            audioVisualizerEnabled = audioVisualizerEnabled,
+            onAudioVisualizerEnabledChange = onAudioVisualizerEnabledChange,
             sourceArtworkBounds = (fixedHeaderCoverRect ?: scrollingHeaderCoverRect)
                 ?.takeIf { it.isUsable }
                 ?.toComposeRect(),
@@ -558,10 +604,17 @@ fun LyricPage(
             onBlurEnabledChange = { enabled ->
                 lyricBlurEnabled = enabled
                 AppPreferences.UI.lyricBlurEnabled = enabled
+                InlinePlayerLyricSettings.changed()
+            },
+            onRelativeLineProgressEnabledChange = { enabled ->
+                relativeLineProgressEnabled = enabled
+                AppPreferences.UI.lyricRelativeLineProgressEnabled = enabled
+                InlinePlayerLyricSettings.changed()
             },
             onHighlightAllEnabledChange = { enabled ->
                 lyricHighlightAllEnabled = enabled
                 AppPreferences.UI.lyricHighlightAllEnabled = enabled
+                InlinePlayerLyricSettings.changed()
             },
             onFontSizeChange = { size ->
                 lyricFontSizeSp = size
@@ -570,6 +623,7 @@ fun LyricPage(
             onTextPositionChange = { position ->
                 lyricTextPosition = position
                 AppPreferences.UI.lyricTextPosition = position.value
+                InlinePlayerLyricSettings.changed()
             },
             onModifyAlbumArt = {
                 closeLyricMore()
@@ -602,7 +656,32 @@ fun LyricPage(
                     delay(160L)
                     onOpenExternalTimingEditor(target)
                 }
-            }
+            },
+            onLyricVideo = {
+                closeLyricMore()
+                actionScope.launch {
+                    delay(160L)
+                    lyricShareMode = LyricShareMode.VIDEO
+                }
+            },
+            onLyricPoster = {
+                closeLyricMore()
+                actionScope.launch {
+                    delay(160L)
+                    lyricShareMode = LyricShareMode.POSTER
+                }
+            },
+        )
+        }
+
+        LyricShareDialog(
+            mode = lyricShareMode,
+            currentSong = currentSong,
+            lyricSong = song,
+            coverKey = coverPath,
+            displayTranslation = displayTranslation,
+            displayRoma = displayRoma,
+            onDismiss = { lyricShareMode = null },
         )
     }
 }
@@ -610,18 +689,22 @@ fun LyricPage(
 @Composable
 fun LyricMoreOverlayDialog(
     show: Boolean,
+    anchorBounds: Rect?,
     onDismissRequest: () -> Unit,
+    onReopenRequest: () -> Unit,
     currentSong: AudioFile?,
     coverPath: String?,
     displayTranslation: Boolean,
     displayRoma: Boolean,
     blurEnabled: Boolean,
+    relativeLineProgressEnabled: Boolean = false,
     highlightAllEnabled: Boolean,
     fontSizeSp: Int,
     textPosition: LyricTextPosition,
     onTranslationToggle: () -> Unit,
     onRomaToggle: () -> Unit,
     onBlurEnabledChange: (Boolean) -> Unit,
+    onRelativeLineProgressEnabledChange: (Boolean) -> Unit = {},
     onHighlightAllEnabledChange: (Boolean) -> Unit,
     onFontSizeChange: (Int) -> Unit,
     onTextPositionChange: (LyricTextPosition) -> Unit,
@@ -636,96 +719,81 @@ fun LyricMoreOverlayDialog(
     onSearchLyrico: (() -> Unit)? = null,
     onOpenInLyrico: (() -> Unit)? = null,
     onAiTimingPreview: (() -> Unit)? = null,
-    onOpenExternalTimingEditor: ((LyricTimingEditorTarget) -> Unit)? = null
+    onOpenExternalTimingEditor: ((LyricTimingEditorTarget) -> Unit)? = null,
+    audioVisualizerEnabled: Boolean? = null,
+    onAudioVisualizerEnabledChange: ((Boolean) -> Unit)? = null,
+    onLyricVideo: (() -> Unit)? = null,
+    onLyricPoster: (() -> Unit)? = null,
 ) {
-    val canShareArtwork = artworkTransitionState != null &&
-        sourceArtworkBounds?.isUsableForLyricMore == true
-    if (canShareArtwork) {
-        PlayerMoreViewOverlay(
-            show = show,
-            sourceArtworkBounds = sourceArtworkBounds,
-            artwork = artworkTransitionState?.foregroundArtworkBitmap(),
-            onDismiss = onDismissRequest,
-            onMountedChange = onMountedChange,
-            sourceArtworkRadiusDp = 12f,
-            targetArtworkRadiusDp = 12f
-        ) { artworkAlpha, onArtworkBoundsChanged ->
-            LyricMoreSheet(
-                currentSong = currentSong,
-                coverPath = coverPath,
-                displayTranslation = displayTranslation,
-                displayRoma = displayRoma,
-                blurEnabled = blurEnabled,
-                highlightAllEnabled = highlightAllEnabled,
-                fontSizeSp = fontSizeSp,
-                textPosition = textPosition,
-                onTranslationToggle = onTranslationToggle,
-                onRomaToggle = onRomaToggle,
-                onBlurEnabledChange = onBlurEnabledChange,
-                onHighlightAllEnabledChange = onHighlightAllEnabledChange,
-                onFontSizeChange = onFontSizeChange,
-                onTextPositionChange = onTextPositionChange,
-                progressStyleValue = progressStyleValue,
-                onProgressStyleValueChange = onProgressStyleValueChange,
-                landscapeLockEnabled = landscapeLockEnabled,
-                onLandscapeLockEnabledChange = onLandscapeLockEnabledChange,
-                onModifyAlbumArt = onModifyAlbumArt,
-                onSearchLyrico = onSearchLyrico,
-                onOpenInLyrico = onOpenInLyrico,
-                onAiTimingPreview = onAiTimingPreview,
-                onOpenExternalTimingEditor = onOpenExternalTimingEditor,
-                artworkAlpha = artworkAlpha,
-                onArtworkBoundsChanged = onArtworkBoundsChanged
-            )
-        }
-    } else {
-        RawMiuixOverlayDialog(
-            show = show,
-            onDismissRequest = onDismissRequest,
-            renderInRootScaffold = true
-        ) {
-            LyricMoreSheet(
-                currentSong = currentSong,
-                coverPath = coverPath,
-                displayTranslation = displayTranslation,
-                displayRoma = displayRoma,
-                blurEnabled = blurEnabled,
-                highlightAllEnabled = highlightAllEnabled,
-                fontSizeSp = fontSizeSp,
-                textPosition = textPosition,
-                onTranslationToggle = onTranslationToggle,
-                onRomaToggle = onRomaToggle,
-                onBlurEnabledChange = onBlurEnabledChange,
-                onHighlightAllEnabledChange = onHighlightAllEnabledChange,
-                onFontSizeChange = onFontSizeChange,
-                onTextPositionChange = onTextPositionChange,
-                progressStyleValue = progressStyleValue,
-                onProgressStyleValueChange = onProgressStyleValueChange,
-                landscapeLockEnabled = landscapeLockEnabled,
-                onLandscapeLockEnabledChange = onLandscapeLockEnabledChange,
-                onModifyAlbumArt = onModifyAlbumArt,
-                onSearchLyrico = onSearchLyrico,
-                onOpenInLyrico = onOpenInLyrico,
-                onAiTimingPreview = onAiTimingPreview,
-                onOpenExternalTimingEditor = onOpenExternalTimingEditor
-            )
-        }
+    PlayerAnchoredGlassPopup(
+        show = show,
+        anchorBounds = anchorBounds,
+        sourceArtworkBounds = sourceArtworkBounds,
+        artwork = artworkTransitionState?.foregroundArtworkBitmap(),
+        onDismiss = onDismissRequest,
+        onReopen = onReopenRequest,
+        fallbackTint = rememberCoverAccentColor(coverPath),
+        onMountedChange = onMountedChange,
+        sourceArtworkRadiusDp = 12f,
+        targetArtworkRadiusDp = 12f,
+        preferredHeight = LocalWindowInfo.current.containerDpSize.height * 0.69f,
+        targetBottomFraction = 0.83f,
+    ) { artworkAlpha, onArtworkBoundsChanged ->
+        LyricMoreSheetContent(
+            currentSong = currentSong,
+            coverPath = coverPath,
+            artworkTransitionState = artworkTransitionState,
+            displayTranslation = displayTranslation,
+            displayRoma = displayRoma,
+            blurEnabled = blurEnabled,
+            relativeLineProgressEnabled = relativeLineProgressEnabled,
+            highlightAllEnabled = highlightAllEnabled,
+            fontSizeSp = fontSizeSp,
+            textPosition = textPosition,
+            onTranslationToggle = onTranslationToggle,
+            onRomaToggle = onRomaToggle,
+            onBlurEnabledChange = onBlurEnabledChange,
+            onRelativeLineProgressEnabledChange = onRelativeLineProgressEnabledChange,
+            onHighlightAllEnabledChange = onHighlightAllEnabledChange,
+            onFontSizeChange = onFontSizeChange,
+            onTextPositionChange = onTextPositionChange,
+            progressStyleValue = progressStyleValue,
+            onProgressStyleValueChange = onProgressStyleValueChange,
+            landscapeLockEnabled = landscapeLockEnabled,
+            onLandscapeLockEnabledChange = onLandscapeLockEnabledChange,
+            onModifyAlbumArt = onModifyAlbumArt,
+            onSearchLyrico = onSearchLyrico,
+            onOpenInLyrico = onOpenInLyrico,
+            onAiTimingPreview = onAiTimingPreview,
+            onOpenExternalTimingEditor = onOpenExternalTimingEditor,
+            audioVisualizerEnabled = audioVisualizerEnabled,
+            onAudioVisualizerEnabledChange = onAudioVisualizerEnabledChange,
+            artworkAlpha = artworkAlpha,
+            onArtworkBoundsChanged = onArtworkBoundsChanged,
+            twoColumnAcrylicLayout = true,
+            onLyricVideo = onLyricVideo,
+            onLyricPoster = onLyricPoster,
+        )
     }
 }
 
 @Composable
-private fun LyricMoreSheet(
+fun LyricMoreSheetContent(
     currentSong: AudioFile?,
+    onAddSongToPlaylist: ((AudioFile) -> Unit)? = null,
     coverPath: String?,
+    artworkTransitionState: PlaybackArtworkTransitionState? = null,
     displayTranslation: Boolean,
     displayRoma: Boolean,
     blurEnabled: Boolean,
+    relativeLineProgressEnabled: Boolean = false,
     highlightAllEnabled: Boolean,
     fontSizeSp: Int,
     textPosition: LyricTextPosition,
     onTranslationToggle: () -> Unit,
     onRomaToggle: () -> Unit,
     onBlurEnabledChange: (Boolean) -> Unit,
+    onRelativeLineProgressEnabledChange: (Boolean) -> Unit = {},
     onHighlightAllEnabledChange: (Boolean) -> Unit,
     onFontSizeChange: (Int) -> Unit,
     onTextPositionChange: (LyricTextPosition) -> Unit,
@@ -738,8 +806,17 @@ private fun LyricMoreSheet(
     onOpenInLyrico: (() -> Unit)?,
     onAiTimingPreview: (() -> Unit)?,
     onOpenExternalTimingEditor: ((LyricTimingEditorTarget) -> Unit)?,
+    audioVisualizerEnabled: Boolean? = null,
+    onAudioVisualizerEnabledChange: ((Boolean) -> Unit)? = null,
+    audioVisualizerStyleOverride: AudioVisualizerStyle? = null,
+    onAudioVisualizerStyleChangeOverride: ((AudioVisualizerStyle) -> Unit)? = null,
     artworkAlpha: Float = 1f,
-    onArtworkBoundsChanged: (Rect) -> Unit = {}
+    onArtworkBoundsChanged: (Rect) -> Unit = {},
+    twoColumnAcrylicLayout: Boolean = true,
+    onLyricVideo: (() -> Unit)? = null,
+    onLyricPoster: (() -> Unit)? = null,
+    embedded: Boolean = false,
+    fontSizeTitle: String? = null,
 ) {
     val scheme = MiuixTheme.colorScheme
     val isDark = scheme.background.luminance() < 0.5f
@@ -753,11 +830,11 @@ private fun LyricMoreSheet(
         items = listOf(24, 28, 32, 36, 40).map { size ->
             DropdownItem(
                 text = when (size) {
-                    24 -> "小"
-                    28 -> "标准"
-                    32 -> "大"
-                    36 -> "特大"
-                    else -> "超大"
+                    24 -> stringResource(R.string.lyric_font_size_small)
+                    28 -> stringResource(R.string.lyric_font_size_standard)
+                    32 -> stringResource(R.string.lyric_font_size_large)
+                    36 -> stringResource(R.string.lyric_font_size_extra_large)
+                    else -> stringResource(R.string.lyric_font_size_huge)
                 },
                 summary = "${size} sp",
                 selected = size == fontSizeSp,
@@ -769,9 +846,9 @@ private fun LyricMoreSheet(
         items = LyricTextPosition.entries.map { position ->
             DropdownItem(
                 text = when (position) {
-                    LyricTextPosition.Left -> "靠左"
-                    LyricTextPosition.Center -> "居中"
-                    LyricTextPosition.Right -> "靠右"
+                    LyricTextPosition.Left -> stringResource(R.string.lyric_position_left)
+                    LyricTextPosition.Center -> stringResource(R.string.lyric_position_center)
+                    LyricTextPosition.Right -> stringResource(R.string.lyric_position_right)
                 },
                 selected = position == textPosition,
                 onClick = { onTextPositionChange(position) }
@@ -783,6 +860,7 @@ private fun LyricMoreSheet(
         if (displayRoma) add(stringResource(R.string.lyric_more_effect_romanization))
         if (highlightAllEnabled) add(stringResource(R.string.lyric_more_effect_highlight))
         if (blurEnabled) add(stringResource(R.string.lyric_more_effect_blur))
+        if (relativeLineProgressEnabled) add(stringResource(R.string.lyric_more_relative_line_progress))
     }
     val effectsEntry = DropdownEntry(
         items = listOf(
@@ -821,9 +899,96 @@ private fun LyricMoreSheet(
                 ),
                 selected = blurEnabled,
                 onClick = { onBlurEnabledChange(!blurEnabled) }
+            ),
+            DropdownItem(
+                text = stringResource(R.string.lyric_more_relative_line_progress),
+                summary = stringResource(R.string.lyric_more_relative_line_progress_summary),
+                selected = relativeLineProgressEnabled,
+                onClick = { onRelativeLineProgressEnabledChange(!relativeLineProgressEnabled) }
             )
         )
     )
+    val visualizerStyle = audioVisualizerStyleOverride ?: LocalAudioVisualizerStyle.current
+    val visualizerStyleChange =
+        onAudioVisualizerStyleChangeOverride ?: LocalAudioVisualizerStyleChange.current
+    val visualizerOffLabel = stringResource(R.string.player_more_visualizer_off)
+    val visualizerSpectrumLabel = stringResource(R.string.player_more_visualizer_spectrum)
+    val visualizerParticleLabel = stringResource(R.string.player_more_visualizer_particle)
+    val visualizerParticleTrailsLabel = stringResource(R.string.player_more_visualizer_particle_trails)
+    val visualizerPulseRingsLabel = stringResource(R.string.player_more_visualizer_pulse_rings)
+    val visualizerEnergyRibbonLabel = stringResource(R.string.player_more_visualizer_energy_ribbon)
+    val visualizerRippleLabel = stringResource(R.string.player_more_visualizer_ripple)
+    val visualizerEnabledChange = onAudioVisualizerEnabledChange
+    val visualizerEntry = if (audioVisualizerEnabled != null && visualizerEnabledChange != null) {
+        DropdownEntry(
+            items = listOf(
+                DropdownItem(
+                    text = visualizerOffLabel,
+                    selected = !audioVisualizerEnabled,
+                    onClick = { visualizerEnabledChange(false) },
+                ),
+                DropdownItem(
+                    text = visualizerSpectrumLabel,
+                    selected = audioVisualizerEnabled && visualizerStyle == AudioVisualizerStyle.Spectrum,
+                    onClick = {
+                        visualizerStyleChange(AudioVisualizerStyle.Spectrum)
+                        if (!audioVisualizerEnabled) visualizerEnabledChange(true)
+                    },
+                ),
+                DropdownItem(
+                    text = visualizerParticleLabel,
+                    selected = audioVisualizerEnabled && visualizerStyle == AudioVisualizerStyle.Particle,
+                    onClick = {
+                        visualizerStyleChange(AudioVisualizerStyle.Particle)
+                        if (!audioVisualizerEnabled) visualizerEnabledChange(true)
+                    },
+                ),
+                DropdownItem(
+                    text = visualizerParticleTrailsLabel,
+                    selected = audioVisualizerEnabled && visualizerStyle == AudioVisualizerStyle.ParticleTrails,
+                    onClick = {
+                        visualizerStyleChange(AudioVisualizerStyle.ParticleTrails)
+                        if (!audioVisualizerEnabled) visualizerEnabledChange(true)
+                    },
+                ),
+                DropdownItem(
+                    text = visualizerPulseRingsLabel,
+                    selected = audioVisualizerEnabled && visualizerStyle == AudioVisualizerStyle.PulseRings,
+                    onClick = {
+                        visualizerStyleChange(AudioVisualizerStyle.PulseRings)
+                        if (!audioVisualizerEnabled) visualizerEnabledChange(true)
+                    },
+                ),
+                DropdownItem(
+                    text = visualizerEnergyRibbonLabel,
+                    selected = audioVisualizerEnabled && visualizerStyle == AudioVisualizerStyle.EnergyRibbon,
+                    onClick = {
+                        visualizerStyleChange(AudioVisualizerStyle.EnergyRibbon)
+                        if (!audioVisualizerEnabled) visualizerEnabledChange(true)
+                    },
+                ),
+                DropdownItem(
+                    text = visualizerRippleLabel,
+                    selected = audioVisualizerEnabled && visualizerStyle == AudioVisualizerStyle.Ripple,
+                    onClick = {
+                        visualizerStyleChange(AudioVisualizerStyle.Ripple)
+                        if (!audioVisualizerEnabled) visualizerEnabledChange(true)
+                    },
+                ),
+            ),
+        )
+    } else {
+        null
+    }
+    val visualizerSummary = when {
+        audioVisualizerEnabled != true -> visualizerOffLabel
+        visualizerStyle == AudioVisualizerStyle.Particle -> visualizerParticleLabel
+        visualizerStyle == AudioVisualizerStyle.ParticleTrails -> visualizerParticleTrailsLabel
+        visualizerStyle == AudioVisualizerStyle.PulseRings -> visualizerPulseRingsLabel
+        visualizerStyle == AudioVisualizerStyle.EnergyRibbon -> visualizerEnergyRibbonLabel
+        visualizerStyle == AudioVisualizerStyle.Ripple -> visualizerRippleLabel
+        else -> visualizerSpectrumLabel
+    }
     val externalTimingEntry = DropdownEntry(
         items = listOf(
             DropdownItem(
@@ -843,48 +1008,348 @@ private fun LyricMoreSheet(
         )
     )
 
+    if (twoColumnAcrylicLayout) {
+        val acrylicShape = RoundedCornerShape(6.dp)
+        val acrylicColor = if (isDark) {
+            Color.White.copy(alpha = 0.10f)
+        } else {
+            Color.White.copy(alpha = 0.46f)
+        }
+        val classicLabel = stringResource(R.string.immersive_progress_style_classic)
+        val waveformLabel = stringResource(R.string.immersive_progress_style_waveform)
+        val secondsLabel = stringResource(R.string.immersive_progress_style_seconds)
+        val musicSpineLabel = stringResource(R.string.immersive_progress_style_music_spine)
+        val progressStyleChange = onProgressStyleValueChange
+        val progressEntry = if (progressStyleValue != null && progressStyleChange != null) {
+            DropdownEntry(
+                items = listOf(
+                    0 to classicLabel,
+                    1 to waveformLabel,
+                    2 to secondsLabel,
+                    3 to musicSpineLabel,
+                ).map { (value, label) ->
+                    DropdownItem(
+                        text = label,
+                        selected = progressStyleValue == value,
+                        onClick = { progressStyleChange(value) },
+                    )
+                },
+            )
+        } else {
+            null
+        }
+
+        Column(
+            modifier = Modifier
+                .then(if (embedded) Modifier.fillMaxWidth() else Modifier.fillMaxSize())
+                .padding(vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (!embedded) Row(verticalAlignment = Alignment.CenterVertically) {
+                PlayerMoreArtworkThumbnail(
+                    size = 68.dp,
+                    cornerRadiusDp = 12f,
+                    artwork = artworkTransitionState?.foregroundArtworkBitmap(),
+                    coverPath = coverPath,
+                    artworkAlpha = artworkAlpha,
+                    onArtworkBoundsChanged = onArtworkBoundsChanged,
+                )
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    SharedMarqueeText(
+                        text = currentSong?.displayName ?: stringResource(R.string.player_no_song),
+                        explicitBadge = com.rawsmusic.core.common.model.LocalLyricExplicit.isExplicit(currentSong),
+                        color = scheme.onSurface,
+                        fontSizeSp = 19f,
+                        fontWeight = FontWeight.SemiBold,
+                        edgeFeather = 8.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(26.dp),
+                    )
+                    SharedMarqueeText(
+                        text = currentSong?.artist?.takeIf { it.isNotBlank() }
+                            ?: stringResource(R.string.player_unknown_artist),
+                        color = scheme.onSurfaceVariantSummary,
+                        fontSizeSp = 14f,
+                        edgeFeather = 6.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(22.dp),
+                    )
+                }
+                PlayerMoreFavoriteButton(currentSong, onAddSongToPlaylist)
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (embedded) Modifier else Modifier.weight(1f).popupFrostedScroll(rememberScrollState())),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if ((landscapeLockEnabled != null && onLandscapeLockEnabledChange != null) ||
+                    (progressEntry != null && progressStyleValue != null)
+                ) Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val landscapeLockChange = onLandscapeLockEnabledChange
+                    if (landscapeLockEnabled != null && landscapeLockChange != null) {
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clip(acrylicShape)
+                                .background(acrylicColor)
+                                .padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = stringResource(R.string.player_landscape_lock_title),
+                                    color = scheme.onSurface,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = landscapeLockEnabled,
+                                onCheckedChange = landscapeLockChange,
+                            )
+                        }
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
+
+                    if (progressEntry != null && progressStyleValue != null) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clip(acrylicShape)
+                                .background(acrylicColor),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            RawWindowDropdownPreference(
+                                entry = progressEntry,
+                                title = stringResource(R.string.landscape_progress_style),
+                                summary = null,
+                                showValue = true,
+                                insideMargin = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                maxHeight = 320.dp,
+                                collapseOnSelection = true,
+                            )
+                        }
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clip(acrylicShape)
+                            .background(acrylicColor),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        RawWindowDropdownPreference(
+                            entry = effectsEntry,
+                            title = stringResource(R.string.lyric_more_effects_title),
+                            summary = null,
+                            showValue = false,
+                            insideMargin = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            maxHeight = 420.dp,
+                            collapseOnSelection = false,
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clip(acrylicShape)
+                            .background(acrylicColor),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        RawWindowDropdownPreference(
+                            entry = fontEntry,
+                            title = fontSizeTitle ?: stringResource(R.string.lyric_font_size_title),
+                            summary = null,
+                            showValue = false,
+                            insideMargin = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            maxHeight = 360.dp,
+                            collapseOnSelection = true,
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clip(acrylicShape)
+                            .background(acrylicColor),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        RawWindowDropdownPreference(
+                            entry = positionEntry,
+                            title = stringResource(R.string.lyric_position_title),
+                            summary = null,
+                            showValue = false,
+                            insideMargin = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            maxHeight = 300.dp,
+                            collapseOnSelection = true,
+                        )
+                    }
+                    if (visualizerEntry != null) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clip(acrylicShape)
+                                .background(acrylicColor),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            RawWindowDropdownPreference(
+                                entry = visualizerEntry,
+                                title = stringResource(R.string.player_more_visualizer),
+                                summary = null,
+                                showValue = false,
+                                insideMargin = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                maxHeight = 420.dp,
+                                collapseOnSelection = true,
+                            )
+                        }
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
+
+                onModifyAlbumArt?.let { action ->
+                    LyricMoreCompactAction(
+                        iconRes = R.drawable.ic_edit,
+                        title = stringResource(R.string.player_modify_artwork),
+                        summary = stringResource(R.string.player_modify_artwork_summary),
+                        color = acrylicColor,
+                        onClick = action,
+                    )
+                }
+                onSearchLyrico?.let { action ->
+                    LyricMoreCompactAction(
+                        iconRes = R.drawable.ic_search,
+                        title = stringResource(R.string.lyric_more_lyrico_search_title),
+                        summary = stringResource(R.string.lyric_more_lyrico_search_summary),
+                        color = acrylicColor,
+                        enabled = currentSong != null,
+                        onClick = action,
+                    )
+                }
+                onOpenInLyrico?.let { action ->
+                    LyricMoreCompactAction(
+                        iconRes = R.drawable.ic_edit,
+                        title = stringResource(R.string.lyric_more_lyrico_title),
+                        summary = stringResource(R.string.lyric_more_lyrico_summary),
+                        color = acrylicColor,
+                        enabled = currentSong != null,
+                        onClick = action,
+                    )
+                }
+                onAiTimingPreview?.let { action ->
+                    LyricMoreCompactAction(
+                        iconRes = R.drawable.ic_equalizer_line,
+                        title = stringResource(R.string.lyric_more_ai_timing_title),
+                        summary = stringResource(R.string.lyric_more_ai_timing_summary),
+                        color = acrylicColor,
+                        enabled = currentSong != null,
+                        onClick = action,
+                    )
+                }
+                onLyricVideo?.let { action ->
+                    LyricMoreCompactAction(
+                        iconRes = R.drawable.ic_lyric_video,
+                        title = stringResource(R.string.lyric_share_video_title),
+                        summary = stringResource(R.string.lyric_share_video_summary),
+                        color = acrylicColor,
+                        enabled = currentSong != null,
+                        onClick = action,
+                    )
+                }
+                onLyricPoster?.let { action ->
+                    LyricMoreCompactAction(
+                        iconRes = R.drawable.ic_share,
+                        title = stringResource(R.string.lyric_share_poster_title),
+                        summary = stringResource(R.string.lyric_share_poster_summary),
+                        color = acrylicColor,
+                        enabled = currentSong != null,
+                        onClick = action,
+                    )
+                }
+                if (onOpenExternalTimingEditor != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(acrylicShape)
+                            .background(acrylicColor),
+                    ) {
+                        RawWindowDropdownPreference(
+                            entry = externalTimingEntry,
+                            title = stringResource(R.string.lyric_more_timing_editor_title),
+                            summary = stringResource(R.string.lyric_more_timing_editor_summary),
+                            showValue = false,
+                            insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            maxHeight = 300.dp,
+                            collapseOnSelection = true,
+                        )
+                    }
+                }
+            }
+        }
+        return
+    }
+
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = 560.dp)
-                .verticalScroll(rememberScrollState())
                 .padding(vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.Top
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(68.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(cardColor)
-                        .onGloballyPositioned { coordinates ->
-                            val bounds = coordinates.boundsInRoot()
-                            onArtworkBoundsChanged(
-                                Rect(bounds.left, bounds.top, bounds.right, bounds.bottom)
-                            )
-                        }
-                        .graphicsLayer { alpha = artworkAlpha.coerceIn(0f, 1f) }
-                ) {
-                    if (!coverPath.isNullOrBlank()) {
-                        com.rawsmusic.core.ui.widget.bitmaps.BitmapImage(
-                            key = coverPath,
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
-                            targetWidth = 220,
-                            targetHeight = 220,
-                            surface = com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface.Playback
-                        )
-                    }
-                }
+                PlayerMoreArtworkThumbnail(
+                    size = 68.dp,
+                    cornerRadiusDp = 12f,
+                    artwork = artworkTransitionState?.foregroundArtworkBitmap(),
+                    coverPath = coverPath,
+                    artworkAlpha = artworkAlpha,
+                    onArtworkBoundsChanged = onArtworkBoundsChanged,
+                )
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(
+                    SharedMarqueeText(
                         text = currentSong?.displayName ?: stringResource(R.string.player_no_song),
+                        explicitBadge = com.rawsmusic.core.common.model.LocalLyricExplicit.isExplicit(currentSong),
                         color = scheme.onSurface,
-                        fontSize = 19.sp,
+                        fontSizeSp = 19f,
                         fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        visible = false,
+                        modifier = Modifier.fillMaxWidth().height(26.dp),
                     )
                     Text(
                         text = currentSong?.artist?.takeIf { it.isNotBlank() }
@@ -895,8 +1360,17 @@ private fun LyricMoreSheet(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+                PlayerMoreFavoriteButton(currentSong, onAddSongToPlaylist)
             }
 
+            Spacer(Modifier.height(14.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false)
+                    .popupFrostedScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
             val landscapeLockChange = onLandscapeLockEnabledChange
             if (landscapeLockEnabled != null && landscapeLockChange != null) {
                 Row(
@@ -963,6 +1437,24 @@ private fun LyricMoreSheet(
                         showValue = true,
                         maxHeight = 320.dp,
                         collapseOnSelection = true
+                    )
+                }
+            }
+
+            if (visualizerEntry != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(cardColor)
+                ) {
+                    RawWindowDropdownPreference(
+                        entry = visualizerEntry,
+                        title = stringResource(R.string.player_more_visualizer),
+                        summary = visualizerSummary,
+                        showValue = true,
+                        maxHeight = 420.dp,
+                        collapseOnSelection = true,
                     )
                 }
             }
@@ -1163,7 +1655,44 @@ private fun LyricMoreSheet(
                     collapseOnSelection = true
                 )
             }
+            }
         }
+}
+
+@Composable
+private fun LyricMoreCompactAction(
+    @DrawableRes iconRes: Int,
+    title: String,
+    summary: String,
+    color: Color,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val scheme = MiuixTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(54.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(color)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Image(
+            painter = painterResource(iconRes),
+            contentDescription = null,
+            colorFilter = ColorFilter.tint(scheme.primary),
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = scheme.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(summary, color = scheme.onSurfaceVariantSummary, fontSize = 11.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
 }
 
 @Composable
@@ -1174,6 +1703,7 @@ private fun LyricHeader(
     secondaryColor: Color,
     @DrawableRes moreIconRes: Int,
     onMore: () -> Unit,
+    onMoreBoundsChanged: (Rect) -> Unit,
     showCover: Boolean,
     coverGestureModifier: Modifier = Modifier,
     onCoverBoundsChanged: (PlayerLyricsRect?) -> Unit = {},
@@ -1210,6 +1740,7 @@ private fun LyricHeader(
         Column(modifier = Modifier.weight(1f)) {
             SharedMarqueeText(
                 text = currentSong?.displayName ?: stringResource(R.string.player_no_song),
+                explicitBadge = com.rawsmusic.core.common.model.LocalLyricExplicit.isExplicit(currentSong),
                 color = primaryColor,
                 fontSizeSp = 25f,
                 fontWeight = FontWeight.Bold,
@@ -1235,6 +1766,9 @@ private fun LyricHeader(
         Box(
             modifier = Modifier
                 .size(58.dp)
+                .onGloballyPositioned { coordinates ->
+                    onMoreBoundsChanged(coordinates.boundsInRoot())
+                }
                 .clickable(onClick = onMore),
             contentAlignment = Alignment.Center
         ) {
@@ -1255,6 +1789,7 @@ private fun LyricTitleOnlyHeader(
     secondaryColor: Color,
     @DrawableRes moreIconRes: Int,
     onMore: () -> Unit,
+    onMoreBoundsChanged: (Rect) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val animateLongText = LongTextMotionState.enabled && LongTextMotionState.enabledEverywhere
@@ -1267,6 +1802,7 @@ private fun LyricTitleOnlyHeader(
         Column(modifier = Modifier.weight(1f)) {
             SharedMarqueeText(
                 text = currentSong?.displayName ?: stringResource(R.string.player_no_song),
+                explicitBadge = com.rawsmusic.core.common.model.LocalLyricExplicit.isExplicit(currentSong),
                 color = primaryColor,
                 fontSizeSp = 21f,
                 fontWeight = FontWeight.Bold,
@@ -1292,6 +1828,9 @@ private fun LyricTitleOnlyHeader(
         Box(
             modifier = Modifier
                 .size(48.dp)
+                .onGloballyPositioned { coordinates ->
+                    onMoreBoundsChanged(coordinates.boundsInRoot())
+                }
                 .clickable(onClick = onMore),
             contentAlignment = Alignment.Center
         ) {

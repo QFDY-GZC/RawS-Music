@@ -5,6 +5,29 @@ internal object BackupPreferenceSchema {
     enum class ValueType { BOOLEAN, INT, LONG, FLOAT, DOUBLE, STRING, STRING_SET }
 
     val types: Map<String, ValueType> = buildMap {
+        put("personalization_bottom_bar_material_v1", ValueType.STRING)
+        put("personalization_bottom_nav_style_bottom_lift_v1", ValueType.FLOAT)
+        put("personalization_library_bottom_buttons_layout_v1", ValueType.STRING)
+        put("personalization_library_bottom_buttons_mode_v1", ValueType.STRING)
+        put("personalization_library_bottom_buttons_surface_v1", ValueType.STRING)
+        put("personalization_library_header_buttons_enabled_v1", ValueType.BOOLEAN)
+        put("personalization_notice_surface_style_v1", ValueType.STRING)
+        put("personalization_player_hires_badge_size_scale_v1", ValueType.FLOAT)
+        put("personalization_settings_surface_style_v1", ValueType.STRING)
+        put("hdr_window_enabled", ValueType.BOOLEAN)
+        put("hdr_window_scenes", ValueType.STRING_SET)
+        put("hdr_window_headroom", ValueType.FLOAT)
+        put("lyrics_export_signature", ValueType.STRING)
+        put("ui_player_swipe_to_change_track_disabled", ValueType.BOOLEAN)
+        put("ui_immersive_vertical_track_swipe_enabled", ValueType.BOOLEAN)
+        put("ui_experimental_font_weight_v1", ValueType.BOOLEAN)
+        put("lyric_experimental_font_weight_v1", ValueType.BOOLEAN)
+        put("ui_font_letter_spacing_em_v1", ValueType.FLOAT)
+        put("ui_inline_player_lyric_font_size_sp", ValueType.INT)
+        put("ui_mini_player_karaoke_effect_enabled", ValueType.BOOLEAN)
+        put("ui_immersive_waveform_hold_when_paused", ValueType.BOOLEAN)
+        put("aa_artist_biography_enabled", ValueType.BOOLEAN)
+        put("aa_artist_artwork_viewer_enabled", ValueType.BOOLEAN)
         put("aa_8888", ValueType.BOOLEAN)
         put("aa_always", ValueType.BOOLEAN)
         put("aa_anim", ValueType.BOOLEAN)
@@ -96,6 +119,8 @@ internal object BackupPreferenceSchema {
         put("player_volume_normalization", ValueType.BOOLEAN)
         put("room_migration_done_v1", ValueType.BOOLEAN)
         put("scan_cold_start_auto", ValueType.BOOLEAN)
+        put("scan_automatic_enabled", ValueType.BOOLEAN)
+        put("scan_automatic_immediate", ValueType.BOOLEAN)
         put("scan_ignore_video_formats", ValueType.BOOLEAN)
         put("scan_legacy_file_access", ValueType.BOOLEAN)
         put("speaker_output_elasticity_enabled", ValueType.BOOLEAN)
@@ -119,6 +144,7 @@ internal object BackupPreferenceSchema {
         put("ui_immersive_enabled", ValueType.BOOLEAN)
         put("ui_landscape_player_locked", ValueType.BOOLEAN)
         put("ui_lyric_blur_enabled", ValueType.BOOLEAN)
+        put("ui_lyric_relative_line_progress_enabled", ValueType.BOOLEAN)
         put("ui_lyric_highlight_all_enabled", ValueType.BOOLEAN)
         put("ui_lyric_karaoke_glow_enabled", ValueType.BOOLEAN)
         put("ui_lyric_karaoke_lift_enabled", ValueType.BOOLEAN)
@@ -129,6 +155,7 @@ internal object BackupPreferenceSchema {
         put("ui_lyric_color_apply_home_v1", ValueType.BOOLEAN)
         put("ui_mini_cover_enabled", ValueType.BOOLEAN)
         put("ui_play_page_memory_enabled", ValueType.BOOLEAN)
+        put("ui_player_more_favorite_visible", ValueType.BOOLEAN)
         put("ui_status_bar_hidden", ValueType.BOOLEAN)
         put("ui_video_cover_enabled", ValueType.BOOLEAN)
         put("ui_was_in_fragment_mode", ValueType.BOOLEAN)
@@ -287,6 +314,9 @@ internal object BackupPreferenceSchema {
         put("moog_ladder_drive", ValueType.FLOAT)
         put("moog_ladder_mix", ValueType.FLOAT)
         put("moog_ladder_resonance", ValueType.FLOAT)
+        put("reverb_enabled", ValueType.BOOLEAN)
+        put("reverb_parameters_v1", ValueType.STRING)
+        put("reverb_presets_v1", ValueType.STRING)
         put("panoramic_360_azimuth", ValueType.FLOAT)
         put("panoramic_360_elevation", ValueType.FLOAT)
         put("panoramic_360_intensity", ValueType.FLOAT)
@@ -381,6 +411,9 @@ internal object BackupPreferenceSchema {
         put("peq_preset_name", ValueType.STRING)
         put("personalization_bottom_bar_style_v1", ValueType.STRING)
         put("personalization_bottom_chrome_scroll_behavior_v1", ValueType.STRING)
+        put("personalization_bottom_nav_style_compact_style_v1", ValueType.STRING)
+        put("personalization_bottom_nav_style_compact_leading_v1", ValueType.BOOLEAN)
+        put("personalization_bottom_nav_style_compact_trailing_v1", ValueType.BOOLEAN)
         put("personalization_bottom_navigation_scenes_v1", ValueType.STRING)
         put("personalization_mini_bubble_motion_v1", ValueType.STRING)
         put("personalization_mini_bubble_origin_v1", ValueType.STRING)
@@ -415,7 +448,16 @@ internal object BackupPreferenceSchema {
     }
 
     /** Internal/runtime keys are deliberately not portable configuration. */
-    private val excludedKeys: Set<String> = setOf(
+    val excludedKeys: Set<String> = setOf(
+        "ui_video_cover_enabled", "ui_video_cover_mode", "ui_video_cover_current_assignments", "ui_video_cover_permanent_uri",
+        "player_last_song_id", "player_last_song_path", "player_last_song_title",
+        "player_last_song_artist", "player_last_song_album", "player_last_song_album_art",
+        "player_last_song_duration", "player_last_song_album_id", "player_last_position",
+        "player_last_play_state", "player_last_usb_exclusive_active",
+        "player_shuffle_traversal_order", "player_shuffle_traversal_cursor",
+        "player_priority_queue_songs_json", "player_sleep_timer_deadline_epoch_ms",
+        "ui_last_scan_time", "ui_update_notes_version_code",
+        "lyrics_flyme_default_off_v1", "personalization_performance_mode_default_v2",
         "audio_focus_phone_permission_prompted",
         "eq_built_in_initialized",
         "room_migration_done_v1",
@@ -468,7 +510,15 @@ internal object BackupPreferenceSchema {
     )
 
     fun typeForBackup(key: String): ValueType? =
-        if (key in excludedKeys) null else types[key]
+        if (key in excludedKeys || key in deviceReferenceKeys || key in sensitiveKeys) null else types[key]
 
-    val sensitiveKeys: Set<String> = setOf("webdav_password")
+    val deviceReferenceKeys: Set<String> = setOf(
+        "scanner_music_folder_uris", "ui_root_scan_paths", "ui_scan_paths",
+        "ui_custom_font_path", "lyric_font_path", "lyric_font_name",
+        "fft_convolver_ir_uri", "fft_convolver_ir_name",
+        "ui_video_cover_current_assignments", "ui_video_cover_permanent_uri",
+        "personalization_player_hires_badge_custom_path_v1",
+    )
+
+    val sensitiveKeys: Set<String> = setOf("webdav_password", "webdav_extra_headers")
 }

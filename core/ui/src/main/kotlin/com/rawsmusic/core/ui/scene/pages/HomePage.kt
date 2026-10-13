@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import com.rawsmusic.core.ui.systemui.rawStableStatusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -67,8 +68,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
+import com.rawsmusic.core.ui.widget.virtuallist.liftVirtualListCustomHolder
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.runtime.key
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
@@ -77,13 +82,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.core.ui.theme.FontScaleLayoutReporter
+import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.scene.LocalSceneBackgroundFrozen
 import com.rawsmusic.core.ui.scene.LocalReferenceLibraryFullScenePreflight
 import com.rawsmusic.core.ui.scene.LocalRetainedSceneItemTransform
 import com.rawsmusic.core.ui.scene.LocalReferenceRetainedLibraryPopulation
+import com.rawsmusic.core.ui.scene.LocalRawWindowLayoutProfile
 import com.rawsmusic.core.ui.scene.NavScene
+import com.rawsmusic.core.ui.scene.labelRes
 import com.rawsmusic.core.ui.scene.HomeFullCoverSourceAnchor
 import com.rawsmusic.core.ui.widget.flow.referenceStaticForeground
 import com.rawsmusic.core.ui.widget.flow.usesReferenceStaticForeground
@@ -103,6 +114,7 @@ import com.rawsmusic.core.ui.widget.virtuallist.LocalReferenceLibraryProviderPub
 import com.rawsmusic.core.ui.widget.virtuallist.rememberComposeVirtualListState
 import com.rawsmusic.core.ui.widget.virtuallist.VirtualListScrollProgressObserver
 import io.github.proify.lyricon.lyric.model.Song
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -161,6 +173,7 @@ fun HomePage(
     onQueueNavigate: (Int) -> Unit,
     onCarouselSongSelect: (List<AudioFile>, AudioFile, Int) -> Unit = { _, _, _ -> },
     onCurrentArtworkLongPress: (HomeFullCoverSourceAnchor) -> Unit = {},
+    onCurrentArtworkDoubleTap: () -> Unit = {},
     onCurrentArtworkBoundsChanged: (AudioFile, Rect) -> Unit = { _, _ -> },
     hideCenterForFullscreenTransition: Boolean = false,
     centerReflectionAlpha: Float = 1f,
@@ -169,6 +182,12 @@ fun HomePage(
     var showFlowModeDialog by remember { mutableStateOf(false) }
     var showHeaderMenuDialog by remember { mutableStateOf(false) }
     var homeCardEditMode by remember { mutableStateOf(false) }
+    val cardEditDragHint = stringResource(R.string.home_card_edit_drag_notice)
+    fun changeHomeCardEditMode(editing: Boolean) {
+        val showHint = shouldShowHomeCardDragHint(homeCardEditMode, editing)
+        homeCardEditMode = editing
+        if (showHint) AppNoticeBus.post(cardEditDragHint)
+    }
     var addCardGroup by remember { mutableStateOf<HomeCardGroup?>(null) }
     var showAddCardDialog by remember { mutableStateOf(false) }
     val libraryCardDragPreview = remember { HomeCardDragPreviewState() }
@@ -254,7 +273,7 @@ fun HomePage(
             homeCardEditMode = homeCardEditMode,
             libraryCardDragPreview = libraryCardDragPreview,
             toolCardDragPreview = toolCardDragPreview,
-            onHomeCardEditModeChange = { homeCardEditMode = it },
+            onHomeCardEditModeChange = ::changeHomeCardEditMode,
             onAddHomeCard = { group ->
                 addCardGroup = group
                 showAddCardDialog = true
@@ -270,6 +289,7 @@ fun HomePage(
             onQueueNavigate = onQueueNavigate,
             onCarouselSongSelect = onCarouselSongSelect,
             onCurrentArtworkLongPress = onCurrentArtworkLongPress,
+            onCurrentArtworkDoubleTap = onCurrentArtworkDoubleTap,
             onCurrentArtworkBoundsChanged = onCurrentArtworkBoundsChanged,
             hideCenterForFullscreenTransition = hideCenterForFullscreenTransition,
             centerReflectionAlpha = centerReflectionAlpha,
@@ -342,7 +362,7 @@ fun HomePage(
                 homeCardEditMode = homeCardEditMode,
                 libraryCardDragPreview = libraryCardDragPreview,
                 toolCardDragPreview = toolCardDragPreview,
-                onHomeCardEditModeChange = { homeCardEditMode = it },
+                onHomeCardEditModeChange = ::changeHomeCardEditMode,
                 onAddHomeCard = { group ->
                     addCardGroup = group
                     showAddCardDialog = true
@@ -360,6 +380,7 @@ fun HomePage(
                 onQueueNavigate = onQueueNavigate,
                 onCarouselSongSelect = onCarouselSongSelect,
                 onCurrentArtworkLongPress = onCurrentArtworkLongPress,
+                onCurrentArtworkDoubleTap = onCurrentArtworkDoubleTap,
                 onCurrentArtworkBoundsChanged = onCurrentArtworkBoundsChanged,
                 hideCenterForFullscreenTransition = hideCenterForFullscreenTransition,
                 centerReflectionAlpha = centerReflectionAlpha,
@@ -455,12 +476,17 @@ private fun HomePageContent(
     onQueueNavigate: (Int) -> Unit,
     onCarouselSongSelect: (List<AudioFile>, AudioFile, Int) -> Unit,
     onCurrentArtworkLongPress: (HomeFullCoverSourceAnchor) -> Unit,
+    onCurrentArtworkDoubleTap: () -> Unit,
     onCurrentArtworkBoundsChanged: (AudioFile, Rect) -> Unit,
     hideCenterForFullscreenTransition: Boolean,
     centerReflectionAlpha: Float,
     centerReflectionArtworkKey: String,
     sceneMotionFrozen: Boolean,
 ) {
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
+    val homeCardColumns = windowLayoutProfile.homeCardColumns
+    val homeCardRowMaxWidth = (windowLayoutProfile.homeCardContentMaxWidth - 32.dp)
+        .coerceAtLeast(1.dp)
     val visibleLibraryScenes = homeCardLayoutState.scenes(HomeCardGroup.LIBRARY)
     val visibleToolScenes = homeCardLayoutState.scenes(HomeCardGroup.TOOLS)
     val libraryCards = remember(songs, visibleLibraryScenes) { homeLibraryCards(songs, visibleLibraryScenes) }
@@ -549,6 +575,7 @@ private fun HomePageContent(
                         onCarouselSongSelect(queueSongs, song, index)
                     },
                     onCurrentArtworkLongPress = onCurrentArtworkLongPress,
+                    onCurrentArtworkDoubleTap = onCurrentArtworkDoubleTap,
                     onCurrentArtworkBoundsChanged = onCurrentArtworkBoundsChanged,
                     hideCenterForFullscreenTransition = hideCenterForFullscreenTransition,
                     centerReflectionAlpha = centerReflectionAlpha,
@@ -568,7 +595,7 @@ private fun HomePageContent(
             editing = homeCardEditMode,
             onDone = { onHomeCardEditModeChange(false) },
         )
-        librarySlots.chunked(2).forEach { row ->
+        librarySlots.chunked(homeCardColumns).forEach { row ->
             HomeCardSlotRow(
                 row = row,
                 group = HomeCardGroup.LIBRARY,
@@ -580,6 +607,10 @@ private fun HomePageContent(
                 onEnterEdit = { onHomeCardEditModeChange(true) },
                 onAdd = { onAddHomeCard(HomeCardGroup.LIBRARY) },
                 onNavigate = onNavigate,
+                columns = homeCardColumns,
+                modifier = Modifier
+                    .widthIn(max = homeCardRowMaxWidth)
+                    .align(Alignment.CenterHorizontally),
             )
         }
 
@@ -613,7 +644,7 @@ private fun HomePageContent(
             editing = homeCardEditMode,
             onDone = { onHomeCardEditModeChange(false) },
         )
-        toolSlots.chunked(2).forEach { row ->
+        toolSlots.chunked(homeCardColumns).forEach { row ->
             HomeCardSlotRow(
                 row = row,
                 group = HomeCardGroup.TOOLS,
@@ -625,6 +656,10 @@ private fun HomePageContent(
                 onEnterEdit = { onHomeCardEditModeChange(true) },
                 onAdd = { onAddHomeCard(HomeCardGroup.TOOLS) },
                 onNavigate = onNavigate,
+                columns = homeCardColumns,
+                modifier = Modifier
+                    .widthIn(max = homeCardRowMaxWidth)
+                    .align(Alignment.CenterHorizontally),
             )
         }
         Spacer(modifier = Modifier.height(170.dp))
@@ -834,14 +869,16 @@ private fun HomeCardSlotRow(
     onEnterEdit: () -> Unit,
     onAdd: () -> Unit,
     onNavigate: (NavScene) -> Unit,
+    columns: Int = 2,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         row.forEach { slot ->
             when (slot) {
-                is HomeCardSlot.Card -> {
+                is HomeCardSlot.Card -> key(slot.value.scene) {
                     val card = slot.value
                     LibraryTile(
                         scene = card.scene,
@@ -865,7 +902,9 @@ private fun HomeCardSlotRow(
                 }
             }
         }
-        if (row.size == 1) Spacer(modifier = Modifier.weight(1f))
+        repeat((columns.coerceAtLeast(1) - row.size).coerceAtLeast(0)) {
+            Spacer(modifier = Modifier.weight(1f))
+        }
     }
 }
 
@@ -955,6 +994,13 @@ private fun LibraryTile(
             if (value >= 0.999f && removing) onRemove()
         },
     )
+    // Every HOME card row is its own VirtualList holder View. While this card is dragged, lift that
+    // holder above its siblings so the tile can travel into (and be seen over) the other rows.
+    val holderView = LocalView.current
+    DisposableEffect(holderView, dragging) {
+        if (dragging) liftVirtualListCustomHolder(holderView, lifted = true)
+        onDispose { if (dragging) liftVirtualListCustomHolder(holderView, lifted = false) }
+    }
     val interactionModifier = if (editMode) {
         Modifier.pointerInput(scene, visibleOrder) {
             detectDragGesturesAfterLongPress(
@@ -988,7 +1034,10 @@ private fun LibraryTile(
     Column(
         modifier = modifier
             .onGloballyPositioned { coordinates ->
-                dragPreview.publishSlot(scene, coordinates.boundsInRoot())
+                // Window space, not root space: each card row is hosted by a separate holder
+                // ComposeView, so boundsInRoot() restarts at y=0 in every row and the nearest-slot
+                // search could never leave the dragged card's own row.
+                dragPreview.publishSlot(scene, coordinates.boundsInWindow())
             }
             .graphicsLayer {
                 val removeScale = 1f - 0.35f * removalProgress
@@ -1067,7 +1116,7 @@ private fun LibraryTile(
         }
         Spacer(Modifier.height(9.dp))
         Text(
-            text = scene.label,
+            text = stringResource(scene.labelRes()),
             fontSize = 17.sp,
             fontWeight = FontWeight.Medium,
             color = referenceStaticForeground(MiuixTheme.colorScheme.onBackground),
@@ -1293,6 +1342,13 @@ private fun PillAction(
 private fun HomeTopHeader(
     weatherVisible: Boolean,
 ) {
+    val fontDensity = LocalDensity.current
+    val fontSizePreference = AppPreferences.UI.fontSizeScale
+    val selectedFontName = AppPreferences.UI.customFontPath
+        .takeIf(String::isNotBlank)?.let { File(it).name } ?: "system_default"
+    val titleLayoutReporter = remember {
+        FontScaleLayoutReporter("home_title") { AppLogger.i("FontScale", it) }
+    }
     Column(modifier = Modifier.fillMaxWidth()) {
         Box(
             modifier = Modifier
@@ -1305,7 +1361,17 @@ private fun HomeTopHeader(
                 fontSize = 22.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = referenceStaticForeground(MiuixTheme.colorScheme.onBackground),
-                modifier = Modifier.align(Alignment.Center)
+                modifier = Modifier.align(Alignment.Center),
+                onTextLayout = { layout ->
+                    titleLayoutReporter.report(
+                        fontSizePreference,
+                        selectedFontName,
+                        fontDensity.fontScale,
+                        with(fontDensity) { 22.sp.toPx() },
+                        layout.size.width,
+                        layout.size.height,
+                    )
+                },
             )
 
         }
@@ -1466,6 +1532,7 @@ internal fun rememberHomeVirtualListProviderSpec(
     onQueueNavigate: (Int) -> Unit,
     onCarouselSongSelect: (List<AudioFile>, AudioFile, Int) -> Unit,
     onCurrentArtworkLongPress: (HomeFullCoverSourceAnchor) -> Unit,
+    onCurrentArtworkDoubleTap: () -> Unit,
     onCurrentArtworkBoundsChanged: (AudioFile, Rect) -> Unit,
     hideCenterForFullscreenTransition: Boolean,
     centerReflectionAlpha: Float,
@@ -1509,6 +1576,14 @@ internal fun rememberHomeVirtualListProviderSpec(
     val latestPosition by rememberUpdatedState(effectivePosition)
     val latestPlaying by rememberUpdatedState(effectivePlaying)
     val latestSceneMotionFrozen by rememberUpdatedState(sceneMotionFrozen)
+    // These are presentation state, not provider identity. Recreating the provider here tears
+    // down the real home cover and its scroll holder on each return-animation frame.
+    val latestHideCenter by rememberUpdatedState(hideCenterForFullscreenTransition)
+    val latestReflectionAlpha by rememberUpdatedState(centerReflectionAlpha)
+    val latestReflectionKey by rememberUpdatedState(centerReflectionArtworkKey)
+    val latestArtworkLongPress by rememberUpdatedState(onCurrentArtworkLongPress)
+    val latestArtworkDoubleTap by rememberUpdatedState(onCurrentArtworkDoubleTap)
+    val latestArtworkBoundsChanged by rememberUpdatedState(onCurrentArtworkBoundsChanged)
     val visibleLibraryScenes = homeCardLayoutState.scenes(HomeCardGroup.LIBRARY)
     val visibleToolScenes = homeCardLayoutState.scenes(HomeCardGroup.TOOLS)
     val libraryCards = remember(songs, visibleLibraryScenes) { homeLibraryCards(songs, visibleLibraryScenes) }
@@ -1538,16 +1613,33 @@ internal fun rememberHomeVirtualListProviderSpec(
     val mostPlayedIndex = remember(songs, mostPlayed) {
         mostPlayed.associate { song -> song.id to songs.indexOfFirst { it.id == song.id }.coerceAtLeast(0) }
     }
-    val libraryRows = remember(librarySlots) { librarySlots.chunked(2) }
-    val toolRows = remember(toolSlots) { toolSlots.chunked(2) }
-    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
+    val homeCardColumns = windowLayoutProfile.homeCardColumns
+    val homeCardRowMaxWidth = (windowLayoutProfile.homeCardContentMaxWidth - 32.dp)
+        .coerceAtLeast(1.dp)
+    val libraryRows = remember(librarySlots, homeCardColumns) {
+        librarySlots.chunked(homeCardColumns)
+    }
+    val toolRows = remember(toolSlots, homeCardColumns) {
+        toolSlots.chunked(homeCardColumns)
+    }
+    // Card-row holders read the canonical order through snapshot state instead of the provider
+    // closure. A reorder commit then recomposes every row holder in the same frame as the drag
+    // preview release; waiting for the provider rebind showed one frame of the old slots and
+    // replayed the displacement as a second animation.
+    val latestLibraryRows by rememberUpdatedState(libraryRows)
+    val latestToolRows by rememberUpdatedState(toolRows)
+    val latestVisibleLibraryScenes by rememberUpdatedState(visibleLibraryScenes)
+    val latestVisibleToolScenes by rememberUpdatedState(visibleToolScenes)
     val fontScale = LocalDensity.current.fontScale
     // HOME cards are square. v15 packed six library rows and two tool rows into two fixed 330dp
     // holders, so their children were forced to overlap/squeeze. Give every physical row its own
     // holder and derive the row height from the same two-column geometry used by LibraryTile, plus
     // a font-scale-aware text envelope so larger global/accessibility fonts are never clipped.
-    val cardRowHeight = remember(screenWidthDp, fontScale) {
-        val tileSide = ((screenWidthDp - 32 - 14).coerceAtLeast(240) / 2f)
+    val cardRowHeight = remember(homeCardRowMaxWidth, homeCardColumns, fontScale) {
+        val totalGap = 14f * (homeCardColumns - 1).coerceAtLeast(0)
+        val tileSide = ((homeCardRowMaxWidth.value - totalGap)
+            .coerceAtLeast(120f * homeCardColumns) / homeCardColumns)
         (tileSide + homeCardRowExtraHeightDp(fontScale)).dp
     }
     val sectionHeaderHeight = remember(fontScale) {
@@ -1625,9 +1717,6 @@ internal fun rememberHomeVirtualListProviderSpec(
         headerOptions.carouselLyricVisible,
         headerOptions.weatherVisible,
         showSettingsShortcut,
-        hideCenterForFullscreenTransition,
-        centerReflectionAlpha,
-        centerReflectionArtworkKey,
     ) {
         VirtualListCustomProvider(
             itemHeight = { song, _ ->
@@ -1696,11 +1785,12 @@ internal fun rememberHomeVirtualListProviderSpec(
                                     onSelectSong = { song, index ->
                                         onCarouselSongSelect(latestCarouselSongs, song, index)
                                     },
-                                    onCurrentArtworkLongPress = onCurrentArtworkLongPress,
-                                    onCurrentArtworkBoundsChanged = onCurrentArtworkBoundsChanged,
-                                    hideCenterForFullscreenTransition = hideCenterForFullscreenTransition,
-                                    centerReflectionAlpha = centerReflectionAlpha,
-                                    centerReflectionArtworkKey = centerReflectionArtworkKey,
+                                    onCurrentArtworkLongPress = latestArtworkLongPress,
+                                    onCurrentArtworkDoubleTap = latestArtworkDoubleTap,
+                                    onCurrentArtworkBoundsChanged = latestArtworkBoundsChanged,
+                                    hideCenterForFullscreenTransition = latestHideCenter,
+                                    centerReflectionAlpha = latestReflectionAlpha,
+                                    centerReflectionArtworkKey = latestReflectionKey,
                                     hostFrozen = latestSceneMotionFrozen,
                                 )
                             }
@@ -1725,11 +1815,12 @@ internal fun rememberHomeVirtualListProviderSpec(
                     }
                     kind.startsWith("$HOME_HOLDER_LIBRARY_ROW:") -> {
                         val rowIndex = kind.substringAfter(':').toIntOrNull() ?: -1
-                        val row = libraryRows.getOrNull(rowIndex).orEmpty()
+                        val row = latestLibraryRows.getOrNull(rowIndex).orEmpty()
                         Box(
                             modifier = modifier
                                 .fillMaxSize()
                                 .padding(horizontal = 16.dp, vertical = 7.dp),
+                            contentAlignment = Alignment.TopCenter,
                         ) {
                             HomeCardSlotRow(
                                 row = row,
@@ -1737,11 +1828,13 @@ internal fun rememberHomeVirtualListProviderSpec(
                                 editMode = homeCardEditMode,
                                 contentCounts = homeContentCounts,
                                 layoutState = homeCardLayoutState,
-                                visibleOrder = visibleLibraryScenes,
+                                visibleOrder = latestVisibleLibraryScenes,
                                 dragPreview = libraryCardDragPreview,
                                 onEnterEdit = { onHomeCardEditModeChange(true) },
                                 onAdd = { onAddHomeCard(HomeCardGroup.LIBRARY) },
                                 onNavigate = onNavigate,
+                                columns = homeCardColumns,
+                                modifier = Modifier.widthIn(max = homeCardRowMaxWidth),
                             )
                         }
                     }
@@ -1790,11 +1883,12 @@ internal fun rememberHomeVirtualListProviderSpec(
                     }
                     kind.startsWith("$HOME_HOLDER_TOOLS_ROW:") -> {
                         val rowIndex = kind.substringAfter(':').toIntOrNull() ?: -1
-                        val row = toolRows.getOrNull(rowIndex).orEmpty()
+                        val row = latestToolRows.getOrNull(rowIndex).orEmpty()
                         Box(
                             modifier = modifier
                                 .fillMaxSize()
                                 .padding(horizontal = 16.dp, vertical = 7.dp),
+                            contentAlignment = Alignment.TopCenter,
                         ) {
                             HomeCardSlotRow(
                                 row = row,
@@ -1802,11 +1896,13 @@ internal fun rememberHomeVirtualListProviderSpec(
                                 editMode = homeCardEditMode,
                                 contentCounts = homeContentCounts,
                                 layoutState = homeCardLayoutState,
-                                visibleOrder = visibleToolScenes,
+                                visibleOrder = latestVisibleToolScenes,
                                 dragPreview = toolCardDragPreview,
                                 onEnterEdit = { onHomeCardEditModeChange(true) },
                                 onAdd = { onAddHomeCard(HomeCardGroup.TOOLS) },
                                 onNavigate = onNavigate,
+                                columns = homeCardColumns,
+                                modifier = Modifier.widthIn(max = homeCardRowMaxWidth),
                             )
                         }
                     }

@@ -32,6 +32,9 @@ import com.rawsmusic.core.ui.widget.virtuallist.LocalReferenceLibraryProviderPub
 import com.rawsmusic.core.ui.widget.virtuallist.ComposeGenericVirtualList
 import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListState
 import com.rawsmusic.core.ui.widget.virtuallist.GenreVirtualListItem
+import com.rawsmusic.core.ui.widget.virtuallist.VIRTUAL_LIST_UNKNOWN_COMPOSER_SENTINEL
+import com.rawsmusic.core.ui.widget.virtuallist.VIRTUAL_LIST_UNKNOWN_GENRE_SENTINEL
+import com.rawsmusic.core.ui.widget.virtuallist.VIRTUAL_LIST_UNKNOWN_YEAR_SENTINEL
 import com.rawsmusic.core.ui.widget.virtuallist.VirtualListVisualItem
 import com.rawsmusic.core.ui.widget.virtuallist.YearVirtualListItem
 import com.rawsmusic.core.ui.widget.virtuallist.formatVirtualListDuration
@@ -58,6 +61,7 @@ fun GenresPage(
     modifier: Modifier = Modifier
 ) {
     val genreTitle = stringResource(R.string.library_title_genres)
+    val unknownGenreLabel = stringResource(R.string.library_unknown_genre)
     val groups by produceState(
         initialValue = LibrarySceneGroupingWarmup.genres(songs),
         key1 = songs,
@@ -88,7 +92,9 @@ fun GenresPage(
                     name = group.name,
                     cover = group.coverKey,
                     songCount = group.songCount,
-                    totalDurationMs = group.totalDurationMs
+                    totalDurationMs = group.totalDurationMs,
+                    unknownGenreLabel = unknownGenreLabel,
+                    categoryLabel = genreTitle,
                 )
             },
             onGroupClick = onGenreClick,
@@ -105,13 +111,16 @@ fun GenresPage(
         val group = remember(decodedKey, groups) {
             groups.firstOrNull { it.key == decodedKey } ?: CategoryGroupUi.empty(
                 key = decodedKey,
-                title = decodedKey.ifBlank { "未知流派" },
+                title = decodedKey.ifBlank { unknownGenreLabel },
                 subtitle = genreTitle
             )
         }
 
         CollectionHeroDetailPage(
-            hero = group.toHeroData(prefix = "cover:genre", subtitleOverride = genreTitle),
+            hero = group.toHeroData(prefix = "cover:genre", subtitleOverride = genreTitle).copy(
+                title = group.name.takeUnless { it == VIRTUAL_LIST_UNKNOWN_GENRE_SENTINEL }
+                    .orEmpty().ifBlank { unknownGenreLabel }
+            ),
             listScene = NavScene.GENRE,
             detailScene = NavScene.GENRE_DETAIL,
             songListState = detailListState,
@@ -144,6 +153,7 @@ fun YearsPage(
     modifier: Modifier = Modifier
 ) {
     val yearTitle = stringResource(R.string.library_title_years)
+    val unknownYearLabel = stringResource(R.string.library_unknown_year)
     val groups by produceState(
         initialValue = LibrarySceneGroupingWarmup.years(songs),
         key1 = songs,
@@ -175,7 +185,9 @@ fun YearsPage(
                     name = group.name,
                     cover = group.coverKey,
                     songCount = group.songCount,
-                    totalDurationMs = group.totalDurationMs
+                    totalDurationMs = group.totalDurationMs,
+                    unknownYearLabel = unknownYearLabel,
+                    categoryLabel = yearTitle,
                 )
             },
             onGroupClick = onYearClick,
@@ -192,13 +204,16 @@ fun YearsPage(
         val group = remember(decodedKey, groups) {
             groups.firstOrNull { it.key == decodedKey } ?: CategoryGroupUi.empty(
                 key = decodedKey,
-                title = decodedKey.ifBlank { "未知年份" },
+                title = decodedKey.ifBlank { unknownYearLabel },
                 subtitle = yearTitle
             )
         }
 
         CollectionHeroDetailPage(
-            hero = group.toHeroData(prefix = "cover:year", subtitleOverride = yearTitle),
+            hero = group.toHeroData(prefix = "cover:year", subtitleOverride = yearTitle).copy(
+                title = group.name.takeUnless { it == VIRTUAL_LIST_UNKNOWN_YEAR_SENTINEL }
+                    .orEmpty().ifBlank { unknownYearLabel }
+            ),
             listScene = NavScene.YEAR,
             detailScene = NavScene.YEAR_DETAIL,
             songListState = detailListState,
@@ -231,6 +246,7 @@ fun ComposersPage(
     modifier: Modifier = Modifier
 ) {
     val composerTitle = stringResource(R.string.library_title_composers)
+    val unknownComposerLabel = stringResource(R.string.library_unknown_composer)
     val groups by produceState(
         initialValue = LibrarySceneGroupingWarmup.composers(songs),
         key1 = songs,
@@ -261,7 +277,9 @@ fun ComposersPage(
                     name = group.name,
                     cover = group.coverKey,
                     songCount = group.songCount,
-                    totalDurationMs = group.totalDurationMs
+                    totalDurationMs = group.totalDurationMs,
+                    unknownComposerLabel = unknownComposerLabel,
+                    categoryLabel = composerTitle,
                 )
             },
             onGroupClick = onComposerClick,
@@ -275,16 +293,32 @@ fun ComposersPage(
         )
     } else {
         val decodedKey = remember(selectedComposerKey) { Uri.decode(selectedComposerKey) }
-        val group = remember(decodedKey, groups) {
-            groups.firstOrNull { it.key == decodedKey } ?: CategoryGroupUi.empty(
-                key = decodedKey,
-                title = decodedKey.ifBlank { "未知作曲家" },
-                subtitle = composerTitle
-            )
+        val group = remember(decodedKey, groups, songs) {
+            groups.firstOrNull { it.key.equals(decodedKey, ignoreCase = true) }
+                ?: com.rawsmusic.core.ui.widget.player.creditedSongsForComposer(decodedKey, songs)
+                    .takeIf { it.isNotEmpty() }
+                    ?.let { credited ->
+                        CategoryGroupUi(
+                            key = decodedKey,
+                            name = decodedKey,
+                            subtitle = composerTitle,
+                            songs = credited,
+                            coverKey = credited.first().coverKey,
+                            totalDurationMs = credited.sumOf { it.duration.coerceAtLeast(0L) },
+                        )
+                    }
+                ?: CategoryGroupUi.empty(
+                    key = decodedKey,
+                    title = decodedKey.ifBlank { unknownComposerLabel },
+                    subtitle = composerTitle,
+                )
         }
 
         CollectionHeroDetailPage(
-            hero = group.toHeroData(prefix = "cover:composer", subtitleOverride = composerTitle),
+            hero = group.toHeroData(prefix = "cover:composer", subtitleOverride = composerTitle).copy(
+                title = group.name.takeUnless { it == VIRTUAL_LIST_UNKNOWN_COMPOSER_SENTINEL }
+                    .orEmpty().ifBlank { unknownComposerLabel }
+            ),
             listScene = NavScene.COMPOSER,
             detailScene = NavScene.COMPOSER_DETAIL,
             songListState = detailListState,
@@ -387,6 +421,7 @@ private fun <T : VirtualListVisualItem> CategoryListPage(
         if (LocalReferenceLibraryProviderPublicationOnly.current) return@LibraryListScaffold
 
         RawAlphabetIndex(
+            sceneId = listScene.name,
             data = alphabetIndexData,
             scrollActiveProvider = { state.isListScrollInProgress },
             modifier = Modifier
@@ -479,7 +514,7 @@ internal data class CategoryGroupUi(
 
 internal fun List<AudioFile>.toGenreGroups(subtitle: String = ""): List<CategoryGroupUi> {
     return groupByCategory(
-        unknownName = "未知流派",
+        unknownName = VIRTUAL_LIST_UNKNOWN_GENRE_SENTINEL,
         subtitle = subtitle,
         keySelector = { it.genre }
     ).sortedWith(compareBy<CategoryGroupUi> { it.name.lowercase() })
@@ -487,7 +522,7 @@ internal fun List<AudioFile>.toGenreGroups(subtitle: String = ""): List<Category
 
 internal fun List<AudioFile>.toComposerGroups(subtitle: String = ""): List<CategoryGroupUi> {
     return groupByCategory(
-        unknownName = "未知作曲家",
+        unknownName = VIRTUAL_LIST_UNKNOWN_COMPOSER_SENTINEL,
         subtitle = subtitle,
         keySelector = { it.composer }
     ).sortedWith(compareBy<CategoryGroupUi> { it.name.lowercase() })
@@ -495,7 +530,7 @@ internal fun List<AudioFile>.toComposerGroups(subtitle: String = ""): List<Categ
 
 internal fun List<AudioFile>.toYearGroups(subtitle: String = ""): List<CategoryGroupUi> {
     return groupByCategory(
-        unknownName = "未知年份",
+        unknownName = VIRTUAL_LIST_UNKNOWN_YEAR_SENTINEL,
         subtitle = subtitle,
         keySelector = { song ->
             song.year

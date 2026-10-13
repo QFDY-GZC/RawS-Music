@@ -30,6 +30,7 @@ class NavigationState {
             NavScene.AUDIO_EFFECTS,
             NavScene.APPEARANCE,
             NavScene.PERSONALIZATION_SETTINGS,
+            NavScene.HDR_SETTINGS,
             NavScene.ALBUM_ART_SETTINGS,
             NavScene.GLOBAL_FONT_SETTINGS,
             NavScene.LYRIC_FONT_SETTINGS,
@@ -97,6 +98,10 @@ class NavigationState {
 
     var dragBackProgress by mutableFloatStateOf(0f)
         internal set
+
+    /** Signed input is separate from the bounded scene/shared-element clock. */
+    var dragBackRawProgress by mutableFloatStateOf(0f)
+        private set
 
     var dragBackReleaseToken by mutableIntStateOf(0)
         internal set
@@ -331,6 +336,8 @@ class NavigationState {
         return true
     }
 
+    private val gestureDiagnostics = NavigationGestureDiagnostics()
+
     fun startBackDrag(direction: Float = 1f): Boolean {
         if (isTransitioning || isAnimatingBack || isDraggingBack || isSettlingBack) {
             com.rawsmusic.core.ui.perf.TransitionPerfTrace.count(com.rawsmusic.core.ui.perf.TransitionPerfEvent.GESTURE_BUSY_REJECTED)
@@ -341,6 +348,7 @@ class NavigationState {
         backNavigationMotionHint = currentEntryMotionHint()
         dragBackDirection = if (direction < 0f) -1f else 1f
         backPreviewScene = getPreviousScene()
+        gestureDiagnostics.begin(currentScene, backPreviewScene, direction)
         beginBackTransition(
             currentScene,
             backPreviewScene,
@@ -349,6 +357,7 @@ class NavigationState {
         )
         isDraggingBack = true
         dragBackProgress = 0f
+        dragBackRawProgress = 0f
         dragBackReleaseProgress = 0f
         dragBackReleaseVelocity = 0f
         dragBackReleaseCommit = false
@@ -365,7 +374,9 @@ class NavigationState {
         backNavigationMotionHint = NavigationMotionHint.BOTTOM_NAVIGATION
         dragBackDirection = if (direction < 0f) -1f else 1f
         siblingDragTarget = target
+        dragBackRawProgress = 0f
         backPreviewScene = target
+        gestureDiagnostics.begin(currentScene, target, direction)
         beginBackTransition(currentScene, target)
         isDraggingBack = true
         dragBackProgress = 0f
@@ -377,6 +388,7 @@ class NavigationState {
 
     /** Clears an interrupted predictive-back preview after foreground/window restoration. */
     fun resetTransientBackState() {
+        dragBackRawProgress = 0f
         isSettlingBack = false
         // A predictive-back release can still be inside a frame-clock coroutine when the
         // Activity is stopped/resumed. Invalidate that coroutine before clearing the state; it
@@ -398,13 +410,16 @@ class NavigationState {
         transitionToScene = currentScene
     }
 
-    fun updateBackDrag(progress: Float) {
+    fun updateBackDrag(progress: Float, rawProgress: Float = progress) {
         if (!isDraggingBack) return
-        dragBackProgress = progress.coerceIn(-0.2f, 1.2f)
+        gestureDiagnostics.progress(progress)
+        dragBackRawProgress = if (rawProgress.isFinite()) rawProgress else 0f
+        dragBackProgress = progress.coerceIn(0f, 1f)
     }
 
     fun releaseBackDrag(commit: Boolean, velocity: Float = 0f) {
         if (!isDraggingBack) return
+        gestureDiagnostics.end(commit, velocity)
         isSettlingBack = true
         dragBackReleaseCommit = commit
         dragBackReleaseProgress = dragBackProgress
@@ -578,6 +593,7 @@ class NavigationState {
     }
 
     internal fun completeTransitionAt(scene: NavScene) {
+        dragBackRawProgress = 0f
         isTransitioning = false
         transitionProgress = 1f
         transitionFromScene = scene
@@ -641,6 +657,7 @@ class NavigationState {
         isDraggingBack = false
         dragBackProgress = 0f
         backPreviewScene = null
+        dragBackRawProgress = 0f
         dragBackReleaseProgress = 0f
         dragBackReleaseVelocity = 0f
         dragBackReleaseCommit = false

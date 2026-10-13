@@ -28,8 +28,8 @@
     <string name="settings_lyrico_runtime_checking">正在检查 QuickJS 运行时…</string>
     <string name="settings_lyrico_runtime_ready">运行正常，可在 RawSMusic 内运行兼容的 Lyrico 歌词源插件</string>
     <string name="settings_lyrico_runtime_failed">运行时自检失败，已停用导入的歌词源</string>
-    <string name="settings_lyrico_import_plugin">导入歌词源插件</string>
-    <string name="settings_lyrico_import_plugin_summary">选择 Lyrico 插件 ZIP，校验安全性后安装</string>
+    <string name="settings_lyrico_import_plugin">导入插件 ZIP</string>
+    <string name="settings_lyrico_import_plugin_summary">选择 Lyrico 插件 ZIP 文件，校验后安装</string>
     <string name="settings_lyrico_no_plugins">尚未导入歌词源</string>
     <string name="settings_lyrico_no_plugins_summary">导入 Lyrico API v4 歌词源即可在线匹配歌词（同时兼容 v1-v3）</string>
     <string name="settings_lyrico_plugin_label">%1$s · %2$s</string>
@@ -222,7 +222,7 @@
     <string name="settings_status_bar_lyric_keywords">外部歌词 状态栏 Flyme 三星 Lyric Getter 蓝牙 车载 lyric</string>
     <string name="settings_global_font_title">全局字体</string>
     <string name="settings_global_font_summary">字体大小、字重、斜体与全局显示</string>
-    <string name="settings_global_font_keywords">字体 font typeface global</string>
+    <string name="settings_global_font_keywords">字体 全局 歌词 字重 可变字体 font typeface global lyric weight wght</string>
     <string name="settings_album_art_title">专辑图</string>
     <string name="settings_album_art_summary">专辑图画质、高清输出、默认封面、动画和缓存</string>
     <string name="settings_album_art_keywords">封面 缓存 高清 album art cover</string>
@@ -328,6 +328,8 @@
     <string name="settings_player_default_bg_rule_desc">亮色模式白底黑字，暗色模式纯黑底白字</string>
     <string name="settings_player_play_page_section">播放界面</string>
     <string name="settings_player_immersive">沉浸模式</string>
+    <string name="settings_player_immersive_vertical_swipe">沉浸播放上下滑切歌</string>
+    <string name="settings_player_immersive_vertical_swipe_summary">上滑切换下一首；封面外下滑切换上一首，封面内下滑保持返回。歌词页与详情页不受影响。默认关闭；禁止播放页滑动切歌开关优先生效。</string>
     <string name="settings_player_immersive_desc">进入播放界面时显示专辑封面背景</string>
     <string name="settings_player_artwork_corner_radius">专辑图圆角</string>
     <string name="settings_player_artwork_corner_radius_desc">调整标准播放界面的专辑图圆角；沉浸播放模式不受此设置影响。</string>
@@ -347,6 +349,10 @@
     <string name="settings_player_hires_badge_replace">更换标识</string>
     <string name="settings_player_hires_badge_builtin">使用内置标识</string>
     <string name="settings_player_hires_badge_import_failed">标识图片导入失败</string>
+    <string name="settings_player_hires_badge_size">标识大小</string>
+    <string name="settings_player_hires_badge_size_value">%1$d%% · %2$d×%3$ddp</string>
+    <string name="settings_player_hires_badge_size_builtin_summary">内置标识基准为 58×28dp，按其原始比例动态缩放。</string>
+    <string name="settings_player_hires_badge_size_custom_summary">导入原图：%1$d×%2$dpx；显示时保持原始长宽比。</string>
     <string name="settings_player_hide_status_bar">隐藏状态栏</string>
     <string name="settings_player_hide_status_bar_desc">隐藏应用顶部系统状态栏，为内容释放更多屏幕空间</string>
     <string name="settings_player_visualizer">音频可视化</string>
@@ -389,6 +395,10 @@
     <string name="settings_player_page_memory">播放界面记忆</string>
     <string name="settings_player_page_memory_desc">重新打开应用时恢复到上次的播放界面</string>
     <string name="settings_font_preview">预览</string>
+    <string name="settings_font_settings_title">字体设置</string>
+    <string name="settings_font_settings_summary">全局与歌词字体、字重、字号和字体能力</string>
+    <string name="settings_font_scope_global">全局</string>
+    <string name="settings_font_scope_lyrics">歌词</string>
     <string name="settings_global_font_preview_title">RawS Music</string>
     <string name="settings_global_font_preview_alphabet">ABCDEFGHIJKLMNOPQRSTUVWXYZ</string>
     <string name="settings_global_font_preview_mixed">0123456789 こんにちは 你好</string>
@@ -402,6 +412,20 @@
     <string name="settings_percent_value">%1$d%%</string>
     <string name="settings_percent_value_one_decimal">%1$.1f%%</string>
     <string name="settings_font_weight_value">%1$s (%2$d)</string>
+    <string name="settings_font_weight_system_family_hint">系统默认字体由 ROM 字体族按原生字重规则解析。</string>
+    <string name="settings_font_weight_variable_hint">可变字体 · 原生 wght %1$d–%2$d</string>
+    <string name="settings_font_weight_variable_clamped_hint">可变字体 · 原生 wght %1$d–%2$d · 当前请求实际解析为 %3$d</string>
+    <string name="settings_font_weight_static_hint">静态字体 · 实际字重取决于已有字体面；较细字重可能无法合成。</string>
+    <string name="settings_font_weight_static_native_value">原生静态字重：%1$d</string>
+    <string name="settings_font_capability_loading">正在读取字体能力…</string>
+    <string name="settings_font_capability_variable_short">可变 · wght %1$d–%2$d</string>
+    <string name="settings_font_capability_static_short">静态 · %1$d</string>
+    <string name="settings_font_weight_static_face_hint">静态字体 · 原生字体面 %1$d</string>
+    <string name="settings_font_weight_unknown_capability_hint">无法读取字体能力；实际字重行为取决于 Android 与字体文件。</string>
+    <string name="settings_font_weight_experimental_section">实验室</string>
+    <string name="settings_font_weight_experimental_title">扩展字重</string>
+    <string name="settings_font_weight_experimental_summary">字体原生范围为 %1$d–%2$d。超出范围的数值会实验性地交给 Android，可能被钳制或忽略。</string>
+    <string name="settings_font_weight_experimental_active_summary">字体原生范围为 %1$d–%2$d。当前实验请求 %3$d 可能被 ROM/字体引擎钳制或忽略。</string>
     <string name="settings_lyric_font_title">歌词字体设置</string>
     <string name="settings_lyric_font_preview_text">歌词预览 Lyrics Preview</string>
     <string name="settings_lyric_font_scale">字体缩放</string>
@@ -438,6 +462,12 @@
     <string name="settings_car_lyrics_desc">通过蓝牙将歌词推送到车载系统</string>
     <string name="settings_bluetooth_car_lyrics">蓝牙车载歌词</string>
     <string name="settings_car_lyrics_translation">车载歌词翻译</string>
+    <string name="settings_car_lyrics_field">蓝牙歌词元数据字段</string>
+    <string name="settings_car_lyrics_field_artist">歌手字段（原有模式）</string>
+    <string name="settings_car_lyrics_field_title">标题字段（AVRCP 兼容）</string>
+    <string name="settings_car_lyrics_field_dual">双行歌词（V1 兼容实验）</string>
+    <string name="settings_car_lyrics_compatibility_title">车机兼容性提示</string>
+    <string name="settings_car_lyrics_compatibility_desc">若车机歌词只显示第一句，可尝试“双行歌词”：当前句放入标题字段，第二行优先显示已启用的翻译，否则预览下一句；每句只更新媒体元数据，不联动通知和播放状态。两行会暂时取代系统媒体卡片中的歌名和歌手，车机兼容性因设备而异。如显示异常，可切回歌手字段。</string>
     <string name="settings_webdav_backup_restore_header">备份与恢复</string>
     <string name="settings_webdav_backup_restore_desc">使用同一份经过校验的备份文件同步到已配置的 WebDAV 服务器。</string>
     <string name="settings_webdav_not_configured">⚠ 未配置 WebDAV，请先在侧边栏「WebDAV」中配置连接信息。</string>
@@ -505,8 +535,14 @@
     <string name="settings_audio_focus_allow_duck_summary">其他应用允许降低音量时，仅降低音乐音量而不暂停。</string>
     <string name="settings_audio_focus_permanent_loss">长时间音频焦点变化时暂停</string>
     <string name="settings_audio_focus_permanent_loss_summary">其他应用长时间占用音频焦点时暂停播放。</string>
-    <string name="settings_audio_volume_normalization">音量标准化</string>
-    <string name="settings_audio_volume_normalization_desc">根据歌曲的响度元数据自动调整播放音量，使不同歌曲的听感音量趋于一致。</string>
+    <string name="settings_audio_volume_normalization">响度标准化（ReplayGain）</string>
+    <string name="settings_audio_volume_normalization_desc">使用歌曲内嵌的 ReplayGain 元数据调整播放响度。</string>
+    <string name="settings_audio_replaygain_off">关闭</string>
+    <string name="settings_audio_replaygain_off_desc">不根据 ReplayGain 元数据修改播放增益。</string>
+    <string name="settings_audio_replaygain_track">按歌曲</string>
+    <string name="settings_audio_replaygain_track_desc">使用 Track Gain 与 Track Peak，适合混合歌单和随机播放。</string>
+    <string name="settings_audio_replaygain_album">按专辑</string>
+    <string name="settings_audio_replaygain_album_desc">使用 Album Gain 与 Album Peak，保留同一专辑内歌曲原本的相对响度关系。</string>
     <string name="settings_audio_dvc">直接音量控制（DVC）</string>
     <string name="settings_audio_dvc_desc">DVC 控制、音量曲线与无 DVC 前置余量</string>
     <string name="settings_audio_dvc_info">DVC 会让 RawS Music 在均衡器及其他音效之前独占用户音量增益，从而保留音效处理余量。启用期间系统媒体流保持满刻度，实体音量键直接控制播放器。USB 独占输出不受影响。</string>
@@ -536,9 +572,8 @@
     <string name="settings_audio_bluetooth_sco_desc">适配仅支持通话协议（HFP/HSP）的车载蓝牙设备</string>
     <string name="settings_audio_sco_downsample">降采样到 16kHz</string>
     <string name="settings_audio_sco_downsample_desc">SCO 通话信道带宽有限，降采样可提高兼容性，但音质会降低。</string>
-    <string name="settings_audio_info_volume_title">音量标准化</string>
-    <string name="settings_audio_info_volume_body">根据歌曲内嵌的响度元数据（ReplayGain）自动调整播放增益，使不同录制响度的歌曲在播放时听感音量趋于一致。
- 基于 ITU-R BS.1770 响度归一化标准。</string>
+    <string name="settings_audio_info_volume_title">响度标准化（ReplayGain）</string>
+    <string name="settings_audio_info_volume_body">使用歌曲内嵌的 ReplayGain 增益与峰值元数据。按歌曲模式会分别标准化每首歌；按专辑模式会保留同一专辑内歌曲之间原本的相对响度。必要时会限制增益以避免数字削波；严格 Bit-perfect 输出会绕过响度标准化。</string>
     <string name="settings_audio_info_gapless_title">无缝播放</string>
     <string name="settings_audio_info_gapless_body">在当前歌曲播放结束时，直接无缝切换到下一首歌曲的解码流，消除曲目之间常见的短暂静音间隙（Gap）。
 
@@ -976,40 +1011,37 @@
     <string name="scan_complete_no_changes">扫描完成：未发现变化，共 %1$d 首，用时 %2$.1f 秒</string>
     <string name="scan_complete_summary">扫描完成：新增 %1$d 首，更新 %2$d 首，移除 %3$d 首；未变化 %4$d 首，共 %5$d 首，用时 %6$.1f 秒</string>
     <string name="update_dialog_title">RawS Music v%1$s 更新</string>
-    <string name="update_dialog_time">更新时间：2026 年 9 月 20 日</string>
+    <string name="update_dialog_time">更新时间：2026 年 10 月 13 日</string>
     <string name="update_developer_message_title">开发者的话</string>
     <string name="update_join_qq_group">点击链接加入群聊【RawS Music交流群】：https://qm.qq.com/q/bOvqTQPABi</string>
     <string name="update_close">关闭</string>
     <string-array name="update_notes">
-        <item>## 修复</item>
-        <item>修复文件夹层次结构界面与其他分类界面结构不一致的问题。</item>
-        <item>修复歌词上浮动画中部分文本只上抬半截的问题。</item>
-        <item>修复歌词高亮上浮动画卡顿的问题。</item>
-        <item>修复 Lyrico 歌词源识别异常的问题。</item>
-        <item>修复字重调节不生效的问题。</item>
-        <item>修复 USB 独占下切歌可能产生电音的问题。</item>
-        <item>修复 USB 独占下硬件音量与软件音量来回切换时音量突变、可能造成炸耳的问题。</item>
-        <item>修复 USB 独占在软件音量模式下切歌淡入淡出失效的问题。</item>
-        <item>修复 USB 独占下频繁切换软硬件音量后列表切歌异常的问题。</item>
-        <item>## 优化</item>
-        <item>优化状态栏隐藏逻辑，隐藏状态栏时不再改变页面布局。</item>
-        <item>优化歌词上浮动画的流畅度与表现。</item>
-        <item>优化分类界面与详情界面的整体结构、交互与转场逻辑。</item>
-        <item>优化 USB 独占下的硬件音量、软件音量、完美比特与音量增益链路，进一步改善听感。</item>
-        <item>优化歌词设置界面，重新设计并调整选择器。</item>
-        <item>优化 USB 独占播放模型，提高频繁切歌与长时间播放时的稳定性。</item>
-        <item>优化通知弹窗，不再采用系统默认行为，并支持通过手势关闭。</item>
-        <item>重写 WebDAV 协议层并完善相关功能（感谢 Halcyon）。</item>
-        <item>更新 Lyrico API。</item>
         <item>## 新增</item>
-        <item>新增音频可视化“粒子”：支持虹色与白色样式，可根据音频能量动态调整亮度与运动效果，并可开启振动反馈以增强沉浸感。</item>
-        <item>新增进度条可视化选项。</item>
-        <item>“音乐脊柱”新增材质选择：可在设置界面或全局使用自定义材质；选择“亚克力”或“液态玻璃”时，背景会与现有材质效果同步。</item>
-        <item>新增艺术家传记与艺术家封面查看功能（感谢 Halcyon）。</item>
-        <item>材质设置新增对通知弹窗的支持。</item>
-        <item>进度条新增“动态频谱”样式。</item>
-        <item>## 注意事项</item>
-        <item>若使用过程中出现掉帧，请尝试关闭流光背景或液态玻璃，以降低 GPU 压力并提升帧率。</item>
+        <item>新增 COUI 风格进度条效果。</item>
+        <item>新增播放界面屏幕常亮设置。</item>
+        <item>新增超级岛封面显示及封面取色效果。</item>
+        <item>新增 SACD-ISO 镜像读取，自动解析并识别镜像内的 DSD 曲目；格式转换同时支持 SACD-ISO 输出。</item>
+        <item>新增混响音效，支持空间场景预设与参数调节。</item>
+        <item>## 优化</item>
+        <item>为 Android API 32 及以上设备完善圆角适配。</item>
+        <item>播放界面切歌时，标题、歌词等变化内容支持 UI 淡入淡出过渡。</item>
+        <item>优化自动交叉淡入淡出的触发、混音与交接逻辑。</item>
+        <item>优化歌词语言显示。</item>
+        <item>## 修复</item>
+        <item>修复车载歌词传递的部分问题。</item>
+        <item>修复注音中的空格处理问题。</item>
+        <item>修复超级岛歌词显示异常。</item>
+        <item>修复冷启动后背景取色不同步的问题。</item>
+        <item>修复部分情况下混音导致音调加速、异常二次切歌的问题。</item>
+        <item>修复 USB 独占下歌曲临近结束时突然暂停，以及再次点击播放时重新播放音频的问题。</item>
+        <item>修复 USB 独占下因音量比较异常导致上一首播放失败的问题。</item>
+        <item>修复格式转换成功后仍提示内部转换失败的问题。</item>
+        <item>修复 FLAC 转 FLAC 时容器校验失败的问题。</item>
+        <item>修复注音预留空间不足导致位置不一致的问题。</item>
+        <item>修复展开播放界面时出现短暂黑屏的问题。</item>
+        <item>修复部分情况下 USB 重启或卡死的问题。</item>
+        <item>修复歌词源名称显示异常，不再显示未解析的资源名称。</item>
+        <item>修复批量匹配大量歌词时的内存瓶颈。</item>
     </string-array>
     <string-array name="update_developer_quotes">
         <item>“永远快乐”这句话，不但渺茫得不能实现，并且荒谬得不能成立。快过的决不会永久；我们说永远快乐，正好像说四方的圆形、静止的动作，同样地自相矛盾。在高兴的时候，我们空对瞬息即逝的时间喊着说：“逗留一会儿吧！你太美了！”那有什么用？你要永久，你该向痛苦里去找。不讲别的，只要一个失眠的晚上，或者有约不来的下午，或者一课沉闷的听讲，这许多比一切宗教信仰更有效力，能使你尝到什么叫做“永生”的滋味。人生的刺就在这里：留恋着不肯快走的，偏是你所不留恋的东西。</item>
@@ -1536,14 +1568,20 @@
     <string name="desktop_lyric_use_lyric_font">使用已配置的歌词字体</string>
     <string name="common_confirm">确定</string>
     <string name="settings_lyrics_title">歌词设置</string>
+    <string name="settings_lyric_export_section">歌词导出</string>
+    <string name="settings_lyric_export_signature">海报与视频签名（留空隐藏）</string>
     <string name="settings_lyrics_summary">统一管理歌词内容、歌词字体和系统歌词功能</string>
     <string name="settings_lyrics_keywords">歌词 歌词字体 状态栏歌词 悬浮歌词 歌词源</string>
     <string name="settings_lyrics_content_section">歌词功能</string>
     <string name="settings_background_style">背景样式</string>
     <string name="settings_background_style_desc">流光与静态背景共用专辑封面取色结果。</string>
     <string name="settings_background_style_flow">流光背景</string>
+    <string name="settings_background_style_album_color">专辑取色</string>
     <string name="settings_background_style_static">静态背景</string>
     <string name="settings_background_style_simple">简洁背景</string>
+    <string name="settings_background_frame_rate">流光帧率</string>
+    <string name="settings_background_frame_rate_desc">仅改变动态背景的刷新频率，不改变流动速度。较低帧率更省电，较高帧率更顺滑。</string>
+    <string name="settings_background_frame_rate_value">%1$d FPS</string>
     <string name="settings_background_speed">运动速度</string>
     <string name="settings_background_speed_value">%1$.1f 倍</string>
     <string name="settings_background_saturation">取色饱和度</string>
@@ -1772,6 +1810,14 @@
     <string name="settings_bottom_navigation_style_section">导航栏样式</string>
     <string name="settings_bottom_navigation_preview_expanded">展开形态</string>
     <string name="settings_bottom_navigation_preview_minimized">收起形态</string>
+    <string name="settings_bottom_navigation_compact_style_title">折叠样式</string>
+    <string name="settings_bottom_navigation_compact_style_classic">经典左右按键</string>
+    <string name="settings_bottom_navigation_compact_style_adaptive">自适应宽度</string>
+    <string name="settings_bottom_navigation_compact_leading_title">左侧折叠按键</string>
+    <string name="settings_bottom_navigation_compact_leading_summary">底栏折叠时在左侧显示当前导航页按键。</string>
+    <string name="settings_bottom_navigation_compact_trailing_title">右侧搜索按键</string>
+    <string name="settings_bottom_navigation_compact_trailing_summary">底栏折叠时在右侧显示搜索按键。</string>
+    <string name="settings_bottom_navigation_compact_adaptive_summary">自适应模式默认不显示左右按键。只开启一侧时播放栏自动占满另一侧剩余宽度；两侧都开启时，播放栏在左右按键之间自适应延伸。</string>
     <string name="settings_bottom_navigation_height_title">导航栏高度</string>
     <string name="settings_bottom_navigation_bottom_lift_title">低栏整体高度</string>
     <string name="settings_bottom_navigation_radius_title">圆角值</string>
@@ -1779,7 +1825,7 @@
     <string name="settings_bottom_navigation_trailing_margin_title">右侧边距</string>
     <string name="settings_bottom_navigation_curve_title">圆角曲线</string>
     <string name="settings_bottom_navigation_curve_summary">2.0 保持普通圆弧；更高数值会形成更连续的 squircle 圆角。</string>
-    <string name="settings_bottom_navigation_inline_height_summary">底栏最小化后，左右导航按钮会自动跟随播放栏的单行高度，避免三段底栏出现高低错层。</string>
+    <string name="settings_bottom_navigation_inline_height_summary">底栏最小化后，已启用的侧边按键会自动跟随播放栏单行高度，保持折叠区域对齐。</string>
     <string name="settings_bottom_navigation_style_reset">恢复导航栏默认样式</string>
     <string name="settings_bottom_navigation_scroll_behavior_section">滑动行为</string>
     <string name="settings_bottom_navigation_scroll_behavior_default">默认</string>
@@ -1896,6 +1942,8 @@
     <string name="settings_language_system">跟随系统</string>
     <string name="settings_language_chinese">简体中文</string>
     <string name="settings_language_english">English</string>
+    <string name="settings_language_japanese">日语</string>
+    <string name="settings_language_korean">韩语</string>
     <string name="webdav_title">WebDAV</string>
     <string name="metadata_match_progress">已处理 %1$d/%2$d · 写入 %3$d</string>
     <string name="metadata_match_progress_failed">已处理 %1$d/%2$d · 写入 %3$d · 失败 %4$d</string>
@@ -1983,6 +2031,8 @@
     <string name="settings_custom_background_settings">在设置界面显示</string>
     <string name="settings_custom_background_settings_summary">让所有设置页面也使用当前选择的背景。</string>
     <string name="settings_custom_background_clear">移除自定义背景</string>
+    <string name="settings_custom_background_full_image">完整显示背景图片</string>
+    <string name="settings_custom_background_full_image_summary">开启：等比显示完整图片，留边处显示原有背景；关闭：居中裁剪以铺满屏幕。仅适用于图片。</string>
     <string name="usb_dac_header_route_android">当前输出：Android USB Audio · %1$s</string>
     <string name="usb_dac_header_route_exclusive">当前输出：USB 独占 · 独占关闭后：%1$s</string>
     <string name="usb_dac_header_route_starting">正在启用 USB 独占 · 独占关闭后：%1$s</string>
@@ -1996,7 +2046,6 @@
     <string name="settings_mini_lyric_alignment_desc">单独设置迷你歌词的靠左、居中或靠右位置，不再跟随标题信息。</string>
     <string name="settings_mini_player_karaoke_effect">播放栏逐字歌词特效</string>
     <string name="settings_mini_player_karaoke_effect_desc">歌词包含逐字时间轴时，在播放栏中按字词进度渐进高亮；普通歌词保持原样。</string>
-
     <string name="hardware_device_control_title">当前设备 · 硬件 DSP</string>
     <string name="hardware_device_control_summary">根据当前 USB 或蓝牙音频设备实际公开的能力动态显示硬件控制。</string>
     <string name="hardware_device_control_keywords">硬件 DSP 设备 EQ 均衡器 蓝牙 USB 声卡 耳机 降噪 滤波</string>
@@ -2018,7 +2067,6 @@
     <string name="hardware_device_control_copy_diagnostics">诊断信息</string>
     <string name="hardware_device_control_diagnostics_copied">硬件 DSP 诊断信息已复制</string>
     <string name="hardware_device_control_write_failed">硬件控制失败：%1$s</string>
-
     <string name="settings_mini_controls_section">播放栏控制</string>
     <string name="settings_mini_previous_title">上一首按键</string>
     <string name="settings_mini_previous_summary">在播放/暂停键左侧显示上一首按键。</string>
@@ -2072,7 +2120,6 @@
     <string name="settings_mini_player_artwork_display_title">播放栏专辑图显示</string>
     <string name="settings_mini_player_artwork_display_adjustment_title">专辑图调节</string>
     <string name="settings_mini_player_artwork_display_summary">%1$s · %2$d dp · 点击调整</string>
-
     <string name="settings_liquid_glass_global_section">液态玻璃</string>
     <string name="settings_surface_style_title">材质分配</string>
     <string name="settings_surface_style_summary">选择每种材质应用到哪些界面。</string>
@@ -2175,4 +2222,218 @@
     <string name="transcode_stage_completed">转换完成</string>
     <string name="transcode_stage_failed">转换失败</string>
     <string name="transcode_stage_cancelled">转换已取消</string>
+    <string name="reward_wechat_qr_description">微信赞赏码</string>
+    <string name="reward_alipay_qr_description">支付宝赞赏码</string>
+    <string name="reward_image_saved">图片已保存</string>
+    <string name="reward_image_save_failed">保存失败，请重试</string>
+    <string name="reward_support_message">您的支持，是我最大的动力。\n感谢每一份心意，也感谢你愿意陪 RawS Music 一起变得更好。\n长按任一赞赏码可放大预览并保存。</string>
+    <string name="reward_save_image">保存图片</string>
+    <string name="transcode_screen_title">音频转换</string>
+    <string name="transcode_tab_settings">格式转换</string>
+    <string name="transcode_tab_queue">队列管理</string>
+    <string name="transcode_tab_results">转换结果</string>
+    <string name="transcode_storage_permission_required">转换结果需要写入音乐目录，请授权文件访问后重试</string>
+    <string name="transcode_no_usable_audio_stream">所选文件没有可用的音频流</string>
+    <string name="transcode_batch_settings">批量转换设置</string>
+    <string name="transcode_settings">转换设置</string>
+    <string name="transcode_select_audio_first">请先选择要转换的音频</string>
+    <string name="transcode_started_count">已开始 %1$d 个转换任务</string>
+    <string name="transcode_service_start_failed">无法启动转换服务</string>
+    <string name="transcode_started_priority">已优先开始转换</string>
+    <string name="transcode_added_to_queue">已加入转换队列</string>
+    <string name="transcode_queue_add_failed">无法加入转换队列</string>
+    <string name="transcode_added_to_queue_count">已加入 %1$d 个转换队列任务</string>
+    <string name="transcode_started_priority_count">已优先开始 %1$d 个转换任务</string>
+    <string name="transcode_source_empty_title">让音乐，换一种格式</string>
+    <string name="transcode_source_selected_count">已选择 %1$d 首音频</string>
+    <string name="transcode_source_empty_summary">从软件内或系统文件添加音频，轻松批量转换。</string>
+    <string name="transcode_source_selected_summary">%1$s · 在队列管理中选择歌曲或单独调整</string>
+    <string name="transcode_add_from_library">软件内添加</string>
+    <string name="transcode_add_from_system">系统文件选择</string>
+    <string name="transcode_output_format">输出格式</string>
+    <string name="transcode_loading_formats">正在加载可用格式…</string>
+    <string name="transcode_dsd_rate">DSD 规格</string>
+    <string name="transcode_sample_rate">采样率</string>
+    <string name="transcode_follow_source_auto">自动 · 跟随源文件</string>
+    <string name="transcode_bitrate">码率</string>
+    <string name="transcode_recommended">推荐</string>
+    <string name="transcode_bit_depth">位深</string>
+    <string name="transcode_follow_source">跟随源文件</string>
+    <string name="transcode_compression">压缩程度</string>
+    <string name="transcode_flac_faster">更快</string>
+    <string name="transcode_flac_balanced">均衡</string>
+    <string name="transcode_flac_smaller">更小</string>
+    <string name="transcode_flac_level">%1$s · 级别 %2$d</string>
+    <string name="transcode_dsd_note">适合支持 DSD 的播放设备；PCM→DSD 是调制转换，不会增加源文件的信息量，输出体积通常会明显增大。</string>
+    <string name="transcode_lossy_note">体积更小，适合日常聆听；有损转换无法恢复原始音质。</string>
+    <string name="transcode_lossless_note">无损存储，适合收藏。转换不会提升源文件的音质。</string>
+    <string name="transcode_more_settings">更多设置</string>
+    <string name="transcode_metadata_strict_short">完整保留标签</string>
+    <string name="transcode_metadata_best_effort_short">尽量保留标签</string>
+    <string name="transcode_hardware_acceleration">硬件加速</string>
+    <string name="transcode_delete_source_after">完成后删除源文件</string>
+    <string name="transcode_auto_scan">自动扫描</string>
+    <string name="transcode_collapse">收起</string>
+    <string name="transcode_expand">展开</string>
+    <string name="transcode_metadata_strict">完整保留标签与封面</string>
+    <string name="transcode_metadata_strict_summary">无法完整保留时停止转换</string>
+    <string name="transcode_hardware_acceleration_summary">设备不支持时自动使用软件编码</string>
+    <string name="transcode_delete_source_after_summary">仅在转换和验证成功后删除</string>
+    <string name="transcode_add_to_library_after">完成后加入音乐库</string>
+    <string name="transcode_add_to_library_dsd_summary">DSF 会自动扫描；开启后其他格式也在队列完成后扫描</string>
+    <string name="transcode_add_to_library_summary">所有任务完成后自动扫描</string>
+    <string name="transcode_save_location">保存位置</string>
+    <string name="transcode_save_location_summary">转换结果统一保存到 Music / RawSMusic / Converted。</string>
+    <string name="transcode_override_count">%1$d 首使用单独设置</string>
+    <string name="transcode_source_will_be_deleted">转换成功后将删除源文件</string>
+    <string name="transcode_start_count">开始转换 · %1$d 首</string>
+    <string name="transcode_add_audio_first">先添加音频</string>
+    <string name="transcode_pending_title">待转换</string>
+    <string name="transcode_pending_empty">还没有待处理项目</string>
+    <string name="transcode_pending_selected_summary">已选 %1$d 首 · 可单独覆盖参数或批量转换</string>
+    <string name="transcode_select_all">全选</string>
+    <string name="transcode_deselect_all">取消全选</string>
+    <string name="transcode_pending_add_hint">可以从软件内多选音频，或通过系统文件选择一次加入多个文件。</string>
+    <string name="transcode_results_title">转换结果</string>
+    <string name="transcode_running_title">执行中</string>
+    <string name="transcode_running_summary">正在执行任务，完成后自动继续下一项</string>
+    <string name="transcode_results_summary">完成的文件与处理记录</string>
+    <string name="transcode_queue_summary">按顺序自动转换</string>
+    <string name="transcode_not_started">尚未开始转换</string>
+    <string name="transcode_clear_finished">清理已完成</string>
+    <string name="transcode_results_empty">还没有转换结果\n任务完成后，会在这里保留结果和失败原因。</string>
+    <string name="transcode_running_empty">暂无执行中的任务</string>
+    <string name="transcode_selected_of_total">已选 %1$d / %2$d 首</string>
+    <string name="transcode_none_selected">未选择待转换项目</string>
+    <string name="transcode_batch_affects_selected">批量操作只影响当前勾选的项目</string>
+    <string name="transcode_select_for_batch">勾选项目后可批量移除或开始转换</string>
+    <string name="transcode_remove">移除</string>
+    <string name="transcode_add_to_queue">加入队列</string>
+    <string name="transcode_start_now">立即开始</string>
+    <string name="transcode_start_now_count">立即开始 (%1$d)</string>
+    <string name="transcode_state_waiting_short">等待</string>
+    <string name="transcode_state_converting_short">转换中</string>
+    <string name="transcode_state_completed_short">完成</string>
+    <string name="transcode_state_failed_short">失败</string>
+    <string name="transcode_state_cancelled_short">已取消</string>
+    <string name="transcode_individual_parameters">单独参数 · %1$s</string>
+    <string name="transcode_follow_batch_settings">跟随批量设置 · %1$s</string>
+    <string name="transcode_individual_settings">单独设置</string>
+    <string name="transcode_output_path">输出：%1$s</string>
+    <string name="transcode_move_up">上移</string>
+    <string name="transcode_move_down">下移</string>
+    <string name="transcode_retry">重试</string>
+    <string name="transcode_open">打开</string>
+    <string name="transcode_authorize_delete">授权删除</string>
+    <string name="transcode_individual_settings_title">单独设置 · %1$s</string>
+    <string name="transcode_individual_settings_summary">仅覆盖这一首音频；其他项目继续跟随批量设置</string>
+    <string name="transcode_override_batch_settings">覆盖批量设置</string>
+    <string name="transcode_restore_batch_settings">恢复批量设置</string>
+    <string name="transcode_save">保存</string>
+    <string name="transcode_library_picker_summary">从 RawSMusic 曲库中选择音频；已在草稿队列中的歌曲会保持选中并锁定</string>
+    <string name="transcode_library_search_hint">搜索歌曲 / 艺术家 / 专辑</string>
+    <string name="transcode_library_selected_sort">已选 %1$d · %2$s</string>
+    <string name="transcode_library_selected_sort_desc">已选 %1$d · %2$s · 倒序</string>
+    <string name="transcode_sort">排序</string>
+    <string name="transcode_deselect_visible">取消全选当前结果</string>
+    <string name="transcode_select_visible">全选当前结果</string>
+    <string name="transcode_library_loading_or_empty">软件内曲库正在加载，或当前曲库为空。</string>
+    <string name="transcode_library_no_match">没有匹配的歌曲。</string>
+    <string name="transcode_already_added">已添加</string>
+    <string name="transcode_add_count">添加 (%1$d)</string>
+    <string name="transcode_sort_summary">排序方式与曲库列表一致；右侧可单独切换倒序</string>
+    <string name="transcode_descending">倒序</string>
+    <string name="transcode_sort_lossless">无损</string>
+    <string name="transcode_sort_lossy">有损</string>
+    <string name="transcode_sort_dsd">DSD 优先</string>
+    <string name="transcode_sort_bit_depth">位深</string>
+    <string name="transcode_sort_sample_rate">采样率</string>
+    <string name="transcode_output_missing">输出文件已不存在</string>
+    <string name="transcode_open_result">打开转换结果</string>
+    <string name="transcode_no_app_to_open">没有可用的应用打开此音频</string>
+    <string name="transcode_follow_compatible_source">跟随/兼容源</string>
+    <string name="transcode_recommended_bitrate">推荐码率</string>
+    <string name="transcode_keep_sample_rate">保持采样率</string>
+    <string name="transcode_keep_bit_depth">保持位深</string>
+    <string name="transcode_processing">处理中</string>
+    <string name="common_back">返回</string>
+    <string name="transcode_storage_access_granted">已获得文件访问权限，可以开始转换</string>
+    <string name="transcode_storage_access_denied">未获得文件访问权限，无法写入转换结果</string>
+    <string name="transcode_delete_consent_denied">用户未授权删除源文件，已保留原文件</string>
+    <string name="transcode_source_deleted_after_consent">系统授权后源文件已删除</string>
+    <string name="transcode_source_still_exists_after_consent">系统授权已返回，但源文件仍存在</string>
+    <string name="transcode_open_storage_settings_failed">无法打开文件访问权限设置</string>
+    <string name="transcode_source_already_missing">源文件已不存在</string>
+    <string name="transcode_delete_consent_launch_failed">无法发起系统删除授权</string>
+    <string name="settings_ai_realtime_factor"> · %1$.2f× 实时</string>
+    <string name="settings_ai_preparing">准备中</string>
+    <string name="settings_ai_melody_model_imported_notice">RMVPE 旋律模型已安装</string>
+    <string name="settings_ai_melody_model_import_failed_notice">RMVPE 模型安装失败</string>
+    <string name="settings_ai_instrument_pack_imported_notice">乐器采样包已安装</string>
+    <string name="settings_ai_instrument_pack_import_failed_notice">乐器包安装失败</string>
+    <string name="settings_ai_job_cancelling">正在取消 AI 分离</string>
+    <string name="settings_ai_job_select_executable_model">请先选择已安装的 schema 2/3 可执行模型</string>
+    <string name="settings_ai_job_preparing_task">准备 AI 分离任务</string>
+    <string name="settings_ai_job_runtime_first_prepare">首次准备 AI 推理运行库</string>
+    <string name="settings_ai_job_runtime_downloading_percent">正在下载 AI 推理运行库 · %1$d%%</string>
+    <string name="settings_ai_job_runtime_verifying">正在校验 AI 推理运行库</string>
+    <string name="settings_ai_job_runtime_installing">正在安装 AI 推理运行库</string>
+    <string name="settings_ai_job_runtime_preparing">正在准备 AI 推理运行库</string>
+    <string name="settings_ai_job_loading_model">正在加载 ONNX Runtime 模型</string>
+    <string name="settings_ai_job_separating">正在分离人声与伴奏</string>
+    <string name="settings_ai_job_encoding_flac">正在编码 FLAC · 16-bit/44.1kHz · Level 8</string>
+    <string name="settings_ai_job_encoding_aac">正在编码 AAC-LC · 44.1kHz</string>
+    <string name="settings_ai_job_committing">正在原子提交分离结果</string>
+    <string name="settings_ai_job_completed">AI 人声分离完成</string>
+    <string name="settings_ai_job_completed_summary">%1$s · 已生成人声与伴奏</string>
+    <string name="settings_ai_job_cancelled">AI 人声分离已取消</string>
+    <string name="settings_ai_job_failed">AI 人声分离失败</string>
+    <string name="settings_ai_job_check_model_contract">请检查模型契约</string>
+    <string name="settings_ai_job_decoding_direct">正在直接解码和重采样音频</string>
+    <string name="settings_ai_job_decoding">正在解码和重采样音频</string>
+    <string name="settings_ai_job_notification_channel">AI 人声分离</string>
+    <string name="settings_ai_job_other_song_running">另一首歌曲正在分离</string>
+    <string name="settings_ai_job_already_running">已有 AI 分离任务正在运行</string>
+    <string name="play_mode_sequential">顺序播放</string>
+    <string name="play_mode_shuffle_all">全部随机</string>
+    <string name="play_mode_shuffle_once">随机播放</string>
+    <string name="metadata_detail_status">状态</string>
+    <string name="metadata_detail_no_current_song">当前没有正在播放的歌曲</string>
+    <string name="metadata_detail_tag_title">标签标题</string>
+    <string name="metadata_detail_duration">时长</string>
+    <string name="metadata_detail_format">格式</string>
+    <string name="metadata_detail_encoding_format">编码格式</string>
+    <string name="metadata_detail_bitrate">码率</string>
+    <string name="metadata_detail_sample_rate">采样率</string>
+    <string name="metadata_detail_bit_depth">位深</string>
+    <string name="metadata_detail_channel_count">声道数</string>
+    <string name="metadata_detail_file_extension">文件扩展名</string>
+    <string name="metadata_detail_file_size">文件大小</string>
+    <string name="metadata_detail_file_path">文件路径</string>
+    <string name="metadata_detail_artwork_path">专辑图路径</string>
+    <string name="metadata_detail_database_id">数据库 ID</string>
+    <string name="metadata_detail_album_id">专辑 ID</string>
+    <string name="metadata_detail_favorite_status">收藏状态</string>
+    <string name="metadata_detail_favorited">已收藏</string>
+    <string name="metadata_detail_not_favorited">未收藏</string>
+    <string name="metadata_detail_dsd_source">DSD 源</string>
+    <string name="metadata_detail_cue_track_index">CUE 轨道序号</string>
+    <string name="metadata_detail_cue_start">CUE 起始位置</string>
+    <string name="metadata_detail_cue_end">CUE 结束位置</string>
+    <string name="metadata_detail_date_added">添加时间</string>
+    <string name="metadata_detail_date_modified">修改时间</string>
+    <string name="metadata_detail_lyrics">歌词</string>
+    <string name="metadata_detail_no_lyrics">未找到歌词</string>
+    <string name="metadata_detail_lossy_encoding">有损编码</string>
+    <string name="common_yes">是</string>
+    <string name="common_no">否</string>
+    <string name="ui_metadata_no_writable_parent">音频文件没有可写父目录</string>
+    <string name="ui_metadata_temp_cleanup_failed">无法清理旧的元数据临时文件</string>
+    <string name="webdav_test_success">连接成功</string>
+    <string name="webdav_test_failed">连接失败</string>
+    <string name="scan_stage_cancelled">已取消</string>
+    <string name="scan_cancelled">扫描已取消</string>
+    <string name="scan_preparing">%1$s：准备扫描</string>
+    <string name="settings_player_disable_track_swipe">禁止手动滑动切歌</string>
+    <string name="settings_player_disable_track_swipe_summary">仅禁止播放页滑动切歌；切歌按钮、主界面轮播与歌词滚动不受影响。</string>
 </resources>

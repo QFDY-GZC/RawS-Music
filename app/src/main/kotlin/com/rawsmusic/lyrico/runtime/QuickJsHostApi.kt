@@ -35,7 +35,7 @@ import okhttp3.MediaType.Companion.toMediaType
 class QuickJsHostApi(
     private val appInfo: HostAppInfo = HostAppInfo(),
     private val runtimeInfo: HostRuntimeInfo = HostRuntimeInfo(),
-    private val okHttpClient: OkHttpClient = OkHttpClient(),
+    private val okHttpClient: OkHttpClient = LyricoHttpTransport.client,
     private val pluginId: String = "default",
     private val cacheRootDir: File? = null,
     private val pluginStrings: LyricoPluginStrings = LyricoPluginStrings.empty(),
@@ -459,8 +459,11 @@ class QuickJsHostApi(
             .readTimeout((payload.intOrNull("readTimeoutMs") ?: 12_000).toLong(), TimeUnit.MILLISECONDS)
             .build()
 
-        return client.newCall(requestBuilder.build()).execute().use { response ->
-            val responseBytes = response.body?.bytes() ?: ByteArray(0)
+        return LyricoHttpTransport.withPermit { client.newCall(requestBuilder.build()).execute().use { response ->
+            val limit = if (binaryResponse) LyricoHttpTransport.BINARY_LIMIT_BYTES else LyricoHttpTransport.TEXT_LIMIT_BYTES
+            val responseBytes = response.body?.let { body ->
+                readBoundedPluginResponse(body.byteStream(), limit, body.contentLength())
+            } ?: ByteArray(0)
             val bodyText = if (binaryResponse) {
                 ""
             } else {
@@ -480,7 +483,7 @@ class QuickJsHostApi(
                 bodyText = bodyText,
                 bodyBase64 = bodyBase64
             )
-        }
+        } }
     }
 
     private fun hasNonBlankHeader(headers: JsonObject?, targetName: String): Boolean {
@@ -579,6 +582,9 @@ class QuickJsHostApi(
             while (!inflater.finished()) {
                 val count = inflater.inflate(buffer)
                 if (count == 0) break
+                if (count > LyricoHttpTransport.TEXT_LIMIT_BYTES - output.size()) {
+                    throw java.io.IOException("Plugin decompressed response exceeds ${LyricoHttpTransport.TEXT_LIMIT_BYTES} bytes")
+                }
                 output.write(buffer, 0, count)
             }
         } finally {

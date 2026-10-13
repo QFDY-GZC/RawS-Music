@@ -19,14 +19,40 @@ class PlayerVolumeControlCoordinatorTest {
         coordinator.applyReplayGain(
             AudioFile(trackGain = -6f, trackPeak = 1f),
             PlayerVolumeControlCoordinator.ReplayGainSettings(
-                normalizationEnabled = false,
-                replayGainEnabled = true,
                 replayGainMode = 1,
             ),
         )
 
         assertTrue(coordinator.replayGainModifierForTest() in 0.50f..0.51f)
         assertTrue(androidGain in 0.25f..0.26f)
+    }
+
+    @Test
+    fun replayGainOffRestoresUnityModifier() {
+        val coordinator = coordinator()
+
+        coordinator.applyReplayGain(
+            AudioFile(trackGain = -6f, trackPeak = 1f),
+            PlayerVolumeControlCoordinator.ReplayGainSettings(replayGainMode = 1),
+        )
+        coordinator.applyReplayGain(
+            AudioFile(trackGain = -6f, trackPeak = 1f),
+            PlayerVolumeControlCoordinator.ReplayGainSettings(replayGainMode = 0),
+        )
+
+        assertEquals(1f, coordinator.replayGainModifierForTest(), 0.0001f)
+    }
+
+    @Test
+    fun albumModeUsesAlbumGain() {
+        val coordinator = coordinator()
+
+        coordinator.applyReplayGain(
+            AudioFile(trackGain = -3f, albumGain = -12f, albumPeak = 0.5f),
+            PlayerVolumeControlCoordinator.ReplayGainSettings(replayGainMode = 2),
+        )
+
+        assertTrue(coordinator.replayGainModifierForTest() in 0.25f..0.26f)
     }
 
     @Test

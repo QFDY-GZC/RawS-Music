@@ -20,6 +20,8 @@ import androidx.compose.ui.res.stringResource
 import com.rawsmusic.R
 import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.common.ui.AppNoticeIcon
+import com.rawsmusic.helper.rememberSystemFileAccessGate
+import com.rawsmusic.locale.localizedErrorMessage
 import com.rawsmusic.ai.melody.AiMelodyModelStore
 import com.rawsmusic.ai.melody.AiRecommendedMelodyModels
 import com.rawsmusic.ai.instrument.AiRecommendedPianoPack
@@ -55,6 +57,7 @@ fun AiSeparationSettingsScreen(
     initialAudioName: String = "",
 ) {
     val context = LocalContext.current
+    val withSystemFileAccess = rememberSystemFileAccessGate()
     val scope = rememberCoroutineScope()
     val store = remember(context) { AiSeparationPluginStore.get(context) }
     val resultStore = remember(context) { AiSeparationResultStore.get(context) }
@@ -157,8 +160,10 @@ fun AiSeparationSettingsScreen(
             },
             onFailure = {
                 context.getString(R.string.settings_ai_repository_imported, descriptor.name) +
-                    "\n" + (it.message
-                    ?: context.getString(R.string.settings_ai_repository_refresh_failed))
+                    "\n" + context.localizedErrorMessage(
+                        it,
+                        R.string.settings_ai_repository_refresh_failed,
+                    )
             },
         )
     }
@@ -202,7 +207,9 @@ fun AiSeparationSettingsScreen(
                             it,
                         )
                     },
-                    onFailure = { it.message.orEmpty() },
+                    onFailure = {
+                        context.localizedErrorMessage(it, R.string.ui_unknown_error)
+                    },
                 ),
             )
         }
@@ -229,7 +236,9 @@ fun AiSeparationSettingsScreen(
                 success = result.isSuccess,
                 message = result.fold(
                     onSuccess = { context.getString(R.string.settings_ai_model_imported, it.catalog.name) },
-                    onFailure = { it.message ?: context.getString(R.string.settings_ai_model_import_failed) },
+                    onFailure = {
+                        context.localizedErrorMessage(it, R.string.settings_ai_model_import_failed)
+                    },
                 ),
             )
         }
@@ -248,7 +257,7 @@ fun AiSeparationSettingsScreen(
                         context.getString(R.string.settings_ai_runtime_imported, it.name, it.version)
                     },
                     onFailure = {
-                        it.message ?: context.getString(R.string.settings_ai_runtime_import_failed)
+                        context.localizedErrorMessage(it, R.string.settings_ai_runtime_import_failed)
                     },
                 ),
             )
@@ -271,7 +280,7 @@ fun AiSeparationSettingsScreen(
                 message = result.fold(
                     onSuccess = { context.getString(R.string.settings_ai_recommended_imported, it.catalog.name) },
                     onFailure = {
-                        it.message ?: context.getString(R.string.settings_ai_recommended_import_failed)
+                        context.localizedErrorMessage(it, R.string.settings_ai_recommended_import_failed)
                     },
                 ),
             )
@@ -416,9 +425,11 @@ fun AiSeparationSettingsScreen(
                     title = stringResource(R.string.settings_ai_runtime_import),
                     description = stringResource(R.string.settings_ai_runtime_import_summary),
                     onClick = {
-                        runtimeLauncher.launch(
-                            arrayOf("application/octet-stream", "application/x-sharedlib", "*/*")
-                        )
+                        withSystemFileAccess {
+                            runtimeLauncher.launch(
+                                arrayOf("application/octet-stream", "application/x-sharedlib", "*/*")
+                            )
+                        }
                     },
                 )
             }
@@ -502,13 +513,15 @@ fun AiSeparationSettingsScreen(
                                 ),
                                 onClick = {
                                     recommendedImportTarget = recommended.id to recommended.version
-                                    recommendedModelLauncher.launch(
-                                        arrayOf(
-                                            "application/octet-stream",
-                                            "application/onnx",
-                                            "*/*",
+                                    withSystemFileAccess {
+                                        recommendedModelLauncher.launch(
+                                            arrayOf(
+                                                "application/octet-stream",
+                                                "application/onnx",
+                                                "*/*",
+                                            )
                                         )
-                                    )
+                                    }
                                 },
                             )
                         }
@@ -528,7 +541,9 @@ fun AiSeparationSettingsScreen(
                                         onSuccess = {
                                             context.getString(R.string.settings_ai_offline_selected_toast)
                                         },
-                                        onFailure = { it.message.orEmpty() },
+                                        onFailure = {
+                                            context.localizedErrorMessage(it, R.string.ui_unknown_error)
+                                        },
                                     ),
                                 )
                             }
@@ -552,7 +567,9 @@ fun AiSeparationSettingsScreen(
                                         onSuccess = {
                                             context.getString(R.string.settings_ai_realtime_selected_toast)
                                         },
-                                        onFailure = { it.message.orEmpty() },
+                                        onFailure = {
+                                            context.localizedErrorMessage(it, R.string.ui_unknown_error)
+                                        },
                                     ),
                                 )
                             }
@@ -627,7 +644,11 @@ fun AiSeparationSettingsScreen(
                     selectedAudioName
                 },
                 description = stringResource(R.string.settings_ai_job_choose_audio_summary),
-                onClick = { audioLauncher.launch(arrayOf("audio/*", "application/ogg")) },
+                onClick = {
+                    withSystemFileAccess {
+                        audioLauncher.launch(arrayOf("audio/*", "application/ogg"))
+                    }
+                },
             )
             if (jobProgress.active) {
                 SettingsInfoEntry(
@@ -739,7 +760,12 @@ fun AiSeparationSettingsScreen(
                         } else {
                             val result = AiSeparationJobService.start(context, uri!!, selectedAudioName)
                             if (result.isFailure) {
-                                AppNoticeBus.error(result.exceptionOrNull()?.message.orEmpty())
+                                AppNoticeBus.error(
+                                    context.localizedErrorMessage(
+                                        result.exceptionOrNull(),
+                                        R.string.settings_ai_job_failed,
+                                    )
+                                )
                             }
                         }
                     },
@@ -760,7 +786,11 @@ fun AiSeparationSettingsScreen(
             SettingsNavigationEntry(
                 title = stringResource(R.string.settings_ai_repository_import),
                 description = stringResource(R.string.settings_ai_repository_import_summary),
-                onClick = { repositoryLauncher.launch(arrayOf("application/json", "text/json", "text/plain")) },
+                onClick = {
+                    withSystemFileAccess {
+                        repositoryLauncher.launch(arrayOf("application/json", "text/json", "text/plain"))
+                    }
+                },
             )
             SettingsNavigationEntry(
                 title = stringResource(R.string.settings_ai_repository_import_url),
@@ -779,7 +809,12 @@ fun AiSeparationSettingsScreen(
                                 success = result.isSuccess,
                                 message = result.fold(
                                     onSuccess = { context.getString(R.string.settings_ai_repository_refreshed, it.size) },
-                                    onFailure = { it.message ?: context.getString(R.string.settings_ai_repository_refresh_failed) },
+                                    onFailure = {
+                                        context.localizedErrorMessage(
+                                            it,
+                                            R.string.settings_ai_repository_refresh_failed,
+                                        )
+                                    },
                                 ),
                             )
                         }
@@ -862,7 +897,9 @@ fun AiSeparationSettingsScreen(
                                         success = result.isSuccess,
                                         message = result.fold(
                                             onSuccess = { context.getString(R.string.settings_ai_model_selected_toast) },
-                                            onFailure = { it.message.orEmpty() },
+                                            onFailure = {
+                                                context.localizedErrorMessage(it, R.string.ui_unknown_error)
+                                            },
                                         ),
                                     )
                                 }
@@ -887,7 +924,9 @@ fun AiSeparationSettingsScreen(
                                                     R.string.settings_ai_realtime_selected_toast
                                                 )
                                             },
-                                            onFailure = { it.message.orEmpty() },
+                                            onFailure = {
+                                                context.localizedErrorMessage(it, R.string.ui_unknown_error)
+                                            },
                                         ),
                                     )
                                 }
@@ -907,9 +946,11 @@ fun AiSeparationSettingsScreen(
                 title = stringResource(R.string.settings_ai_model_import_local),
                 description = stringResource(R.string.settings_ai_model_import_local_summary),
                 onClick = {
-                    modelPackageLauncher.launch(
-                        arrayOf("application/zip", "application/octet-stream", "application/x-zip-compressed")
-                    )
+                    withSystemFileAccess {
+                        modelPackageLauncher.launch(
+                            arrayOf("application/zip", "application/octet-stream", "application/x-zip-compressed")
+                        )
+                    }
                 },
             )
         }
@@ -967,7 +1008,9 @@ fun AiSeparationSettingsScreen(
                                 success = result.isSuccess,
                                 message = result.fold(
                                     onSuccess = { context.getString(R.string.settings_ai_melody_model_deleted) },
-                                    onFailure = { it.message.orEmpty() },
+                                    onFailure = {
+                                        context.localizedErrorMessage(it, R.string.ui_unknown_error)
+                                    },
                                 ),
                             )
                         }
@@ -1029,7 +1072,9 @@ fun AiSeparationSettingsScreen(
                                 success = result.isSuccess,
                                 message = result.fold(
                                     onSuccess = { context.getString(R.string.settings_ai_piano_pack_deleted) },
-                                    onFailure = { it.message.orEmpty() },
+                                    onFailure = {
+                                        context.localizedErrorMessage(it, R.string.ui_unknown_error)
+                                    },
                                 ),
                             )
                         }
@@ -1100,7 +1145,8 @@ fun AiSeparationSettingsScreen(
                                         context.getString(R.string.settings_ai_repository_refreshed, it.size)
                                     },
                                     onFailure = {
-                                        it.message ?: context.getString(
+                                        context.localizedErrorMessage(
+                                            it,
                                             R.string.settings_ai_repository_refresh_failed,
                                         )
                                     },
@@ -1248,7 +1294,9 @@ fun AiSeparationSettingsScreen(
                                                     R.string.settings_ai_lyric_alignment_selected_toast,
                                                 )
                                             },
-                                            onFailure = { it.message.orEmpty() },
+                                            onFailure = {
+                                                context.localizedErrorMessage(it, R.string.ui_unknown_error)
+                                            },
                                         ),
                                     )
                                 }
@@ -1330,7 +1378,9 @@ fun AiSeparationSettingsScreen(
                                 success = result.isSuccess,
                                 message = result.fold(
                                     onSuccess = { context.getString(R.string.settings_ai_results_cleared) },
-                                    onFailure = { it.message.orEmpty() },
+                                    onFailure = {
+                                        context.localizedErrorMessage(it, R.string.ui_unknown_error)
+                                    },
                                 ),
                             )
                         }
@@ -1357,7 +1407,9 @@ fun AiSeparationSettingsScreen(
                                 success = result.isSuccess,
                                 message = result.fold(
                                     onSuccess = { context.getString(R.string.settings_ai_storage_cleared) },
-                                    onFailure = { it.message.orEmpty() },
+                                    onFailure = {
+                                        context.localizedErrorMessage(it, R.string.ui_unknown_error)
+                                    },
                                 ),
                             )
                         }
@@ -1370,7 +1422,10 @@ fun AiSeparationSettingsScreen(
             SettingsSection(stringResource(R.string.settings_ai_error_section)) {
                 SettingsInfoEntry(
                     title = stringResource(R.string.settings_ai_last_error),
-                    description = state.lastError,
+                    description = context.localizedErrorMessage(
+                        state.lastError,
+                        R.string.ui_unknown_error,
+                    ),
                 )
             }
         }
@@ -1454,7 +1509,9 @@ fun AiSeparationSettingsScreen(
                                 success = result.isSuccess,
                                 message = result.fold(
                                     onSuccess = { context.getString(R.string.settings_ai_model_deleted) },
-                                    onFailure = { it.message.orEmpty() },
+                                    onFailure = {
+                                        context.localizedErrorMessage(it, R.string.ui_unknown_error)
+                                    },
                                 ),
                             )
                         }
@@ -1505,7 +1562,7 @@ private fun queryDisplayName(context: android.content.Context, uri: Uri): String
 private fun showLivePlaybackResult(context: android.content.Context, result: Result<Unit>) {
     result.exceptionOrNull()?.let { error ->
         AppNoticeBus.error(
-            error.message ?: context.getString(R.string.settings_ai_live_failed)
+            context.localizedErrorMessage(error, R.string.settings_ai_live_failed)
         )
     }
 }
@@ -1525,16 +1582,22 @@ private fun showOperationNotice(
     }
 }
 
+@Composable
 private fun buildJobProgressText(progress: com.rawsmusic.separation.AiSeparationJobProgress): String {
     val percent = if (progress.totalFrames > 0L) "%.1f%%".format(progress.fraction * 100f) else "--"
-    val rtf = if (progress.realtimeFactor > 0.0) " · %.2f× 实时".format(progress.realtimeFactor) else ""
+    val rtf = if (progress.realtimeFactor > 0.0) {
+        stringResource(R.string.settings_ai_realtime_factor, progress.realtimeFactor)
+    } else {
+        ""
+    }
     return "$percent$rtf · ${progress.message}"
 }
 
+@Composable
 private fun buildDownloadProgressText(downloaded: Long, total: Long): String = if (total > 0L) {
     "${formatBytes(downloaded)} / ${formatBytes(total)}"
 } else {
-    "准备中"
+    stringResource(R.string.settings_ai_preparing)
 }
 
 private fun formatBytes(bytes: Long): String = when {

@@ -15,6 +15,8 @@ internal interface AutomaticCrossfadeProcessor : AutoCloseable {
     )
 
     val isNativeBacked: Boolean
+    val outgoingGain: Float
+    val incomingGain: Float
 
     fun start(plan: AutoTransitionStartPlan, sampleRate: Int): Boolean
 

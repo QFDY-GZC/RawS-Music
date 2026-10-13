@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="backup_basic_preferences">Basic preferences</string>
+    <string name="backup_playlist_paths">Playlists (local references)</string>
+    <string name="backup_listening_records">Listening statistics and history</string>
+    <string name="backup_device_references">Original-device resources (optional)</string>
+    <string name="backup_scope_title">Backup scope</string>
+    <string name="backup_plaintext_notice">Unencrypted JSON; includes paths and listening history, not audio files, credentials or video covers. Resource permissions are not transferred.</string>
+    <string name="backup_preview_title">Review before restoring</string>
+    <string name="backup_replace_notice">Preferences are merged. Selected playlists and statistics replace their entire groups. Empty groups are not selected automatically. Scan your local music first when reinstalling.</string>
+    <string name="backup_preview_preferences">Preferences: %1$d new, %2$d overwritten</string>
+    <string name="backup_preview_playlists">%1$d playlists, %2$d available songs</string>
+    <string name="backup_preview_playback">%1$d song statistics, %2$d history entries, %3$d daily totals</string>
+    <string name="backup_clear_warning">Warning: the selected empty group will clear existing data.</string>
+    <string name="backup_more_skipped">%1$d more skipped items</string>
+    <string name="backup_restore_done">Restored and verified; %1$d preferences saved.</string>
+    <string name="backup_restart_notice">Restart the app to refresh all preferences.</string>
+    <string name="backup_confirm_restore">Confirm replacement and restore</string>
+</resources>

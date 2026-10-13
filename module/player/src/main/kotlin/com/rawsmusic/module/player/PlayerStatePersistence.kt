@@ -29,6 +29,8 @@ internal class PlayerStatePersistence(context: Context) {
 
     private val queueDatabase = PlayerQueueDatabase(context)
     private val persistenceLock = Any()
+    private val writePolicy = QueueSnapshotWritePolicy()
+    private var persistedEntryIds: List<Long> = emptyList()
 
     fun saveSongSnapshot(song: AudioFile) {
         AppPreferences.Player.lastSongId = song.id
@@ -66,13 +68,14 @@ internal class PlayerStatePersistence(context: Context) {
             val existing = loadDatabaseSnapshot()
             if (existing != null) {
                 queueDatabase.saveSnapshot(
-                    entries = existing.entries,
+                    entries = null,
                     currentEntryId = existing.currentEntryId,
                     prioritySongsJson = songs.map { encodeSong(it).toString() },
-                    shuffleTraversalOrder = existing.shuffleTraversalOrder,
+                    shuffleTraversalOrder = null,
                     shuffleTraversalCursor = existing.shuffleTraversalCursor,
                 )
             }
+            writePolicy.invalidatePriority()
         }
     }
 
@@ -83,30 +86,31 @@ internal class PlayerStatePersistence(context: Context) {
         entryIds: List<Long> = emptyList(),
         prioritySongs: List<AudioFile> = emptyList(),
     ) {
-        val normalizedIds = ensureEntryIds(songs, entryIds)
         val safeIndex = currentIndex.takeIf { it in songs.indices }
-        val shuffleTraversalOrder = AppPreferences.Player.shuffleTraversalOrder
-            .split(',')
-            .mapNotNull(String::toIntOrNull)
         synchronized(persistenceLock) {
+            val traversalText = AppPreferences.Player.shuffleTraversalOrder
+            val changes = writePolicy.changes(songs, entryIds, prioritySongs, traversalText)
+            val normalizedIds = if (changes.queue) ensureEntryIds(songs, entryIds) else persistedEntryIds
             queueDatabase.saveSnapshot(
-                entries = songs.mapIndexed { index, song ->
+                entries = if (changes.queue) songs.mapIndexed { index, song ->
                     PlayerQueueDatabase.Entry(
                         entryId = normalizedIds[index],
                         sort = index,
                         songJson = encodeSong(song).toString(),
                     )
-                },
+                } else null,
                 currentEntryId = safeIndex?.let(normalizedIds::get),
-                prioritySongsJson = prioritySongs.map { encodeSong(it).toString() },
-                shuffleTraversalOrder = shuffleTraversalOrder,
+                prioritySongsJson = if (changes.priority) prioritySongs.map { encodeSong(it).toString() } else null,
+                shuffleTraversalOrder = if (changes.traversal) traversalText.split(',').mapNotNull(String::toIntOrNull) else null,
                 shuffleTraversalCursor = AppPreferences.Player.shuffleTraversalCursor,
             )
             // Keep the old MMKV representation for downgrade/rollback compatibility. The DB is
             // authoritative for this build; these keys are only a migration fallback.
             AppPreferences.Player.currentQueueIndex = safeIndex ?: -1
-            AppPreferences.Player.playQueueSongsJson = encodeSongList(songs)
-            AppPreferences.Player.priorityQueueSongsJson = encodeSongList(prioritySongs)
+            if (changes.queue) AppPreferences.Player.playQueueSongsJson = encodeSongList(songs)
+            if (changes.priority) AppPreferences.Player.priorityQueueSongsJson = encodeSongList(prioritySongs)
+            persistedEntryIds = normalizedIds
+            writePolicy.committed(songs, entryIds, prioritySongs, traversalText)
         }
     }
 

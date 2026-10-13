@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="folder_filter_title">音乐文件夹</string>
+    <string name="folder_filter_summary">选择要扫描的本地音乐目录</string>
+    <string name="folder_filter_selected_count">已选 %1$d</string>
+    <string name="folder_filter_root_count">根目录 %1$d</string>
+    <string name="folder_filter_loading">加载中</string>
+    <string name="folder_filter_empty">还没有可扫描的文件夹</string>
+    <string name="folder_filter_add_folder">添加文件夹</string>
+    <string name="folder_filter_clear">清除</string>
+    <string name="folder_filter_cancel">取消</string>
+    <string name="folder_filter_save_and_scan">保存并扫描</string>
+    <string name="folder_filter_folder_unavailable">文件夹不可用</string>
+    <string name="folder_filter_folder_added">已添加：%1$s</string>
+    <string name="folder_filter_saf_unsupported">无法保存这个文件夹的持久读取权限，请重新选择</string>
+    <string name="folder_filter_saf_required">该目录当前无法直接读取，请通过系统文件夹选择器授权</string>
+    <string name="folder_filter_select_at_least_one">请至少选择一个文件夹</string>
+    <string name="folder_filter_saved_start_scan">已保存 %1$d 个文件夹，开始扫描</string>
+    <string name="folder_filter_load_failed">加载文件夹失败</string>
+    <string name="folder_filter_internal_storage">内部存储</string>
+    <string name="folder_filter_usb_storage">USB 存储</string>
+    <string name="folder_filter_sd_card">SD 卡</string>
+    <string name="playlist_create_failed">无法创建歌单，请稍后重试</string>
+    <string name="searching_for_files">正在搜索文件…</string>
+</resources>

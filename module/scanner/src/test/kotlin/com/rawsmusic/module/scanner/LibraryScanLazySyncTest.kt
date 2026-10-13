@@ -7,6 +7,36 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LibraryScanLazySyncTest {
+    @Test fun unchangedFinalDoesNotRefresh() = runBlocking {
+        val song = AudioFile(id = 1, path = "/music/old.flac", title = "Old")
+        val repository = FakeRepository(mutableListOf(song))
+        LibraryScanLazySync(repository).syncFinal(listOf(song))
+        assertEquals(0, repository.refreshes)
+    }
+    @Test fun unchangedQuickDoesNotRefresh() = runBlocking {
+        val song = AudioFile(id = 1, path = "/music/old.flac", title = "Old")
+        val repository = FakeRepository(mutableListOf(song))
+        LibraryScanLazySync(repository).syncQuickVisible(listOf(song))
+        assertEquals(0, repository.refreshes)
+    }
+    @Test fun earlierBatchIsPublishedOnceAndIncludedInSummary() = runBlocking {
+        val song = AudioFile(id = 1, path = "/music/new.flac", title = "New")
+        val repository = FakeRepository(mutableListOf())
+        val sync = LibraryScanLazySync(repository)
+        sync.enqueueEnriched(listOf(song), force = true)
+        val result = sync.syncFinal(listOf(song))
+        assertEquals(1, repository.refreshes)
+        assertEquals(1, result.added)
+    }
+    @Test fun quickAdditionRemainsInFinalSummary() = runBlocking {
+        val song = AudioFile(id = 1, path = "/music/new.flac", title = "New")
+        val repository = FakeRepository(mutableListOf())
+        val sync = LibraryScanLazySync(repository)
+        sync.syncQuickVisible(listOf(song))
+        val result = sync.syncFinal(listOf(song))
+        assertEquals(1, result.added)
+        assertEquals(1, repository.refreshes)
+    }
     @Test
     fun incompleteScanUpsertsVisibleSongsWithoutDeletingMissingRows() = runBlocking {
         val existing = AudioFile(id = 1, path = "/music/existing.flac", title = "Existing")
@@ -38,6 +68,12 @@ class LibraryScanLazySyncTest {
     }
 
     private class FakeRepository(val songs: MutableList<AudioFile>) : AudioLibraryRepository {
+        var refreshes = 0
+        override suspend fun refreshAfterScanSync() { refreshes++ }
+        override suspend fun upsertSongsForScan(songs: List<AudioFile>, refreshLibrary: Boolean) {
+            upsertSongs(songs)
+            if (refreshLibrary) refreshAfterScanSync()
+        }
         override suspend fun getAllSongs(): List<AudioFile> = songs.toList()
 
         override suspend fun upsertSongs(newSongs: List<AudioFile>) {

@@ -270,6 +270,75 @@ class PlaybackArtworkReleasePolicyTest {
     }
 
     @Test
+    fun `preloaded next holder must not turn automatic crossfade into programmatic animation`() {
+        val adjacent = physicalAdjacentPlaybackBindingDirection(
+            previousSlotKey = "song-a-previous",
+            nextSlotKey = "song-b",
+            boundKey = "song-b",
+            rewriteKind = null,
+        )
+        assertEquals(PlayerArtworkDirection.Next, adjacent)
+        val classification = classifyPlaybackArtworkAdvance(
+            queueIndexAdvanced = true,
+            queueSize = 12,
+            manualNavigationBinding = false,
+            manualDirectionHint = null,
+            physicalAdjacentDirection = adjacent,
+        )
+        assertTrue(classification.queueAdvanced)
+        assertTrue(classification.isNaturalQueueAdvance)
+        assertTrue(shouldUseAutomaticCrossfadeArtwork(true, classification.isNaturalQueueAdvance))
+    }
+
+    @Test
+    fun `natural crossfade remains a fade if cursor update trails committed song`() {
+        val classification = classifyPlaybackArtworkAdvance(
+            queueIndexAdvanced = false,
+            queueSize = 10,
+            manualNavigationBinding = false,
+            manualDirectionHint = null,
+            physicalAdjacentDirection = PlayerArtworkDirection.Next,
+        )
+        assertTrue(classification.queueAdvanced)
+        assertTrue(classification.isNaturalQueueAdvance)
+    }
+
+    @Test
+    fun `manual button and swipe hints still override preloaded adjacent artwork`() {
+        val button = classifyPlaybackArtworkAdvance(
+            queueIndexAdvanced = true,
+            queueSize = 10,
+            manualNavigationBinding = true,
+            manualDirectionHint = null,
+            physicalAdjacentDirection = PlayerArtworkDirection.Next,
+        )
+        val gesture = classifyPlaybackArtworkAdvance(
+            queueIndexAdvanced = true,
+            queueSize = 10,
+            manualNavigationBinding = false,
+            manualDirectionHint = PlayerArtworkDirection.Previous,
+            physicalAdjacentDirection = PlayerArtworkDirection.Previous,
+        )
+        assertFalse(button.isNaturalQueueAdvance)
+        assertFalse(gesture.isNaturalQueueAdvance)
+        assertFalse(shouldUseAutomaticCrossfadeArtwork(true, button.isNaturalQueueAdvance))
+        assertFalse(shouldUseAutomaticCrossfadeArtwork(true, gesture.isNaturalQueueAdvance))
+    }
+
+    @Test
+    fun `same-song metadata refresh cannot trigger automatic crossfade artwork`() {
+        val classification = classifyPlaybackArtworkAdvance(
+            queueIndexAdvanced = false,
+            queueSize = 5,
+            manualNavigationBinding = false,
+            manualDirectionHint = null,
+            physicalAdjacentDirection = null,
+        )
+        assertFalse(classification.queueAdvanced)
+        assertFalse(classification.isNaturalQueueAdvance)
+    }
+
+    @Test
     fun `ArtworkPager holder promotion preserves the exact endpoint transform`() {
         fun assertSameTransform(
             a: ForegroundItemTransform,

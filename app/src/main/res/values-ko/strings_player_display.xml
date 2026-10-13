@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_player_keep_screen_on">재생 화면 켜짐 유지</string>
+    <string name="settings_player_keep_screen_on_summary">재생 화면이나 가사 화면이 열려 있는 동안 일시정지 중에도 화면을 켜 둡니다</string>
+</resources>

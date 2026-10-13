@@ -24,12 +24,34 @@ object TagLibBridge {
 
     fun isSupported(filePath: String): Boolean {
         if (!loaded) return false
-        return nativeIsSupported(filePath)
+        return com.rawsmusic.core.common.sacd.SacdIsoMetadata.withReadablePath(filePath) { nativeIsSupported(it) }
     }
 
     fun readMetadata(filePath: String): Map<String, String> {
         if (!loaded) return emptyMap()
-        return nativeReadMetadata(filePath) ?: emptyMap()
+        var snapshot = false
+        val result = com.rawsmusic.core.common.sacd.SacdIsoMetadata.withReadablePath(filePath) {
+            snapshot = it != filePath
+            nativeReadMetadata(it) ?: emptyMap()
+        }
+        if (!snapshot) return result
+        // Text is restored from the original container; audio geometry belongs to the ISO.
+        val physical = if (filePath.startsWith("sacd://")) android.net.Uri.parse(filePath).pathSegments.getOrNull(1).orEmpty()
+            else filePath
+        val file = java.io.File(physical)
+        val tracks = com.rawsmusic.core.common.sacd.SacdIsoBridge.tracks(
+            com.rawsmusic.core.common.model.AudioFile(path = physical, format = "SACD-ISO",
+                fileSize = file.length(), dateModified = file.lastModified()))
+        val channels = tracks.firstOrNull()?.channels ?: 2
+        return result.toMutableMap().apply {
+            remove("format_code")
+            put("sample_rate", "2822400"); put("bits_per_sample", "1"); put("channels", channels.toString())
+            put("bit_rate", (2822400L * channels / 1000).toString())
+            put("format_name", "SACD-ISO"); put("codec_name", "dsd_msbf")
+            tracks.maxOfOrNull { (it.startFrame + it.frames) * 1000 / 75 }?.let {
+                put("duration_ms", it.toString()); put("duration", (it / 1000).toString())
+            }
+        }
     }
 
     fun readTags(filePath: String): Map<String, String> {
@@ -61,7 +83,9 @@ object TagLibBridge {
         if (!loaded) return false
         if (filePath.isBlank() || outputPath.isBlank()) return false
         return try {
-            nativeExtractEmbeddedArtworkToFile(filePath, outputPath)
+            com.rawsmusic.core.common.sacd.SacdIsoMetadata.withReadablePath(filePath) {
+                nativeExtractEmbeddedArtworkToFile(it, outputPath)
+            }
         } catch (e: Throwable) {
             Log.d(TAG, "extractEmbeddedArtworkToFile failed: ${filePath.takeLast(80)}, ${e.message}")
             false
@@ -98,7 +122,7 @@ object TagLibBridge {
     fun readAllTextProperties(filePath: String): Map<String, List<String>> {
         if (!loaded || filePath.isBlank()) return emptyMap()
         val flattened = try {
-            nativeReadAllTextProperties(filePath)
+            com.rawsmusic.core.common.sacd.SacdIsoMetadata.withReadablePath(filePath) { nativeReadAllTextProperties(it) }
         } catch (e: Throwable) {
             Log.e(TAG, "readAllTextProperties failed for $filePath", e)
             null
@@ -125,7 +149,9 @@ object TagLibBridge {
     fun inspectMetadataForTranscode(sourcePath: String): TranscodeMetadataSourceInfo {
         if (!loaded || sourcePath.isBlank()) return TranscodeMetadataSourceInfo.Unsupported
         return try {
-            TranscodeMetadataSourceInfo.parse(nativeInspectMetadataForTranscode(sourcePath))
+            com.rawsmusic.core.common.sacd.SacdIsoMetadata.withReadablePath(sourcePath) {
+                TranscodeMetadataSourceInfo.parse(nativeInspectMetadataForTranscode(it))
+            }
         } catch (e: Throwable) {
             Log.e(TAG, "inspectMetadataForTranscode failed: $sourcePath", e)
             TranscodeMetadataSourceInfo.Unsupported
@@ -140,17 +166,53 @@ object TagLibBridge {
         sourcePath: String,
         targetPath: String,
         encoderLabel: String? = null,
+        isCancelled: () -> Boolean = { false },
     ): TranscodeMetadataReport {
         if (!loaded || sourcePath.isBlank() || targetPath.isBlank()) {
             return TranscodeMetadataReport.Unsupported
         }
         return try {
+            if (targetPath.substringAfterLast('.').equals("iso", true)) {
+                return migrateMetadataToSacd(sourcePath, targetPath, isCancelled)
+            }
             TranscodeMetadataReport.parse(
-                nativeMigrateMetadataForTranscode(sourcePath, targetPath, encoderLabel)
+                com.rawsmusic.core.common.sacd.SacdIsoMetadata.withReadablePath(sourcePath) {
+                    nativeMigrateMetadataForTranscode(it, targetPath, encoderLabel)
+                }
             )
         } catch (e: Throwable) {
+            if (e is java.util.concurrent.CancellationException) throw e
             Log.e(TAG, "migrateMetadataForTranscode failed: $sourcePath -> $targetPath", e)
             TranscodeMetadataReport.Unsupported
+        }
+    }
+
+    private fun migrateMetadataToSacd(sourcePath: String, targetPath: String, isCancelled: () -> Boolean): TranscodeMetadataReport =
+        com.rawsmusic.core.common.sacd.SacdIsoMetadata.withReadablePath(sourcePath) { readableSource ->
+        val source = java.io.File(readableSource)
+        val target = java.io.File(targetPath)
+        val sourceInfo = inspectMetadataForTranscode(source.absolutePath)
+        if (!sourceInfo.supported) return@withReadablePath TranscodeMetadataReport.Unsupported
+        val sourceProperties = readAllTextProperties(source.absolutePath)
+        com.rawsmusic.core.common.sacd.SacdMetadataArchive.append(source, target, isCancelled)
+        com.rawsmusic.core.common.sacd.SacdIsoMetadata.withSource(targetPath) { restored ->
+            if (restored == null) return@withSource TranscodeMetadataReport.Unsupported
+            val restoredInfo = inspectMetadataForTranscode(restored.absolutePath)
+            val restoredProperties = readAllTextProperties(restored.absolutePath)
+            val textMismatch = (sourceProperties.keys + restoredProperties.keys).count {
+                sourceProperties[it] != restoredProperties[it]
+            }
+            val pictureMismatch = kotlin.math.abs(sourceInfo.pictureCount - restoredInfo.pictureCount)
+            // Original metadata bytes, including every opaque frame/atom, are retained unchanged.
+            val bytesVerified = com.rawsmusic.core.common.sacd.SacdMetadataArchive.verify(source, target)
+            val opaqueVerified = sourceInfo.unsupportedOpaqueItems == restoredInfo.unsupportedOpaqueItems &&
+                sourceInfo.unsupportedKeys == restoredInfo.unsupportedKeys
+            val passed = restoredInfo.supported && textMismatch == 0 && pictureMismatch == 0 && bytesVerified && opaqueVerified
+            TranscodeMetadataReport(true, true, passed, passed, sourceProperties.size,
+                sourceProperties.values.sumOf { it.size }, restoredProperties.size, restoredProperties.values.sumOf { it.size },
+                0, textMismatch, restoredInfo.pictureCount, pictureMismatch,
+                if (bytesVerified && opaqueVerified) 0 else sourceInfo.unsupportedOpaqueItems.coerceAtLeast(1),
+                if (passed) emptyList() else listOf("SACD_METADATA_SNAPSHOT_VERIFICATION"))
         }
     }
 

@@ -133,7 +133,8 @@ private class LyricFloatUpDrawNode(
             LyricFrameSamplingMode.ANIMATED -> Unit
         }
 
-        val wholeCenter = wholeLocalCenterPx
+        // A container with no glyph slices (e.g. base text plus ruby) is one shaped unit.
+        val wholeCenter = wholeLocalCenterPx ?: if (slices.isEmpty()) size.width * 0.5f else null
         if (wholeCenter != null) {
             val fraction = lineGeometry.fractionForLocalCenter(
                 slotIndex = segmentIndex,

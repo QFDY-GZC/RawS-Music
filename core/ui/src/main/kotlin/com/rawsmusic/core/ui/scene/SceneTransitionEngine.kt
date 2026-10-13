@@ -33,10 +33,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.platform.LocalDensity
@@ -47,6 +52,8 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.util.fastFirstOrNull
 import androidx.compose.ui.util.lerp
@@ -57,9 +64,9 @@ import com.rawsmusic.core.ui.widget.bitmaps.ArtworkAspectPolicy
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
-import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkPerfTrace
 import com.rawsmusic.core.ui.widget.text.LongTextMotionState
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.collect
@@ -83,6 +90,42 @@ private const val VIRTUALLIST_PROVIDER_BIND_FRAMES = 1
 private const val SETTINGS_FRAGMENT_ANIM_MS = 300
 private const val EDGE_DETECT_WIDTH_DP = 24
 private const val OVER_DRAG_UNIT = 0.05f
+
+/**
+ * Keeps the visible corner radius circular in window space while the shared actor is independently
+ * scaled on X/Y. A normal RoundedCornerShape would be scaled with the layer and turn into an
+ * ellipse during square -> scene_header transitions.
+ */
+private class SharedCoverScreenRadiusShape(
+    private val radiusDp: Float,
+    private val scaleX: Float,
+    private val scaleY: Float,
+) : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density,
+    ): Outline {
+        if (radiusDp <= 0f || size.width <= 0f || size.height <= 0f) {
+            return Outline.Rectangle(Rect(0f, 0f, size.width, size.height))
+        }
+        val physicalRadiusPx = with(density) { radiusDp.dp.toPx() }
+        val localRadiusX = (physicalRadiusPx / scaleX.coerceAtLeast(0.001f))
+            .coerceAtMost(size.width * 0.5f)
+        val localRadiusY = (physicalRadiusPx / scaleY.coerceAtLeast(0.001f))
+            .coerceAtMost(size.height * 0.5f)
+        val corner = CornerRadius(localRadiusX, localRadiusY)
+        return Outline.Rounded(
+            RoundRect(
+                rect = Rect(0f, 0f, size.width, size.height),
+                topLeft = corner,
+                topRight = corner,
+                bottomRight = corner,
+                bottomLeft = corner,
+            )
+        )
+    }
+}
 private const val VIRTUAL_LIST_SCALE_MIN = 0.5f
 private const val VIRTUAL_LIST_SCALE_MAX = 1.5f
 
@@ -193,6 +236,7 @@ private val settingsScenes = setOf(
     NavScene.ALBUM_DETAIL,
     NavScene.ARTISTS,
     NavScene.ARTIST_DETAIL,
+    NavScene.ARTIST_ALL_SONGS,
     NavScene.PLAYLISTS,
     NavScene.PLAYLIST_DETAIL,
     NavScene.QUEUE,
@@ -204,6 +248,7 @@ private val settingsScenes = setOf(
     NavScene.ANALYTICS,
     NavScene.APPEARANCE,
     NavScene.PERSONALIZATION_SETTINGS,
+    NavScene.HDR_SETTINGS,
     NavScene.AUDIO_SETTINGS,
     NavScene.ALBUM_ART_SETTINGS,
     NavScene.BASS_TREBLE_BOOST,
@@ -263,6 +308,12 @@ private fun usesSharedCoverMotion(from: NavScene, to: NavScene): Boolean {
         (from == NavScene.ALBUM_DETAIL && to == NavScene.ALBUMS) ||
         (from == NavScene.ARTISTS && to == NavScene.ARTIST_DETAIL) ||
         (from == NavScene.ARTIST_DETAIL && to == NavScene.ARTISTS) ||
+        (from == NavScene.ARTIST_DETAIL && to == NavScene.ARTIST_ALL_SONGS) ||
+        (from == NavScene.ARTIST_ALL_SONGS && to == NavScene.ARTIST_DETAIL) ||
+        // Artist albums -> album songs keeps the same ItemToHeader/HeaderToItem
+        // contract as the root Albums list: the artist-detail album row is the shared source.
+        (from == NavScene.ARTIST_DETAIL && to == NavScene.ALBUM_DETAIL) ||
+        (from == NavScene.ALBUM_DETAIL && to == NavScene.ARTIST_DETAIL) ||
         (from == NavScene.GENRE && to == NavScene.GENRE_DETAIL) ||
         (from == NavScene.GENRE_DETAIL && to == NavScene.GENRE) ||
         (from == NavScene.YEAR && to == NavScene.YEAR_DETAIL) ||
@@ -372,15 +423,30 @@ private suspend fun awaitSharedLayouts(
             return true
         }
     }
-    val pair = awaitCollectionSharedPair(candidate = {
+    fun candidatePair(): Pair<SharedCoverSnapshot, SharedCoverSnapshot>? =
         coverRegistry.findPairs(
             fromSceneId = fromScene.name,
             toSceneId = toScene.name,
             allowRememberedTarget = allowRememberedTarget,
             requireLiveTarget = allowRememberedTarget,
         ).firstOrNull()
-    }) ?: return false
-    coverRegistry.prepareTransition(transitionKey, pair.first, pair.second)
+
+    var pair = awaitCollectionSharedPair(candidate = ::candidatePair)
+    if (pair == null && !allowRememberedTarget) {
+        // Do not start ItemToHeader until NEXT LayoutRes exists. A warm Compose detail
+        // provider publishes that endpoint in the first preflight frame, but a cold first visit can
+        // need another layout/Android-host frame. Starting scene motion without the pair makes the
+        // source holder follow GenericPivot 1 -> 1.5 and then snap to the real header at commit --
+        // exactly the first-entry "large then normal" flash. Keep CURRENT frozen and wait only for
+        // concrete endpoint publication; artwork decoding itself is never awaited here.
+        for (attempt in 0 until SHARED_PAIR_WAIT_FRAMES) {
+            if (pair != null) break
+            withFrameNanos { }
+            pair = awaitCollectionSharedPair(candidate = ::candidatePair)
+        }
+    }
+    val resolvedPair = pair ?: return false
+    coverRegistry.prepareTransition(transitionKey, resolvedPair.first, resolvedPair.second)
     return true
 }
 
@@ -406,10 +472,12 @@ internal fun SceneTransitionHost(
     state: NavigationState,
     modifier: Modifier = Modifier,
     horizontalGestureExclusionBounds: Rect? = null,
+    horizontalGestureExclusionBoundsProvider: (() -> Rect?)? = null,
     gesturesEnabled: Boolean = true,
     providerBackGesture: LibraryContentBackGesture? = null,
     onTransitionActiveChanged: (Boolean) -> Unit = {},
     onTransitionFrameChanged: (SceneTransitionFrame) -> Unit = {},
+    onCollectionDetailReturnCommitted: (NavScene) -> Unit = {},
     onCollectionDetailOffscreenReturnCommitted: (NavScene) -> Unit = {},
     // Root-level owner for HOME/category VirtualList scenes. This slot is deliberately outside
     // the per-scene movable content so the VirtualList presentation host is never moved or replaced
@@ -441,6 +509,8 @@ internal fun SceneTransitionHost(
         }
     }
     val animProgress = remember { Animatable(0f) }
+    val originOverscrollReturn = remember { Animatable(0f) }
+    var originOverscrollReturnToken by remember { mutableIntStateOf(-1) }
     var displayedScene by remember { mutableStateOf(state.currentScene) }
     var parkedLibraryScene by remember {
         mutableStateOf(state.currentScene.takeIf(::isPersistentHomeCategoryScene))
@@ -470,6 +540,10 @@ internal fun SceneTransitionHost(
     var screenHeightPx by remember { mutableFloatStateOf(0f) }
     val prevSceneRef = remember { mutableStateOf(state.currentScene) }
     val sharedCoverRegistry = remember { SharedCoverRegistry() }
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
+    var previousWindowWidth by remember { mutableStateOf(windowLayoutProfile.windowWidth) }
+    var previousWindowHeight by remember { mutableStateOf(windowLayoutProfile.windowHeight) }
+
     LaunchedEffect(displayedScene) {
         if (isPersistentHomeCategoryScene(displayedScene)) {
             parkedLibraryScene = displayedScene
@@ -486,6 +560,44 @@ internal fun SceneTransitionHost(
     val currentSceneContent by rememberUpdatedState(content)
     var frozenSceneContent by remember {
         mutableStateOf<(@Composable (NavScene) -> Unit)?>(null)
+    }
+
+    LaunchedEffect(windowLayoutProfile.windowWidth, windowLayoutProfile.windowHeight) {
+        val width = windowLayoutProfile.windowWidth
+        val height = windowLayoutProfile.windowHeight
+        val geometryChanged = width != previousWindowWidth || height != previousWindowHeight
+        previousWindowWidth = width
+        previousWindowHeight = height
+        if (!geometryChanged) return@LaunchedEffect
+
+        // A resize creates a new coordinate space. Invalidate every in-flight scene/shared actor
+        // and snap to NavigationState.currentScene, which is already the authoritative route for a
+        // forward request and remains the source route for an uncommitted predictive-back drag.
+        // The request-id bump inside resetTransientBackState cancels any old animation coroutine.
+        state.resetTransientBackState()
+        sharedCoverRegistry.invalidateWindowGeometry()
+        val stableScene = state.currentScene
+        displayedScene = stableScene
+        fromScene = stableScene
+        sharedFromScene = stableScene
+        sharedToScene = stableScene
+        retainedScene = null
+        retainedDetailArgument = null
+        preparingScene = null
+        isAnimating = false
+        isGestureActive = false
+        isBackTransition = false
+        usesDirectionalBackPivot = false
+        sharedCoverActorEligible = false
+        pageMotion = PageMotion.Generic
+        frozenSceneContent = null
+        if (isPersistentHomeCategoryScene(stableScene)) parkedLibraryScene = stableScene
+        animProgress.snapTo(0f)
+        originOverscrollReturn.snapTo(0f)
+        originOverscrollReturnToken = -1
+        alphabetIndexAlpha.snapTo(1f)
+        topMenuAlpha.snapTo(1f)
+        TransitionPerfTrace.stop("window_geometry_changed")
     }
     val movableSceneContent = remember { mutableMapOf<NavScene, @Composable () -> Unit>() }
     // HOME and top-level category providers belong to one persistent VirtualList owner in Reference.
@@ -594,7 +706,7 @@ internal fun SceneTransitionHost(
         )
         TransitionPerfTrace.mark(
             "scene_begin",
-            "kind=forward artwork=${PlaybackArtworkPerfTrace.overlapSummary()} retainedPivot=${frozenSceneContent != null} " +
+            "kind=forward retainedPivot=${frozenSceneContent != null} " +
                 "owner=${if (frozenSceneContent != null) "persistent_layout" else "scene_root"} ${BitmapProvider.transitionDiagnosticsSummary()}",
         )
         AppLogger.i("SceneHandoff", "SCENE_BEGIN kind=forward from=$oldScene to=$newScene motion=$pageMotion retained=${frozenSceneContent != null}")
@@ -777,7 +889,11 @@ internal fun SceneTransitionHost(
             // shared owner when the detail/header source is offscreen. Without a concrete source
             // View there is no shared return; the destination category holder must draw its normal
             // cover for the entire back motion.
-            sharedCoverRegistry.retireAnyPhysicalSharedOwnership()
+            if (!sharedCoverRegistry.retireNestedChildForSceneOnlyReturn(
+                    state.currentScene.name, targetScene.name,
+                )) {
+                sharedCoverRegistry.retireAnyPhysicalSharedOwnership()
+            }
         }
         // HeaderToItem can keep its scene-motion family even when no concrete shared actor exists
         // (for example an offscreen header). retained-view implementation only hands pixels to the transition after the
@@ -808,7 +924,7 @@ internal fun SceneTransitionHost(
         )
         TransitionPerfTrace.mark(
             "scene_begin",
-            "kind=back artwork=${PlaybackArtworkPerfTrace.overlapSummary()} retainedPivot=${frozenSceneContent != null} " +
+            "kind=back retainedPivot=${frozenSceneContent != null} " +
                 "owner=${if (frozenSceneContent != null) "persistent_layout" else "scene_root"} ${BitmapProvider.transitionDiagnosticsSummary()}",
         )
         AppLogger.i("SceneHandoff", "SCENE_BEGIN kind=back from=${state.currentScene} to=$targetScene motion=$pageMotion retained=${frozenSceneContent != null}")
@@ -885,12 +1001,21 @@ internal fun SceneTransitionHost(
             frozenSceneContent = null
             state.completeAnimatingBack()
         }
+        sharedCoverRegistry.restoreNestedParentAfterCommittedBack(
+            sharedFromScene.name, targetScene.name,
+        )
         if (!targetScene.isDetail()) {
             val retiredSharedOwner = sharedCoverRegistry.retireAnyPhysicalSharedOwnership()
             AppLogger.i(
                 "SceneHandoff",
                 "SHARED_OWNER_BARRIER kind=back scene=$targetScene retired=$retiredSharedOwner",
             )
+        }
+        if (sharedFromScene.isDetail()) {
+            // The shared/physical HeaderToItem owner has reached its terminal barrier above. It is
+            // now safe to retire any cancelled edge gesture state without changing the return
+            // endpoint that was just committed.
+            onCollectionDetailReturnCommitted(sharedFromScene)
         }
         if (resetDetailToTopAfterCommit) {
             onCollectionDetailOffscreenReturnCommitted(sharedFromScene)
@@ -964,7 +1089,11 @@ internal fun SceneTransitionHost(
                 toSceneId = targetScene.name,
             )
         if (sharedReturnRoute && !sharedReturnSourceReady) {
-            sharedCoverRegistry.retireAnyPhysicalSharedOwnership()
+            if (!sharedCoverRegistry.retireNestedChildForSceneOnlyReturn(
+                    state.currentScene.name, targetScene.name,
+                )) {
+                sharedCoverRegistry.retireAnyPhysicalSharedOwnership()
+            }
         }
         // Predictive HeaderToItem follows the same ownership rule as programmatic back: endpoint
         // capture prepares the transaction, but pixels are not handed off until the concrete View
@@ -993,7 +1122,7 @@ internal fun SceneTransitionHost(
         animProgress.snapTo(0f)
         TransitionPerfTrace.mark(
             "scene_begin",
-            "kind=drag artwork=${PlaybackArtworkPerfTrace.overlapSummary()} retainedPivot=${frozenSceneContent != null} " +
+            "kind=drag retainedPivot=${frozenSceneContent != null} " +
                 "owner=${if (frozenSceneContent != null) "persistent_layout" else "scene_root"} ${BitmapProvider.transitionDiagnosticsSummary()}",
         )
         if (pageMotion == PageMotion.FolderSharedBack && sharedReturnSourceReady) {
@@ -1045,6 +1174,7 @@ internal fun SceneTransitionHost(
         consumedDragBackReleaseToken = releaseToken
         val requestId = state.transitionRequestId
         val start = dampProgress(state.dragBackReleaseProgress).coerceIn(0f, 1f)
+        val originOverflow = collectionBackOriginOverscroll(state.dragBackRawProgress)
         val commit = state.dragBackReleaseCommit
         val target = if (commit) 1f else 0f
         // A release can arrive in the same snapshot turn that flips isDraggingBack=false. That
@@ -1063,6 +1193,8 @@ internal fun SceneTransitionHost(
             ?: return@LaunchedEffect
         var releaseOwnerSettled = false
         try {
+        originOverscrollReturn.snapTo(originOverflow)
+        originOverscrollReturnToken = releaseToken
         val retainedGesturePivot = usesRetainedVirtualListPivot(gestureSourceScene, gestureTargetScene)
         val gestureOwnerWasReady = isGestureActive
         if (retainedGesturePivot && !gestureOwnerWasReady) {
@@ -1087,7 +1219,11 @@ internal fun SceneTransitionHost(
         val resetDetailToTopAfterCommit =
             commit && releaseSharedReturnRoute && !releaseSharedReturnSourceReady
         if (commit && releaseSharedReturnRoute && !releaseSharedReturnSourceReady) {
-            sharedCoverRegistry.retireAnyPhysicalSharedOwnership()
+            if (!sharedCoverRegistry.retireNestedChildForSceneOnlyReturn(
+                    gestureSourceScene.name, gestureTargetScene.name,
+                )) {
+                sharedCoverRegistry.retireAnyPhysicalSharedOwnership()
+            }
         }
         val releaseSharedElementId = sharedCoverRegistry.collectionSessionSnapshot()?.elementId.orEmpty()
         sharedCoverActorEligible =
@@ -1136,7 +1272,18 @@ internal fun SceneTransitionHost(
         isAnimating = true
         animProgress.snapTo(start)
         val animateStartedNs = System.nanoTime()
-        animProgress.animateTo(target, tween(duration, easing = settleEasing))
+        coroutineScope {
+            if (originOverflow != 0f) launch {
+                originOverscrollReturn.animateTo(
+                    0f,
+                    tween(
+                        collectionOverscrollReturnMillis(originOverflow),
+                        easing = Easing { 1f - collectionOverscrollReturnFraction(it) },
+                    ),
+                )
+            }
+            animProgress.animateTo(target, tween(duration, easing = settleEasing))
+        }
         TransitionPerfTrace.recordDuration(
             TransitionPerfStage.SCENE_ANIMATE,
             System.nanoTime() - animateStartedNs,
@@ -1177,12 +1324,20 @@ internal fun SceneTransitionHost(
             isAnimating = false
             frozenSceneContent = null
         }
+        if (commit) {
+            sharedCoverRegistry.restoreNestedParentAfterCommittedBack(
+                gestureSourceScene.name, gestureTargetScene.name,
+            )
+        }
         if (commit && !gestureTargetScene.isDetail()) {
             val retiredSharedOwner = sharedCoverRegistry.retireAnyPhysicalSharedOwnership()
             AppLogger.i(
                 "SceneHandoff",
                 "SHARED_OWNER_BARRIER kind=gesture scene=$gestureTargetScene retired=$retiredSharedOwner",
             )
+        }
+        if (commit && gestureSourceScene.isDetail()) {
+            onCollectionDetailReturnCommitted(gestureSourceScene)
         }
         if (resetDetailToTopAfterCommit) {
             onCollectionDetailOffscreenReturnCommitted(gestureSourceScene)
@@ -1233,12 +1388,13 @@ internal fun SceneTransitionHost(
         }
     }
 
+    val latestExclusionBoundsProvider by rememberUpdatedState(horizontalGestureExclusionBoundsProvider)
+    val latestExclusionBounds by rememberUpdatedState(horizontalGestureExclusionBounds)
     val gestureModifier = Modifier.pointerInput(
         gesturesEnabled,
         providerBackGesture,
         state.canNavigateBack(),
         state.currentScene,
-        horizontalGestureExclusionBounds,
         hostPositionInRoot
     ) {
         if (!gesturesEnabled) return@pointerInput
@@ -1264,7 +1420,10 @@ internal fun SceneTransitionHost(
                 x = down.position.x + hostPositionInRoot.x,
                 y = down.position.y + hostPositionInRoot.y,
             )
-            val miniPlayerBounds = horizontalGestureExclusionBounds
+            // Bounds move every scroll-morph frame. Sample at DOWN; never restart an in-flight
+            // page recognizer or recompose the whole navigation tree just to refresh hit testing.
+            val boundsProvider = latestExclusionBoundsProvider
+            val miniPlayerBounds = if (boundsProvider != null) boundsProvider() else latestExclusionBounds
             val expandedMiniPlayerBounds = miniPlayerBounds?.let { bounds ->
                 Rect(
                     // The mini player owns the whole horizontal pointer sequence, not just
@@ -1661,7 +1820,19 @@ internal fun SceneTransitionHost(
             PageMotion.FolderSharedBack -> genericPivotY
             else -> genericPivotY
         }
-        val fromSceneItemTransform: RetainedSceneItemTransform? = if (retainedVirtualListPivot) {
+        val sharedSpecWithDetailPivot = sharedSpec.copy(
+            detailPivotX = currentPivotX,
+            detailPivotY = currentPivotY,
+            originOverscrollXProvider = {
+                if (!usesDirectionalBackPivot || !retainedVirtualListPivot) 0f else {
+                    val overflow = if (state.isDraggingBack || originOverscrollReturnToken != state.dragBackReleaseToken) {
+                        collectionBackOriginOverscroll(state.dragBackRawProgress)
+                    } else originOverscrollReturn.value
+                    collectionBackOriginOffset(overflow, state.dragBackDirection, screenWidthPx)
+                }
+            },
+        )
+        val baseFromSceneItemTransform: RetainedSceneItemTransform? = if (retainedVirtualListPivot) {
             RetainedSceneItemTransform(
                 pivotX = fromPivotX,
                 pivotY = fromPivotY,
@@ -1681,10 +1852,11 @@ internal fun SceneTransitionHost(
                 },
             )
         } else null
-        val currentSceneItemTransform: RetainedSceneItemTransform? = if (retainedVirtualListPivot) {
+        val baseCurrentSceneItemTransform: RetainedSceneItemTransform? = if (retainedVirtualListPivot) {
             RetainedSceneItemTransform(
                 pivotX = currentPivotX,
                 pivotY = currentPivotY,
+                translationXProvider = { sharedSpecWithDetailPivot.originOverscrollXProvider?.invoke() ?: 0f },
                 scaleProvider = {
                     referenceGenericPivotScale(
                         motion = pageMotion,
@@ -1701,6 +1873,28 @@ internal fun SceneTransitionHost(
                 },
             )
         } else null
+        // Multi-column ItemToHeader uses rectangle mapping rather than GenericPivot.
+        // Swipe HeaderToItem deliberately keeps its directional pivot family.
+        val gridEndpoint = when (pageMotion) {
+            PageMotion.FolderSharedForward -> preparedSharedPair?.first
+            PageMotion.FolderSharedBack -> preparedSharedPair?.second.takeUnless { usesDirectionalBackPivot }
+            else -> null
+        }?.takeIf { it.layoutColumns > 1 }
+        val gridItemBounds = gridEndpoint?.itemViewportBounds?.takeIf {
+            it.width > 0f && it.height > 0f && screenWidthPx > 0f && screenHeightPx > 0f
+        }
+        val gridRectMotion = gridItemBounds?.let { collectionGridRectMotion(it, screenWidthPx, screenHeightPx) }
+        val detailRectMotion = gridItemBounds?.let { collectionDetailRectMotion(it, screenWidthPx, screenHeightPx) }
+        val fromSceneItemTransform = if (gridRectMotion != null) {
+            baseFromSceneItemTransform?.withCollectionRectMotion(gridRectMotion) {
+                1f - physicalVirtualListProgressProvider()
+            }
+        } else baseFromSceneItemTransform
+        val currentSceneItemTransform = if (detailRectMotion != null) {
+            baseCurrentSceneItemTransform?.withCollectionRectMotion(detailRectMotion) {
+                physicalVirtualListProgressProvider()
+            }
+        } else baseCurrentSceneItemTransform
         val preflightHomeCategoryMotion =
             !inTransition && state.isAnimatingBack && displayedScene in homeCategoryTransitionScenes
         // Predictive/sibling back is different from forward navigation: the target route is published
@@ -1742,7 +1936,7 @@ internal fun SceneTransitionHost(
         val topMenuSceneHandoffActive = (inTransition || chromePreparingScene != null) && topMenuExitScene != topMenuEnterScene
         CompositionLocalProvider(
             LocalSharedCoverRegistry provides sharedCoverRegistry,
-            LocalSharedTransitionSpec provides sharedSpec,
+            LocalSharedTransitionSpec provides sharedSpecWithDetailPivot,
             LocalSceneChromeAlpha provides SceneChromeAlpha(
                 // index scroller owns its alpha as a View property. Sample both the independent
                 // mode animator and the rare detached-swipe envelope in graphicsLayer instead of
@@ -2468,8 +2662,10 @@ internal fun SharedCoverOverlay(
 
             val fromRect = from.boundsInWindow
             val toRect = to.boundsInWindow
-            val sourceSidePx = fromRect.width.coerceAtLeast(1f)
-            val targetSidePx = toRect.width.coerceAtLeast(1f)
+            val sourceWidthPx = fromRect.width.coerceAtLeast(1f)
+            val sourceHeightPx = fromRect.height.coerceAtLeast(1f)
+            val targetWidthPx = toRect.width.coerceAtLeast(1f)
+            val targetHeightPx = toRect.height.coerceAtLeast(1f)
             val sourceCenterX = (fromRect.left + fromRect.right) * 0.5f
             val sourceCenterY = (fromRect.top + fromRect.bottom) * 0.5f
             val targetCenterX = (toRect.left + toRect.right) * 0.5f
@@ -2493,7 +2689,8 @@ internal fun SharedCoverOverlay(
             val promotedHandle = remember(
                 spec.transitionKey,
                 coverKey,
-                sourceSidePx.roundToInt(),
+                sourceWidthPx.roundToInt(),
+                sourceHeightPx.roundToInt(),
                 holderPromotedBitmap,
             ) {
                 if (holderPromotedBitmap != null) {
@@ -2501,8 +2698,8 @@ internal fun SharedCoverOverlay(
                 } else {
                     BitmapProvider.acquireBestThumbnail(
                         key = coverKey,
-                        targetWidth = sourceSidePx.roundToInt().coerceAtLeast(1),
-                        targetHeight = sourceSidePx.roundToInt().coerceAtLeast(1),
+                        targetWidth = sourceWidthPx.roundToInt().coerceAtLeast(1),
+                        targetHeight = sourceHeightPx.roundToInt().coerceAtLeast(1),
                         surface = ArtworkSurface.List,
                         aspectPolicy = ArtworkAspectPolicy.KeepAspect,
                     ) ?: BitmapProvider.acquireAny(
@@ -2539,8 +2736,8 @@ internal fun SharedCoverOverlay(
             }
             val imageModifier = Modifier
                 .requiredSize(
-                    width = with(density) { sourceSidePx.toDp() },
-                    height = with(density) { sourceSidePx.toDp() }
+                    width = with(density) { sourceWidthPx.toDp() },
+                    height = with(density) { sourceHeightPx.toDp() }
                 )
                 .graphicsLayer {
                     val progress = (spec.progressProvider?.invoke() ?: spec.progress)
@@ -2552,18 +2749,24 @@ internal fun SharedCoverOverlay(
                     // actor double-transforms the cover and loses the real swipe geometry.
                     val currentCenterX = lerp(sourceCenterX, targetCenterX, progress)
                     val currentCenterY = lerp(sourceCenterY, targetCenterY, progress)
-                    val currentSidePx = lerp(sourceSidePx, targetSidePx, progress).coerceAtLeast(1f)
-                    val uniformScale = currentSidePx / sourceSidePx
+                    val currentWidthPx = lerp(sourceWidthPx, targetWidthPx, progress).coerceAtLeast(1f)
+                    val currentHeightPx = lerp(sourceHeightPx, targetHeightPx, progress).coerceAtLeast(1f)
+                    val currentScaleX = currentWidthPx / sourceWidthPx
+                    val currentScaleY = currentHeightPx / sourceHeightPx
                     val radiusDp = lerp(from.radiusDp, to.radiusDp, progress)
 
-                    this.translationX = currentCenterX - overlayOriginInWindow.x - sourceSidePx * 0.5f
-                    this.translationY = currentCenterY - overlayOriginInWindow.y - sourceSidePx * 0.5f
-                    scaleX = uniformScale
-                    scaleY = uniformScale
+                    this.translationX = currentCenterX - overlayOriginInWindow.x - sourceWidthPx * 0.5f
+                    this.translationY = currentCenterY - overlayOriginInWindow.y - sourceHeightPx * 0.5f
+                    scaleX = currentScaleX
+                    scaleY = currentScaleY
                     transformOrigin = TransformOrigin.Center
                     alpha = 1f
                     clip = true
-                    shape = RoundedCornerShape((radiusDp / uniformScale.coerceAtLeast(0.001f)).dp)
+                    shape = SharedCoverScreenRadiusShape(
+                        radiusDp = radiusDp,
+                        scaleX = currentScaleX,
+                        scaleY = currentScaleY,
+                    )
                 }
 
             if (promotedImage != null) {
@@ -2571,7 +2774,7 @@ internal fun SharedCoverOverlay(
                     bitmap = promotedImage,
                     contentDescription = null,
                     modifier = imageModifier,
-                    contentScale = ContentScale.Fit,
+                    contentScale = ContentScale.Crop,
                     filterQuality = FilterQuality.High
                 )
             } else {
@@ -2579,9 +2782,9 @@ internal fun SharedCoverOverlay(
                     key = coverKey,
                     contentDescription = null,
                     modifier = imageModifier,
-                    contentScale = ContentScale.Fit,
-                    targetWidth = sourceSidePx.roundToInt().coerceAtLeast(1),
-                    targetHeight = sourceSidePx.roundToInt().coerceAtLeast(1),
+                    contentScale = ContentScale.Crop,
+                    targetWidth = sourceWidthPx.roundToInt().coerceAtLeast(1),
+                    targetHeight = sourceHeightPx.roundToInt().coerceAtLeast(1),
                     surface = ArtworkSurface.List,
                     aspectPolicy = ArtworkAspectPolicy.KeepAspect,
                     fadeInMillis = 0,

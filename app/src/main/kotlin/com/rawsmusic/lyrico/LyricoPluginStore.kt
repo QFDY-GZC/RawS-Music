@@ -141,82 +141,7 @@ class LyricoPluginStore private constructor(private val context: Context) {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 extractArchive(input = input, target = temp)
             } ?: error("Unable to open plugin archive")
-
-            val manifests = temp.walkTopDown()
-                .filter { it.isFile && it.name == MANIFEST_FILE }
-                .take(MAX_PLUGINS_PER_ARCHIVE + 1)
-                .toList()
-            require(manifests.isNotEmpty()) { "manifest.json was not found" }
-            require(manifests.size <= MAX_PLUGINS_PER_ARCHIVE) { "Archive contains too many plugins" }
-
-            val candidates = manifests.map { manifestFile ->
-                runCatching {
-                    require(manifestFile.length() <= MAX_MANIFEST_BYTES) { "manifest.json is too large" }
-                    val manifest = readManifest(manifestFile)
-                    val sourceRoot = manifestFile.parentFile ?: error("Invalid plugin directory")
-                    validateInstalledPlugin(sourceRoot, manifest)
-                    ImportCandidate(manifest, sourceRoot)
-                }
-            }
-            val duplicateIds = candidates.mapNotNull { it.getOrNull()?.manifest?.id }
-                .groupingBy { it }
-                .eachCount()
-                .filterValues { it > 1 }
-                .keys
-            val installed = mutableListOf<InstalledLyricoPlugin>()
-            val failures = mutableListOf<String>()
-            candidates.forEachIndexed { index, candidateResult ->
-                candidateResult.fold(
-                    onSuccess = { candidate ->
-                        if (candidate.manifest.id in duplicateIds) {
-                            val reason = "${candidate.manifest.name}: duplicate plugin id (${candidate.manifest.id})"
-                            failures += reason
-                            Log.w(
-                                TAG,
-                                "Lyrico import failed stage=duplicate index=${index + 1}/${candidates.size} " +
-                                    "name=${candidate.manifest.name} id=${candidate.manifest.id} reason=$reason"
-                            )
-                        } else {
-                            runCatching {
-                                installAtomically(candidate.sourceRoot, candidate.manifest)
-                            }.onSuccess(installed::add)
-                                .onFailure { error ->
-                                    val message = error.message ?: error.javaClass.simpleName
-                                    val reason = "${candidate.manifest.name}: $message"
-                                    failures += reason
-                                    Log.w(
-                                        TAG,
-                                        "Lyrico import failed stage=install index=${index + 1}/${candidates.size} " +
-                                            "name=${candidate.manifest.name} id=${candidate.manifest.id} " +
-                                            "source=${candidate.sourceRoot.relativeToOrSelf(temp).path} reason=$message",
-                                        error,
-                                    )
-                                }
-                        }
-                    },
-                    onFailure = { error ->
-                        val message = error.message ?: error.javaClass.simpleName
-                        val manifestPath = manifests.getOrNull(index)
-                            ?.relativeToOrSelf(temp)
-                            ?.path
-                            .orEmpty()
-                        val reason = "plugin ${index + 1}: $message"
-                        failures += reason
-                        Log.w(
-                            TAG,
-                            "Lyrico import failed stage=validate index=${index + 1}/${candidates.size} " +
-                                "manifest=$manifestPath reason=$message",
-                            error,
-                        )
-                    }
-                )
-            }
-            require(installed.isNotEmpty()) { failures.joinToString("; ") }
-            Log.i(TAG, "Imported ${installed.size} Lyrico source(s), failed=${failures.size}")
-            failures.forEachIndexed { index, failure ->
-                Log.w(TAG, "Lyrico import failure ${index + 1}/${failures.size}: $failure")
-            }
-            LyricoPluginImportResult(plugins = installed, failures = failures)
+            installPreparedDirectory(temp)
         } finally {
             temp.deleteRecursively()
         }
@@ -227,6 +152,87 @@ class LyricoPluginStore private constructor(private val context: Context) {
             LyricoPluginImportResult(error = throwable.message ?: throwable.javaClass.simpleName)
         }
     )
+
+    private fun installPreparedDirectory(
+        preparedRoot: File,
+        missingManifestMessage: String = "manifest.json was not found",
+    ): LyricoPluginImportResult {
+        val manifests = preparedRoot.walkTopDown()
+            .filter { it.isFile && it.name == MANIFEST_FILE }
+            .take(MAX_PLUGINS_PER_ARCHIVE + 1)
+            .toList()
+        require(manifests.isNotEmpty()) { missingManifestMessage }
+        require(manifests.size <= MAX_PLUGINS_PER_ARCHIVE) { "Archive contains too many plugins" }
+
+        val candidates = manifests.map { manifestFile ->
+            runCatching {
+                require(manifestFile.length() <= MAX_MANIFEST_BYTES) { "manifest.json is too large" }
+                val manifest = readManifest(manifestFile)
+                val sourceRoot = manifestFile.parentFile ?: error("Invalid plugin directory")
+                validateInstalledPlugin(sourceRoot, manifest)
+                ImportCandidate(manifest, sourceRoot)
+            }
+        }
+        val duplicateIds = candidates.mapNotNull { it.getOrNull()?.manifest?.id }
+            .groupingBy { it }
+            .eachCount()
+            .filterValues { it > 1 }
+            .keys
+        val installed = mutableListOf<InstalledLyricoPlugin>()
+        val failures = mutableListOf<String>()
+        candidates.forEachIndexed { index, candidateResult ->
+            candidateResult.fold(
+                onSuccess = { candidate ->
+                    if (candidate.manifest.id in duplicateIds) {
+                        val reason = "${candidate.manifest.name}: duplicate plugin id (${candidate.manifest.id})"
+                        failures += reason
+                        Log.w(
+                            TAG,
+                            "Lyrico import failed stage=duplicate index=${index + 1}/${candidates.size} " +
+                                "name=${candidate.manifest.name} id=${candidate.manifest.id} reason=$reason"
+                        )
+                    } else {
+                        runCatching {
+                            installAtomically(candidate.sourceRoot, candidate.manifest)
+                        }.onSuccess(installed::add)
+                            .onFailure { error ->
+                                val message = error.message ?: error.javaClass.simpleName
+                                val reason = "${candidate.manifest.name}: $message"
+                                failures += reason
+                                Log.w(
+                                    TAG,
+                                    "Lyrico import failed stage=install index=${index + 1}/${candidates.size} " +
+                                        "name=${candidate.manifest.name} id=${candidate.manifest.id} " +
+                                        "source=${candidate.sourceRoot.relativeToOrSelf(preparedRoot).path} reason=$message",
+                                    error,
+                                )
+                            }
+                    }
+                },
+                onFailure = { error ->
+                    val message = error.message ?: error.javaClass.simpleName
+                    val manifestPath = manifests.getOrNull(index)
+                        ?.relativeToOrSelf(preparedRoot)
+                        ?.path
+                        .orEmpty()
+                    val reason = "plugin ${index + 1}: $message"
+                    failures += reason
+                    Log.w(
+                        TAG,
+                        "Lyrico import failed stage=validate index=${index + 1}/${candidates.size} " +
+                            "manifest=$manifestPath reason=$message",
+                        error,
+                    )
+                }
+            )
+        }
+        require(installed.isNotEmpty()) { failures.joinToString("; ") }
+        Log.i(TAG, "Imported ${installed.size} Lyrico source(s), failed=${failures.size}")
+        failures.forEachIndexed { index, failure ->
+            Log.w(TAG, "Lyrico import failure ${index + 1}/${failures.size}: $failure")
+        }
+        return LyricoPluginImportResult(plugins = installed, failures = failures)
+    }
 
     fun runtimeHealthCheck(): Result<Unit> = runCatching {
         val cacheRoot = File(context.cacheDir, "lyrico_runtime_health")
@@ -371,9 +377,17 @@ class LyricoPluginStore private constructor(private val context: Context) {
         return child
     }
 
-    private fun readManifest(file: File): LyricoPluginManifest =
-        gson.fromJson(file.readText(), LyricoPluginManifest::class.java)
+    private fun readManifest(file: File): LyricoPluginManifest {
+        val manifest = gson.fromJson(file.readText(), LyricoPluginManifest::class.java)
             ?: error("Unable to parse manifest.json")
+        val locales = context.resources.configuration.locales
+        val strings = LyricoPluginStrings.load(
+            root = file.parentFile ?: error("Invalid plugin directory"),
+            spec = manifest.i18n,
+            requestedLocaleTags = (0 until locales.size()).map { locales[it].toLanguageTag() },
+        )
+        return LyricoPluginDisplayMetadata.resolve(manifest, strings)
+    }
 
     private fun directorySize(directory: File): Long =
         directory.walkTopDown().filter { it.isFile }.sumOf { it.length() }

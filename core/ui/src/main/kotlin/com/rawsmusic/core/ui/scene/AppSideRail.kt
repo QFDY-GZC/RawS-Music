@@ -33,6 +33,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -98,6 +99,9 @@ internal fun AppSideRailHost(
     content: @Composable () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
+    val sideRailMaxWidthPx = with(density) { windowLayoutProfile.sideRailMaxWidth.toPx() }
     // The collapsed rail may be revealed from the whole left half of the screen. Direction
     // arbitration below still requires a rightward, horizontally dominant drag, so vertical list
     // scrolling and leftward gestures remain available.
@@ -143,7 +147,7 @@ internal fun AppSideRailHost(
         modifier = modifier
             .fillMaxSize()
             .clipToBounds()
-            .pointerInput(enabled) {
+            .pointerInput(enabled, sideRailMaxWidthPx) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(
@@ -151,7 +155,9 @@ internal fun AppSideRailHost(
                         pass = PointerEventPass.Initial,
                     )
                     val startedExpanded = progress > 0f
-                    val railWidthPx = (size.width * SIDE_RAIL_WIDTH_FRACTION).coerceAtLeast(1f)
+                    val railWidthPx = (size.width * SIDE_RAIL_WIDTH_FRACTION)
+                        .coerceAtMost(sideRailMaxWidthPx)
+                        .coerceAtLeast(1f)
                     val revealStartLimitPx = size.width * SIDE_RAIL_REVEAL_START_FRACTION
                     if (!startedExpanded && down.position.x > revealStartLimitPx) {
                         return@awaitEachGesture
@@ -219,7 +225,10 @@ internal fun AppSideRailHost(
     ) { measurables, constraints ->
         val width = constraints.maxWidth
         val height = constraints.maxHeight
-        val railWidthInt = (width * SIDE_RAIL_WIDTH_FRACTION).toInt().coerceAtMost(width)
+        val railWidthInt = (width * SIDE_RAIL_WIDTH_FRACTION)
+            .coerceAtMost(sideRailMaxWidthPx)
+            .toInt()
+            .coerceIn(1, width.coerceAtLeast(1))
         val backgroundPlaceable = measurables[0].measure(
             constraints.copy(
                 minWidth = width,

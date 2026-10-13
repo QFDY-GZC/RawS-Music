@@ -1,5 +1,25 @@
 package com.rawsmusic.core.ui.widget.virtuallist
 
+// The rebound starts from the resisted layout scale, not the unbounded finger span.
+@Suppress("UNUSED_PARAMETER")
+internal fun virtualListBoundaryReboundDurationMs(rawPull: Float, visibleScale: Float): Int =
+    maxOf(350, (kotlin.math.abs(1f - visibleScale) / 2f * 1000f).toInt())
+
+internal fun retainNativeEndpointDuringPinch(androidOwner: Boolean, customProvider: Boolean): Boolean =
+    androidOwner && !customProvider
+
+/**
+ * A pinch at the terminal mode has no transition population. Keep the endpoint's elastic renderer
+ * alive through both the held gesture and rebound; only a real layout transition can replace it.
+ */
+@Suppress("UNUSED_PARAMETER")
+internal fun shouldUsePhysicalInternalZoomOwner(
+    persistentAndroidOwner: Boolean,
+    customProvider: Boolean,
+    transitioning: Boolean,
+    pinching: Boolean,
+): Boolean = persistentAndroidOwner && !customProvider && transitioning
+
 /**
  * The settled viewport clips ordinary scrolling, but a retained transition holder must be allowed to
  * transform beyond the unscaled viewport. The real scene/window boundary remains the final clip owner.

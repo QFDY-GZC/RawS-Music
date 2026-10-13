@@ -60,6 +60,11 @@ private data class PhysicalHolderOrder(
     val slotId: Int,
 )
 
+private data class StashedPromotedHolderView(
+    val view: RawVirtualListHolderView,
+    val sourceSlotId: Int,
+)
+
 @TargetApi(Build.VERSION_CODES.Q)
 internal class RawVirtualListPresentationView(
     context: Context,
@@ -68,6 +73,8 @@ internal class RawVirtualListPresentationView(
     private var runtime: VirtualListSettledNodeRuntime? = null
     private var externalTransform: RetainedSceneItemTransform? = null
     private var presentationVisibleProvider: () -> Boolean = { true }
+    private var promotedHeaderEdgeOvershootProvider: () -> Float = { 0f }
+    private var promotedHeaderEdgeInvalidationOwner: VirtualListScrollPositionOwner? = null
     private var parentCompositionContext: CompositionContext? = null
 
     private val rowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -82,12 +89,16 @@ internal class RawVirtualListPresentationView(
     private var promotedHolderView: RawVirtualListHolderView? = null
     private var promotedSourceSlotId: Int = -1
     private var promotedElementId: String = ""
+    private val stashedPromotedViews = LinkedHashMap<String, StashedPromotedHolderView>()
+    private val retainedHeaderOwnership = RetainedHeaderOwnership()
+    private var retainedHeaderTransform: RetainedSceneItemTransform? = null
     private var promotedTransitionKey: String = ""
     private var promotedStartRectInWindow: RectF? = null
     private var promotedStartRadiusPx: Float = 0f
     private var promotedCurrentVisibleRadiusPx: Float = 0f
     private var promotedTarget: SharedCoverSnapshot? = null
     private var promotedProgressProvider: (() -> Float)? = null
+    private var promotedOriginOverscrollXProvider: (() -> Float)? = null
     private val hostLocationInWindow = IntArray(2)
     private var lastStructureGeneration = Long.MIN_VALUE
     private var syncPending = true
@@ -99,10 +110,26 @@ internal class RawVirtualListPresentationView(
     private var ordinaryReserveWarmupPosted = false
 
     private var frameClipEnabled = false
+    /**
+     * A custom holder whose Compose content is being dragged across sibling holders (HOME card
+     * reorder). It is drawn after every ordinary holder and child clipping is released while it is
+     * lifted, so the dragged tile stays visible above the neighbouring rows.
+     */
+    private var liftedCustomHolder: View? = null
     private var frameClipLeft = 0f
     private var frameClipTop = 0f
     private var frameClipRight = 0f
     private var frameClipBottom = 0f
+    private val promotedHeaderEdgeInvalidator: () -> Unit = {
+        if (isAttachedToWindow && promotedHolderView != null && promotedTarget != null) {
+            // The promoted AA View is a real Android child and can outlive/re-enter a page while the
+            // Compose settled-node shell is being rebound. Sample the same authoritative edge clock
+            // directly here so its header geometry never depends on a transient Node subscription.
+            applyPromotedGeometry()
+            promotedHolderView?.invalidate()
+            invalidate()
+        }
+    }
 
     init {
         layoutRequestBarrier = VirtualListLayoutRequestBarrier()
@@ -139,11 +166,20 @@ internal class RawVirtualListPresentationView(
         nextRuntime: VirtualListSettledNodeRuntime,
         nextExternalTransform: RetainedSceneItemTransform?,
         nextPresentationVisibleProvider: () -> Boolean,
+        nextPromotedHeaderEdgeOvershootProvider: () -> Float,
+        nextPromotedHeaderEdgeInvalidationOwner: VirtualListScrollPositionOwner,
         nextParentCompositionContext: CompositionContext,
     ) {
         val runtimeChanged = runtime !== nextRuntime
         val transformChanged = externalTransform !== nextExternalTransform
         val visibilityProviderChanged = presentationVisibleProvider !== nextPresentationVisibleProvider
+        val promotedEdgeProviderChanged =
+            promotedHeaderEdgeOvershootProvider !== nextPromotedHeaderEdgeOvershootProvider
+        val promotedEdgeOwnerChanged =
+            promotedHeaderEdgeInvalidationOwner !== nextPromotedHeaderEdgeInvalidationOwner
+        if (promotedEdgeOwnerChanged && isAttachedToWindow) {
+            promotedHeaderEdgeInvalidationOwner?.removeRenderInvalidationListener(promotedHeaderEdgeInvalidator)
+        }
         if (runtimeChanged) {
             runtime?.let { previous ->
                 previous.detachInvalidator(this)
@@ -159,12 +195,20 @@ internal class RawVirtualListPresentationView(
         }
         externalTransform = nextExternalTransform
         presentationVisibleProvider = nextPresentationVisibleProvider
+        promotedHeaderEdgeOvershootProvider = nextPromotedHeaderEdgeOvershootProvider
+        promotedHeaderEdgeInvalidationOwner = nextPromotedHeaderEdgeInvalidationOwner
+        if (promotedEdgeOwnerChanged && isAttachedToWindow) {
+            nextPromotedHeaderEdgeInvalidationOwner.addRenderInvalidationListener(promotedHeaderEdgeInvalidator)
+        }
         val compositionContextChanged = parentCompositionContext !== nextParentCompositionContext
         parentCompositionContext = nextParentCompositionContext
         if (compositionContextChanged) {
             customHolderViews.values.forEach { it.updateParentCompositionContext(nextParentCompositionContext) }
         }
-        if (runtimeChanged || transformChanged || visibilityProviderChanged || compositionContextChanged) scheduleSync()
+        if (
+            runtimeChanged || transformChanged || visibilityProviderChanged ||
+            promotedEdgeProviderChanged || promotedEdgeOwnerChanged || compositionContextChanged
+        ) scheduleSync()
         if (isAttachedToWindow) {
             val visible = isPresentationVisible()
             updateMarqueeOwnership(visible && nextRuntime.presentationHasMarquee())
@@ -176,6 +220,7 @@ internal class RawVirtualListPresentationView(
     fun unbind() {
         cancelFrame()
         updateMarqueeOwnership(false)
+        promotedHeaderEdgeInvalidationOwner?.removeRenderInvalidationListener(promotedHeaderEdgeInvalidator)
         runtime?.let { bound ->
             bound.detachInvalidator(this)
             bound.detachPhysicalSharedHost(this)
@@ -187,6 +232,8 @@ internal class RawVirtualListPresentationView(
         externalTransform = null
         parentCompositionContext = null
         presentationVisibleProvider = { true }
+        promotedHeaderEdgeOvershootProvider = { 0f }
+        promotedHeaderEdgeInvalidationOwner = null
         syncPending = false
         layoutRequestBarrier?.reset()
     }
@@ -196,6 +243,7 @@ internal class RawVirtualListPresentationView(
         viewTreeObserver.addOnPreDrawListener(this)
         val boundRuntime = runtime ?: return
         boundRuntime.attachInvalidator(this, ::invalidateFromRuntime)
+        promotedHeaderEdgeInvalidationOwner?.addRenderInvalidationListener(promotedHeaderEdgeInvalidator)
         AppLogger.i(
             VIEW_HOST_TRACE_TAG,
             "VIEWGROUP_ATTACH host=${System.identityHashCode(this)} runtime=${System.identityHashCode(boundRuntime)} holders=${boundRuntime.holderCount}",
@@ -209,6 +257,7 @@ internal class RawVirtualListPresentationView(
     override fun onDetachedFromWindow() {
         if (viewTreeObserver.isAlive) viewTreeObserver.removeOnPreDrawListener(this)
         val boundRuntime = runtime
+        promotedHeaderEdgeInvalidationOwner?.removeRenderInvalidationListener(promotedHeaderEdgeInvalidator)
         if (boundRuntime != null) {
             AppLogger.i(
                 VIEW_HOST_TRACE_TAG,
@@ -287,24 +336,65 @@ internal class RawVirtualListPresentationView(
         drawingOrderDirty = true
     }
 
-    override fun onViewRemoved(child: View) {
-        super.onViewRemoved(child)
-        drawingOrderDirty = true
-    }
-
     override fun getChildDrawingOrder(childCount: Int, drawingPosition: Int): Int =
         if (!drawingOrderDirty && childDrawingOrder.size == childCount) {
             childDrawingOrder[drawingPosition]
         } else drawingPosition
 
-    private fun drawOrdinaryChildren(canvas: Canvas, promoted: View) {
+    internal fun liftCustomHolder(holder: View, lifted: Boolean) {
+        if (holder.parent !== this) return
+        if (lifted) {
+            if (liftedCustomHolder === holder) return
+            liftedCustomHolder = holder
+            clipChildren = false
+        } else {
+            if (liftedCustomHolder !== holder) return
+            liftedCustomHolder = null
+            clipChildren = true
+        }
+        invalidate()
+    }
+
+    override fun onViewRemoved(child: View) {
+        super.onViewRemoved(child)
+        drawingOrderDirty = true
+        if (liftedCustomHolder === child) {
+            liftedCustomHolder = null
+            clipChildren = true
+        }
+    }
+
+    private fun drawOrdinaryChildren(canvas: Canvas, promoted: View?) {
+        val lifted = liftedCustomHolder
         for (position in 0 until childCount) {
             val child = getChildAt(getChildDrawingOrder(childCount, position))
-            if (child !== promoted && child.visibility == VISIBLE) drawChild(canvas, child, drawingTime)
+            if (child !== promoted && child !== lifted && child.visibility == VISIBLE &&
+                stashedPromotedViews.values.none { it.view === child }) {
+                drawChild(canvas, child, drawingTime)
+            }
+        }
+        if (lifted != null && lifted !== promoted && lifted.parent === this && lifted.visibility == VISIBLE) {
+            drawChild(canvas, lifted, drawingTime)
         }
     }
 
     override fun dispatchDraw(canvas: Canvas) {
+        // Keep the same outgoing header View until its retained provider has finished moving.
+        for ((elementId, stashed) in stashedPromotedViews) {
+            if (!retainedHeaderOwnership.owns(elementId)) continue
+            val transform = retainedHeaderTransform
+            val alpha = transform?.alphaProvider?.invoke()?.coerceIn(0f, 1f) ?: 1f
+            if (alpha <= 0f) continue
+            val save = if (alpha < 1f) canvas.saveLayerAlpha(
+                0f, 0f, width.toFloat(), height.toFloat(), (alpha * 255f).roundToInt(),
+            ) else canvas.save()
+            if (transform != null) {
+                val scale = transform.scaleProvider()
+                canvas.scale(scale, scale, transform.pivotX, transform.pivotY)
+            }
+            drawChild(canvas, stashed.view, drawingTime)
+            canvas.restoreToCount(save)
+        }
         val promoted = promotedHolderView
         if (promoted != null && promoted.visibility == VISIBLE) {
             if (frameClipEnabled) {
@@ -323,10 +413,10 @@ internal class RawVirtualListPresentationView(
         if (frameClipEnabled) {
             val save = canvas.save()
             canvas.clipRect(frameClipLeft, frameClipTop, frameClipRight, frameClipBottom)
-            super.dispatchDraw(canvas)
+            drawOrdinaryChildren(canvas, promoted)
             canvas.restoreToCount(save)
         } else {
-            super.dispatchDraw(canvas)
+            drawOrdinaryChildren(canvas, promoted)
         }
     }
 
@@ -1052,6 +1142,13 @@ internal class RawVirtualListPresentationView(
             }
             if (promoted.parent === this) removeView(promoted)
         }
+        for (stashed in stashedPromotedViews.values) {
+            if (stashed.sourceSlotId >= 0 && stashed.sourceSlotId !in releasedOrdinarySlots) {
+                boundRuntime.onPhysicalHolderRealDetach(stashed.sourceSlotId)
+            }
+            if (stashed.view.parent === this) removeView(stashed.view)
+        }
+        stashedPromotedViews.clear()
         clearPromotionState()
         activeSlots.clear()
         pendingArtworkInvalidations.clear()
@@ -1204,11 +1301,62 @@ internal class RawVirtualListPresentationView(
         return true
     }
 
+    override fun stashPromotedSlot(elementId: String): Boolean {
+        val promoted = promotedHolderView ?: return false
+        if (elementId.isBlank() || promotedElementId != elementId) return false
+        stashedPromotedViews.remove(elementId)?.let { stale ->
+            stale.view.setPromotedArtworkBitmap(null)
+            stale.view.setPromotedClipRadius(null)
+            if (stale.view.parent === this) removeView(stale.view)
+        }
+        retainedHeaderOwnership.park(elementId)
+        retainedHeaderTransform = null
+        promoted.visibility = VISIBLE
+        promotedProgressProvider = null
+        stashedPromotedViews[elementId] = StashedPromotedHolderView(
+            view = promoted,
+            sourceSlotId = promotedSourceSlotId,
+        )
+        clearPromotionState()
+        requestLayout()
+        invalidate()
+        return true
+    }
+
+    override fun updateRetainedHeader(elementId: String?, transform: RetainedSceneItemTransform?) {
+        retainedHeaderOwnership.publish(elementId)
+        retainedHeaderTransform = transform
+        for ((id, stashed) in stashedPromotedViews) {
+            stashed.view.visibility = if (retainedHeaderOwnership.owns(id)) VISIBLE else INVISIBLE
+        }
+        invalidate()
+    }
+
+    override fun activateStashedSlot(elementId: String): Boolean {
+        if (elementId.isBlank() || promotedHolderView != null) return false
+        val stashed = stashedPromotedViews.remove(elementId) ?: return false
+        val child = stashed.view
+        promotedHolderView = child
+        promotedSourceSlotId = stashed.sourceSlotId
+        promotedElementId = elementId
+        promotedTransitionKey = ""
+        promotedProgressProvider = null
+        promotedTarget = null
+        child.visibility = VISIBLE
+        promotedStartRectInWindow = currentPromotedCoverRectInWindow(child)
+        promotedStartRadiusPx = child.coverRadiusPx * minOf(child.scaleX, child.scaleY).coerceAtLeast(0.001f)
+        promotedCurrentVisibleRadiusPx = promotedStartRadiusPx
+        requestLayout()
+        invalidate()
+        return true
+    }
+
     override fun updatePromotedGeometry(
         transitionKey: String,
         target: SharedCoverSnapshot,
         progressProvider: (() -> Float)?,
         animateFromCurrent: Boolean,
+        originOverscrollXProvider: (() -> Float)?,
     ) {
         val child = promotedHolderView ?: return
         if (target.elementId != promotedElementId) return
@@ -1219,6 +1367,7 @@ internal class RawVirtualListPresentationView(
         promotedTransitionKey = transitionKey
         promotedTarget = target
         promotedProgressProvider = progressProvider
+        promotedOriginOverscrollXProvider = originOverscrollXProvider
         applyPromotedGeometry()
         invalidate()
         if (progressProvider != null) postFrame()
@@ -1281,6 +1430,19 @@ internal class RawVirtualListPresentationView(
         return promoted != null
     }
 
+    override fun clearStashedPromotedSlots(): Int {
+        val count = stashedPromotedViews.size
+        for (stashed in stashedPromotedViews.values) {
+            stashed.view.setPromotedArtworkBitmap(null)
+            stashed.view.setPromotedClipRadius(null)
+            if (stashed.view.parent === this) removeView(stashed.view)
+        }
+        stashedPromotedViews.clear()
+        requestLayout()
+        invalidate()
+        return count
+    }
+
     private fun clearPromotionState() {
         promotedHolderView = null
         promotedSourceSlotId = -1
@@ -1322,6 +1484,16 @@ internal class RawVirtualListPresentationView(
         } ?: targetSnapshot.boundsInWindow.let { windowBounds ->
             RectF(windowBounds.left, windowBounds.top, windowBounds.right, windowBounds.bottom)
         }
+        // The collection header keeps the migrated physical artwork view as the settled owner.
+        // On top-edge pull, store the signed edge in the artwork draw state; onDraw then
+        // expands the AA draw area by that amount so the header never exposes empty pixels. Raw's
+        // promoted holder already derives centerCrop from its screen-space target rect, so extend
+        // the *header target* itself by the same positive edge. This keeps the existing physical
+        // owner, clipBounds and crop matrix coherent across first entry, return/re-entry and stash
+        // activation instead of relying on the Compose fallback artwork being visible.
+        if (targetSnapshot.itemViewportBounds == null) {
+            target.bottom += promotedHeaderEdgeOvershootProvider().coerceAtLeast(0f)
+        }
         val start = promotedStartRectInWindow ?: currentPromotedCoverRectInWindow(child).also {
             promotedStartRectInWindow = it
         }
@@ -1344,7 +1516,8 @@ internal class RawVirtualListPresentationView(
         child.pivotY = 0f
         child.scaleX = sx
         child.scaleY = sy
-        child.translationX = left - hostLocationInWindow[0] - child.coverLeft * sx
+        child.translationX = left - hostLocationInWindow[0] - child.coverLeft * sx +
+            (if (promotedProgressProvider != null) promotedOriginOverscrollXProvider?.invoke() ?: 0f else 0f)
         child.translationY = top - hostLocationInWindow[1] - child.coverTop * sy
         child.alpha = 1f
         child.visibility = VISIBLE
@@ -1530,6 +1703,7 @@ private class RawVirtualListTextView(context: Context) : View(context) {
     private var targetTextSizePx = 0f
     private var rasterTextSizePx = 0f
     private val marqueeMotion = VirtualListMarqueeMotion()
+    private var wasMarqueeGeometryAnimating = false
     private val marqueeMetrics = VirtualListTextEndpointMetrics()
     // Retained text scene nodes. The View display list records these node
     // references once; scene progress subsequently changes only RenderNode properties/bounds.
@@ -1547,6 +1721,7 @@ private class RawVirtualListTextView(context: Context) : View(context) {
 
     override fun onDetachedFromWindow() {
         marqueeMotion.reset()
+        wasMarqueeGeometryAnimating = false
         super.onDetachedFromWindow()
     }
 
@@ -1608,7 +1783,11 @@ private class RawVirtualListTextView(context: Context) : View(context) {
             enabled = state.marqueeEnabled,
             visible = isShown && state.alpha > 0f && ((parent as? View)?.alpha ?: 1f) > 0f,
             layoutChanged = textLayoutChanged,
+            preserveProgress = !textChanged &&
+                (state.preserveMarqueeProgress || wasMarqueeGeometryAnimating),
         )
+        // The final settled publication may change the raster envelope one last time.
+        wasMarqueeGeometryAnimating = state.preserveMarqueeProgress
         var changed = false
         if (sceneLeft != state.left) { sceneLeft = state.left; changed = true }
         if (sceneTop != state.top) { sceneTop = state.top; changed = true }
@@ -2140,6 +2319,13 @@ private class RawVirtualListHolderView(context: Context) : ViewGroup(context) {
         )
         if (state.updateInternalChildren) {
             artworkView.applyMotionRadius(state.coverRadiusPx)
+        }
+        // One-sided GenericPivot holders keep fixed internal geometry, but their visible
+        // text animations remain live just like a retained text View's own animation callback.
+        if (shouldAdvanceVirtualListText(
+                state.updateInternalChildren,
+                state.titleText.marqueeEnabled || state.subtitleText.marqueeEnabled || state.metaText.marqueeEnabled,
+            )) {
             titleView.applyState(state.titleText)
             subtitleView.applyState(state.subtitleText)
             metaView.applyState(state.metaText)
@@ -2294,23 +2480,31 @@ private class RawVirtualListHolderView(context: Context) : ViewGroup(context) {
         super.dispatchDraw(canvas)
         val bitmap = promotedArtworkBitmap?.takeIf { !it.isRecycled }
         if (bitmap != null && coverWidth > 0 && coverHeight > 0 && bitmap.width > 0 && bitmap.height > 0) {
-            // Keep one artwork-view scale type while ItemToHeader only changes its
-            // SceneParams. Raw's list provider is KeepAspect, so the promoted high-res raster must
-            // occupy the same fitted visible rect instead of silently switching to center-crop.
-            val scale = minOf(
-                coverWidth.toFloat() / bitmap.width.toFloat(),
-                coverHeight.toFloat() / bitmap.height.toFloat(),
-            )
-            val drawnWidth = bitmap.width * scale
-            val drawnHeight = bitmap.height * scale
-            val fittedLeft = coverLeft + (coverWidth - drawnWidth) * 0.5f
-            val fittedTop = coverTop + (coverHeight - drawnHeight) * 0.5f
-            promotedArtworkSrc.set(0, 0, bitmap.width, bitmap.height)
+            // The collection header keeps the migrated physical artwork view but changes its
+            // presentation to centerCrop. The holder itself is independently scaled on X/Y while
+            // ItemToHeader interpolates a square/list rect into the wide header rect. Cropping in
+            // the unscaled local square would therefore still produce a stretched raster. Derive
+            // the crop from the *screen-space* cover aspect so the promoted holder and the terminal
+            // Compose header have the same centerCrop matrix on every frame, including the handoff
+            // frame where ownership changes from the physical holder back to the real header.
+            val screenWidth = coverWidth.toFloat() * scaleX.coerceAtLeast(0.0001f)
+            val screenHeight = coverHeight.toFloat() * scaleY.coerceAtLeast(0.0001f)
+            val targetAspect = screenWidth / screenHeight.coerceAtLeast(0.0001f)
+            val bitmapAspect = bitmap.width.toFloat() / bitmap.height.toFloat()
+            if (bitmapAspect > targetAspect) {
+                val srcWidth = (bitmap.height * targetAspect).roundToInt().coerceIn(1, bitmap.width)
+                val srcLeft = ((bitmap.width - srcWidth) / 2).coerceAtLeast(0)
+                promotedArtworkSrc.set(srcLeft, 0, srcLeft + srcWidth, bitmap.height)
+            } else {
+                val srcHeight = (bitmap.width / targetAspect).roundToInt().coerceIn(1, bitmap.height)
+                val srcTop = ((bitmap.height - srcHeight) / 2).coerceAtLeast(0)
+                promotedArtworkSrc.set(0, srcTop, bitmap.width, srcTop + srcHeight)
+            }
             promotedArtworkDst.set(
-                fittedLeft,
-                fittedTop,
-                fittedLeft + drawnWidth,
-                fittedTop + drawnHeight,
+                coverLeft.toFloat(),
+                coverTop.toFloat(),
+                (coverLeft + coverWidth).toFloat(),
+                (coverTop + coverHeight).toFloat(),
             )
             val innerSave = canvas.save()
             val visibleRadius = (promotedRadius ?: 0f).coerceIn(
@@ -2533,3 +2727,21 @@ internal enum class VirtualListPresentationHostBackend {
 
 internal val ReferenceLibraryPresentationHostBackend =
     VirtualListPresentationHostBackend.ANDROID_VIEW
+
+/**
+ * Lift the VirtualList custom holder that hosts the calling composition above its sibling holders.
+ * Used by HOME card reorder: each card row is its own holder View, so without lifting a card
+ * dragged into another row is clipped to (and painted beneath) the neighbouring holders.
+ */
+internal fun liftVirtualListCustomHolder(composeHostView: View, lifted: Boolean) {
+    var child: View = composeHostView
+    var parent = child.parent
+    while (parent is View) {
+        if (parent is RawVirtualListPresentationView) {
+            parent.liftCustomHolder(child, lifted)
+            return
+        }
+        child = parent
+        parent = child.parent
+    }
+}

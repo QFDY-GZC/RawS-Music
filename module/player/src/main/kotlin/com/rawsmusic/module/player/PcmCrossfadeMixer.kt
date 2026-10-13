@@ -15,6 +15,13 @@ internal object PcmCrossfadeMixer {
 
     fun gainIn(progress: Float): Float = progress.coerceIn(0f, 1f)
 
+    fun scaleInPlace(buffer: ByteArray, length: Int, gain: Float, gainEnd: Float = gain,
+                     frameSize: Int, outputIsFloat: Boolean, bitsPerSample: Int,
+                     outputIsPacked24: Boolean = false, offset: Int = 0) {
+        mixInPlace(buffer, length, buffer, length, gain, 0f, gainEnd, 0f,
+            frameSize, outputIsFloat, bitsPerSample, outputIsPacked24, offset, offset)
+    }
+
     fun mixInPlace(
         currentBuf: ByteArray,
         currentLen: Int,

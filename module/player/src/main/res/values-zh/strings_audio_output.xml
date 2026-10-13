@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="audio_output_desc_opensl">传统输出，兼容性最佳</string>
+    <string name="audio_output_desc_aaudio">低延迟输出，推荐用于 Android 8.1 及以上</string>
+    <string name="audio_output_desc_direct">绕过系统混音，高采样率直出</string>
+    <string name="audio_output_desc_audiotrack">系统混音，高兼容，PCM 最高 48 kHz / 24-bit / 立体声</string>
+    <string name="audio_device_unknown">未知</string>
+    <string name="audio_device_none">无输出设备</string>
+    <string name="audio_device_speaker">扬声器</string>
+    <string name="audio_device_earpiece">听筒</string>
+    <string name="audio_device_wired_headset">有线耳麦</string>
+    <string name="audio_device_wired_headphones">有线耳机</string>
+    <string name="audio_device_bluetooth_a2dp">蓝牙 A2DP</string>
+    <string name="audio_device_bluetooth_sco">蓝牙 SCO</string>
+    <string name="audio_device_usb_audio">USB 音频</string>
+    <string name="audio_device_usb_headset">USB 耳机</string>
+    <string name="audio_device_usb_accessory">USB 配件</string>
+    <string name="audio_device_line_analog">模拟线路</string>
+    <string name="audio_device_line_digital">数字线路</string>
+    <string name="audio_device_hearing_aid">助听器</string>
+    <string name="audio_device_generic">设备（%1$d）</string>
+    <string name="audio_sco_off">关闭</string>
+    <string name="audio_sco_auto">自动检测</string>
+    <string name="audio_sco_force">强制开启</string>
+    <string name="audio_sco_desc_off">不使用蓝牙通话信道</string>
+    <string name="audio_sco_desc_auto">仅在设备不支持蓝牙音乐时自动切换</string>
+    <string name="audio_sco_desc_force">始终通过蓝牙通话信道输出</string>
+</resources>

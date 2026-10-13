@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="backup_basic_preferences">基础偏好</string>
+    <string name="backup_playlist_paths">歌单（本地文件引用）</string>
+    <string name="backup_listening_records">播放统计与历史</string>
+    <string name="backup_device_references">原设备资源引用（可选）</string>
+    <string name="backup_scope_title">备份范围</string>
+    <string name="backup_plaintext_notice">未加密 JSON，包含路径和听歌历史；不含音频文件、账号凭据或视频封面，也不会转移资源授权。</string>
+    <string name="backup_preview_title">恢复前预览</string>
+    <string name="backup_replace_notice">偏好按键覆盖；勾选的歌单、统计将整组替换。空分类不会自动勾选。重装后建议先扫描本地音乐再恢复。</string>
+    <string name="backup_preview_preferences">偏好：新增 %1$d 项，覆盖 %2$d 项</string>
+    <string name="backup_preview_playlists">%1$d 个歌单，%2$d 首可用歌曲</string>
+    <string name="backup_preview_playback">%1$d 条逐曲统计，%2$d 条历史，%3$d 项每日汇总</string>
+    <string name="backup_clear_warning">注意：已勾选的空分类将清空现有对应数据。</string>
+    <string name="backup_more_skipped">另有 %1$d 项跳过</string>
+    <string name="backup_restore_done">已恢复并校验，写入 %1$d 项偏好。</string>
+    <string name="backup_restart_notice">请重启应用，使所有偏好完整刷新。</string>
+    <string name="backup_confirm_restore">确认覆盖并恢复</string>
+</resources>

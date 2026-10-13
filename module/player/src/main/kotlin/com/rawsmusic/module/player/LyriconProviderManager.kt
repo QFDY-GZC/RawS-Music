@@ -286,7 +286,7 @@ object LyriconProviderManager {
     }
 
     fun setPosition(positionMs: Long) {
-        lastPositionMs = positionMs.coerceAtLeast(0L)
+        lastPositionMs = com.rawsmusic.core.common.utils.LyricPlaybackTimeline.toLyricTime(positionMs)
         provider?.player?.setPosition(lastPositionMs)
     }
 

@@ -27,10 +27,13 @@ enum class AppNoticeIcon {
     TRANSCODE,
 }
 
+enum class AppNoticeAnimation { NONE, FAVORITE, DELETE }
+
 data class AppNoticeEvent(
     val id: Long,
     val message: String,
     val icon: AppNoticeIcon,
+    val animation: AppNoticeAnimation = AppNoticeAnimation.NONE,
 )
 
 object AppNoticeBus {
@@ -45,6 +48,7 @@ object AppNoticeBus {
     fun post(
         message: String,
         icon: AppNoticeIcon = AppNoticeIcon.INFO,
+        animation: AppNoticeAnimation = AppNoticeAnimation.NONE,
     ) {
         if (message.isBlank()) return
         _events.tryEmit(
@@ -52,6 +56,7 @@ object AppNoticeBus {
                 id = nextId.incrementAndGet(),
                 message = message,
                 icon = icon,
+                animation = animation,
             )
         )
     }

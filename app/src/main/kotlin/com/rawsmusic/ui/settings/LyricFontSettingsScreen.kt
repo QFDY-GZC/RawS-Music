@@ -19,7 +19,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,7 +28,6 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.preference.SliderPreference
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -37,24 +35,38 @@ import androidx.compose.ui.unit.sp
 import com.rawsmusic.module.data.prefs.LyricFontManager
 import com.rawsmusic.module.data.prefs.AppPreferences
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import androidx.compose.ui.res.stringResource
 import com.rawsmusic.R
+import com.rawsmusic.core.ui.theme.rawFileFontFamily
 
 @Composable
 fun LiquidGlassLyricFontSettingsScreen(
     onImportFont: () -> Unit,
     onBack: () -> Unit
 ) {
+    SettingsPage(
+        title = stringResource(R.string.settings_font_settings_title),
+        onBack = onBack,
+    ) {
+        LyricFontSettingsContent(onImportFont = onImportFont)
+    }
+}
+
+@Composable
+internal fun LyricFontSettingsContent(
+    onImportFont: () -> Unit,
+) {
     val context = LocalContext.current
     
-    val coroutineScope = rememberCoroutineScope()
     val fontRevision by LyricFontManager.revision.collectAsState()
 
     var selectedFontPath by remember { mutableStateOf(AppPreferences.LyricFont.fontPath) }
     var fontWeight by remember { mutableStateOf(AppPreferences.LyricFont.fontWeight) }
+    var experimentalWeight by remember {
+        mutableStateOf(AppPreferences.LyricFont.experimentalFontWeightEnabled)
+    }
     var fontScale by remember { mutableStateOf(AppPreferences.LyricFont.fontScale) }
 
     var systemFonts by remember { mutableStateOf<List<LyricFontManager.FontInfo>>(emptyList()) }
@@ -72,16 +84,18 @@ fun LiquidGlassLyricFontSettingsScreen(
         importedFonts = withContext(Dispatchers.IO) { LyricFontManager.getImportedFonts(context) }
     }
 
-    val previewFontFamily = remember(selectedFontPath, fontWeight, fontRevision) {
+    val previewFontFamily = remember(selectedFontPath, fontWeight, experimentalWeight, fontRevision) {
         if (selectedFontPath.isBlank()) FontFamily.Default
-        else try {
-            FontFamily(Font(File(selectedFontPath), FontWeight.Normal))
-        } catch (_: Exception) {
-            FontFamily.Default
+        else runCatching {
+            rawFileFontFamily(
+                path = selectedFontPath,
+                allowOutOfRange = experimentalWeight,
+            )
         }
+            .getOrDefault(FontFamily.Default)
     }
 
-    SettingsPage(title = stringResource(R.string.settings_lyric_font_title), onBack = onBack) {
+    Column {
         SettingsCard {
             SectionHeader(stringResource(R.string.settings_font_preview))
             Box(
@@ -117,25 +131,20 @@ fun LiquidGlassLyricFontSettingsScreen(
         Spacer(Modifier.height(12.dp))
 
         SettingsCard {
-            SectionHeader(stringResource(R.string.settings_font_weight))
-            Text(
-                fontWeight.toString(),
-                fontSize = 14.sp,
-                color = MiuixTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-            SliderPreference(
-                title = stringResource(R.string.settings_font_weight),
-                summary = null,
-                valueText = fontWeight.toString(),
-                value = fontWeight.toFloat(),
-                onValueChange = {
-                    fontWeight = it.toInt()
+            FontWeightControl(
+                fontPath = selectedFontPath,
+                weight = fontWeight,
+                experimentalEnabled = experimentalWeight,
+                revision = fontRevision,
+                onWeightChange = { value ->
+                    fontWeight = value
+                    LyricFontManager.setFontWeight(value)
+                },
+                onExperimentalChange = { enabled ->
+                    experimentalWeight = enabled
+                    AppPreferences.LyricFont.experimentalFontWeightEnabled = enabled
                     LyricFontManager.setFontWeight(fontWeight)
                 },
-                valueRange = 100f..900f,
-                steps = 15,
-                hapticEffect = SliderDefaults.SliderHapticEffect.Step
             )
         }
 
@@ -201,6 +210,8 @@ fun LiquidGlassLyricFontSettingsScreen(
             onDismiss = { showFontCatalog = false },
             onSelect = { font ->
                 selectedFontPath = font?.path.orEmpty()
+                experimentalWeight = false
+                AppPreferences.LyricFont.experimentalFontWeightEnabled = false
                 LyricFontManager.selectFont(font)
             },
             onImport = onImportFont,

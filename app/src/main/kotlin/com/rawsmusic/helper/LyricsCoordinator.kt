@@ -7,12 +7,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
+import com.rawsmusic.core.common.model.LocalLyricExplicit
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.core.common.model.toLyriconSong
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.player.LyriconProviderManager
 import com.rawsmusic.module.player.PlayerController
-import com.rawsmusic.module.player.lyrics.BluetoothLyricBridge
 import com.rawsmusic.module.player.lyrics.LyricGetterBridge
 import com.rawsmusic.module.player.lyrics.TickerBridge
 import io.github.proify.lyricon.lyric.model.Song
@@ -199,6 +199,7 @@ class LyricsCoordinator(
                 requestSong = requestSong,
                 data = data,
                 preparedSong = null,
+                explicitLyrics = false,
                 generation = generation,
             )
             return
@@ -212,6 +213,7 @@ class LyricsCoordinator(
         val artist = song.artist
         val duration = song.duration
         lifecycleScope.launch(Dispatchers.Default) {
+            val explicitLyrics = LocalLyricExplicit.detect(data)
             val prepared = data.toLyriconSong(
                 name = title,
                 artist = artist,
@@ -222,6 +224,7 @@ class LyricsCoordinator(
                     requestSong = requestSong,
                     data = data,
                     preparedSong = prepared,
+                    explicitLyrics = explicitLyrics,
                     generation = generation,
                 )
             }
@@ -232,6 +235,7 @@ class LyricsCoordinator(
         requestSong: AudioFile,
         data: LyricData,
         preparedSong: Song?,
+        explicitLyrics: Boolean,
         generation: Int,
     ) {
         if (generation != lyricBuildGeneration) return
@@ -243,6 +247,7 @@ class LyricsCoordinator(
         currentLyricData = data
         lyricSong = preparedSong
         displayedLyricSongKey = requestKey
+        LocalLyricExplicit.publish(currentSong, explicitLyrics)
         // MainActivity still has a legacy LyricData/Song mirror used by the lyric scene entry and
         // timing tools. Publish the exact same prepared generation to that mirror atomically; it
         // must never remain empty/old after the coordinator has accepted the new song.
@@ -269,16 +274,16 @@ class LyricsCoordinator(
         updateExternalCurrentLine(lyricPos)
     }
 
-    /** Lyrics use the exact playback timeline; no app-side delay or advance is applied. */
+    /** Decoder playback time is speed-adjusted; lyric timestamps are source-media time. */
     fun playbackToLyricPosition(positionMs: Long): Long {
-        return positionMs.coerceAtLeast(0L)
+        return com.rawsmusic.core.common.utils.LyricPlaybackTimeline.toLyricTime(positionMs)
     }
 
-    /** A lyric timestamp maps directly back to the same playback timestamp. */
+    /** Convert source lyric timestamps back to the decoder seek timeline. */
     fun lyricToPlaybackPosition(positionMs: Long): Long {
         val controller = getController()
         val durationMs = controller?.duration?.value ?: 0L
-        val playbackPosition = positionMs.coerceAtLeast(0L)
+        val playbackPosition = com.rawsmusic.core.common.utils.LyricPlaybackTimeline.toPlaybackTime(positionMs)
         return if (durationMs > 0L) playbackPosition.coerceAtMost(durationMs) else playbackPosition
     }
 
@@ -312,7 +317,6 @@ class LyricsCoordinator(
                 currentLyricTranslation = ""
                 TickerBridge.clearLyric(context)
                 LyricGetterBridge.clearLyric(context)
-                BluetoothLyricBridge.clearLyric()
                 onCapsuleTextNeedRefresh()
             }
             return
@@ -336,13 +340,11 @@ class LyricsCoordinator(
         if (lineText.isNotBlank()) {
             TickerBridge.updateLyric(context, lineText, translation)
             LyricGetterBridge.updateLyric(context, lineText, translation)
-            BluetoothLyricBridge.updateLyric(lineText, translation)
         }
     }
 
     private fun clearExternalLyrics() {
         TickerBridge.clearLyric(context)
         LyricGetterBridge.clearLyric(context)
-        BluetoothLyricBridge.clearLyric()
     }
 }

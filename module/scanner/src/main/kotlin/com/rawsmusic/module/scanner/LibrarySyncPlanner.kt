@@ -22,9 +22,21 @@ object LibrarySyncPlanner {
     fun calculateQuickVisibleUpserts(oldSongs: List<AudioFile>, quickSongs: List<AudioFile>): List<AudioFile> {
         if (quickSongs.isEmpty()) return emptyList()
         val oldByKey = oldSongs.associateBy { it.stableLibraryKey() }
+        val pathsWithExistingCueExpansion = oldSongs
+            .asSequence()
+            .filter { it.cueTrackIndex > 0 || it.cueOffsetMs > 0L }
+            .map { it.path }
+            .toSet()
         val upserts = ArrayList<AudioFile>()
 
         for (quick in quickSongs.distinctBy { it.stableLibraryKey() }) {
+            if (
+                quick.cueTrackIndex <= 0 &&
+                quick.cueOffsetMs <= 0L &&
+                quick.path in pathsWithExistingCueExpansion
+            ) {
+                continue
+            }
             val old = oldByKey[quick.stableLibraryKey()]
             if (old == null) {
                 upserts += quick

@@ -8,8 +8,10 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
+import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.needsTechnicalMetadataEnrich
+import com.rawsmusic.core.common.taglib.TagLibBridge
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.core.common.utils.BitrateNormalizer
 import com.rawsmusic.core.common.utils.SampleRateNormalizer
@@ -134,6 +136,12 @@ object MediaStoreScanner {
             return@flow
         }
 
+        // ISO is a document, so it is absent from MediaStore.Audio even on a successful query.
+        val knownPaths = rawFiles.mapTo(HashSet()) { it.path }
+        for (iso in queryIsoContainers(context, customPaths, options, forceLegacyPathSelection)) {
+            if (knownPaths.add(iso.path)) rawFiles.add(iso)
+        }
+
         // Android 10 only: if the user explicitly selected a folder and MediaStore returns 0,
         // scan that selected folder directly. Do not fall back to public Music or whole storage.
         if (rawFiles.isEmpty() && shouldAttemptAndroid10SelectedFolderFallback(customPaths)) {
@@ -177,11 +185,11 @@ object MediaStoreScanner {
                 processed += chunk.size
                 emit(ScanProgress.Progress(processed, rawFiles.size, ScanStage.METADATA, "读取音频信息"))
             }
-            if (options.expandCueTracks) {
+            if (options.expandCueTracks || enriched.any { com.rawsmusic.core.common.sacd.SacdIsoBridge.isIso(it) }) {
                 val cueExpanded = mutableListOf<AudioFile>()
                 var cueProcessed = 0
                 for (file in enriched) {
-                    cueExpanded.addAll(expandCueTracks(file))
+                    cueExpanded.addAll(expandContainerTracks(file, options.expandCueTracks))
                     cueProcessed++
                     if (cueProcessed % PROGRESS_STEP == 0 || cueProcessed == enriched.size) {
                         emit(ScanProgress.Progress(cueProcessed, enriched.size, ScanStage.CUE, "处理 CUE 分轨"))
@@ -197,6 +205,37 @@ object MediaStoreScanner {
         emit(ScanProgress.Progress(scannedFiles.size, scannedFiles.size, ScanStage.DONE, "完成"))
         emit(ScanProgress.Completed(songs = scannedFiles, found = scannedFiles.size, timeMs = elapsed))
     }.flowOn(Dispatchers.IO)
+
+    private fun queryIsoContainers(
+        context: Context, customPaths: List<String>, options: ScanOptions, legacyPaths: Boolean,
+    ): List<AudioFile> {
+        val uri = MediaStore.Files.getContentUri("external")
+        val projection = arrayOf(MediaStore.Files.FileColumns._ID, MediaStore.Files.FileColumns.DATA,
+            MediaStore.Files.FileColumns.SIZE, MediaStore.Files.FileColumns.DATE_ADDED,
+            MediaStore.Files.FileColumns.DATE_MODIFIED)
+        val scope = buildSelection(customPaths, options.copy(onlyMusic = false), legacyPaths)
+        val selection = listOfNotNull("${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.iso'", scope).joinToString(" AND ")
+        return try {
+            buildList {
+                context.contentResolver.query(uri, projection, selection,
+                    buildSelectionArgs(customPaths, legacyPaths), null)?.use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val path = cursor.getString(1).orEmpty()
+                        // A document grant or all-files permission is still required to read the ISO.
+                        if (path.isBlank() || !File(path).canRead()) continue
+                        val song = AudioFile(id = cursor.getLong(0), path = path,
+                            title = File(path).nameWithoutExtension, format = "ISO",
+                            fileSize = cursor.getLong(2), dateAdded = cursor.getLong(3) * 1000L,
+                            dateModified = cursor.getLong(4) * 1000L)
+                        if (shouldInclude(song, options)) add(song)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "ISO document query unavailable; selected folder/SAF scanning remains available", e)
+            emptyList()
+        }
+    }
 
     private fun parseCursor(cursor: Cursor): AudioFile? {
         return try {
@@ -249,6 +288,9 @@ object MediaStoreScanner {
     }
 
     private fun enrichFile(rawFile: AudioFile): AudioFile {
+        if (com.rawsmusic.core.common.sacd.SacdIsoBridge.isIso(rawFile)) {
+            return com.rawsmusic.core.common.sacd.SacdIsoBridge.enrichContainer(rawFile)
+        }
         val cacheKey = "${rawFile.path}|${rawFile.fileSize}|${rawFile.dateModified}"
         metadataCache[cacheKey]?.let { cached ->
             val merged = cached.copy(id = rawFile.id, albumId = rawFile.albumId,
@@ -317,6 +359,14 @@ object MediaStoreScanner {
     }
 
     fun enrichSong(song: AudioFile): AudioFile {
+        return enrichSongOutcome(song).song
+    }
+
+    fun enrichSongOutcome(song: AudioFile): MetadataScanOutcome {
+        if (com.rawsmusic.core.common.sacd.SacdIsoBridge.isIso(song)) {
+            val enriched = com.rawsmusic.core.common.sacd.SacdIsoBridge.enrichContainer(song)
+            return MetadataScanOutcome(enriched, enriched.format.equals("SACD-ISO", true))
+        }
         val t0 = System.currentTimeMillis()
         return try {
             val fullInfo = FfmpegMetadataReader.readFullInfo(song.path)
@@ -365,10 +415,10 @@ object MediaStoreScanner {
             if (took >= 800L) {
                 android.util.Log.w("MediaStoreScanner", "slow enrichSong: ${took}ms path=${song.path} format=${song.format} size=${song.fileSize}")
             }
-            result
+            MetadataScanOutcome(result, metadataReadCompleted(streamInfo.sampleRate, streamInfo.channels))
         } catch (e: Exception) {
             android.util.Log.w("EnrichSong", "Failed for ${song.path}: ${e.message}", e)
-            song
+            MetadataScanOutcome(song, false)
         }
     }
 
@@ -546,7 +596,14 @@ object MediaStoreScanner {
     private fun normalizeDiscNumber(rawTrack: Int): Int =
         if (rawTrack >= 1000) rawTrack / 1000 else 0
 
+    fun expandContainerTracks(song: AudioFile, expandCue: Boolean = true): List<AudioFile> =
+        if (com.rawsmusic.core.common.sacd.SacdIsoBridge.isIso(song)) {
+            com.rawsmusic.core.common.sacd.SacdIsoBridge.expand(song)
+        } else if (expandCue) expandCueTracks(song) else listOf(song)
+
     fun expandCueTracks(song: AudioFile): List<AudioFile> {
+        if (com.rawsmusic.core.common.sacd.SacdIsoBridge.isIso(song))
+            return com.rawsmusic.core.common.sacd.SacdIsoBridge.expand(song)
         val cueText = readCueSheetForFile(song.path)
         if (cueText.isBlank()) {
             android.util.Log.d("CueExpand", "CUE not found path=${song.path}")
@@ -599,14 +656,31 @@ object MediaStoreScanner {
     }
 
     private fun readCueSheetForFile(filePath: String): String {
-        try {
-            val fullInfo = FfmpegMetadataReader.readFullInfo(filePath)
-            val embedded = fullInfo.tags.cueSheet
-            if (embedded.isNotBlank()) {
-                android.util.Log.d("CueExpand", "CUE source=embedded path=$filePath length=${embedded.length}")
-                return embedded
+        val tagLibProperties = runCatching {
+            if (TagLibBridge.isLoaded() && TagLibBridge.isSupported(filePath)) {
+                TagLibBridge.readAllTextProperties(filePath)
+            } else {
+                emptyMap()
             }
-        } catch (_: Exception) {}
+        }.getOrDefault(emptyMap())
+        EmbeddedCueSheetResolver.resolve(
+            tagLibProperties = tagLibProperties,
+            ffmpegInfo = emptyMap(),
+        ).takeIf { it.isNotBlank() }?.let { embedded ->
+            android.util.Log.d("CueExpand", "CUE source=embedded_taglib path=$filePath length=${embedded.length}")
+            return embedded
+        }
+
+        val ffmpegInfo = runCatching { FFmpegBridge.getMediaInfo(filePath).orEmpty() }
+            .getOrDefault(emptyMap())
+        EmbeddedCueSheetResolver.resolve(
+            tagLibProperties = emptyMap(),
+            ffmpegInfo = ffmpegInfo,
+        ).takeIf { it.isNotBlank() }?.let { embedded ->
+            android.util.Log.d("CueExpand", "CUE source=embedded_ffmpeg path=$filePath length=${embedded.length}")
+            return embedded
+        }
+
         val cueFile = findExternalCueFile(filePath) ?: return ""
         return try {
             val bytes = cueFile.readBytes()
@@ -682,9 +756,11 @@ object MediaStoreScanner {
         excludedPaths: Set<String> = emptySet(),
         quickScan: Boolean = false,
         incrementalDirectoryScan: Boolean = false,
-        baselineSongs: List<AudioFile> = emptyList()
+        baselineSongs: List<AudioFile> = emptyList(),
+        directorySnapshots: Map<String, Long> = emptyMap(),
+        baselineIndex: ScanPathIndex = ScanPathIndex(baselineSongs)
     ): FileSystemScanReport {
-        val directoryState = if (incrementalDirectoryScan) DirectoryScanState.index() else null
+        val directoryState = if (incrementalDirectoryScan) DirectoryScanState.index(directorySnapshots) else null
         val walk = SelectedFolderFileWalker.collectReport(
             rootPaths = customPaths,
             excludedPaths = excludedPaths,
@@ -694,10 +770,7 @@ object MediaStoreScanner {
                     false
                 } else {
                     val normalized = SelectedFolderFileWalker.normalize(directory.path)
-                    val hasBaseline = baselineSongs.any { song ->
-                        !song.path.startsWith("content://", ignoreCase = true) &&
-                            isPathUnderDirectory(song.path, normalized)
-                    }
+                    val hasBaseline = baselineIndex.hasRowsUnder(normalized)
                     directoryState?.canSkip(
                         DirectoryScanState.fileSystemKey(normalized),
                         modifiedAt,
@@ -708,10 +781,7 @@ object MediaStoreScanner {
                 if (!incrementalDirectoryScan) {
                     true
                 } else {
-                    val candidates = baselineSongs.filter { song ->
-                        !song.path.startsWith("content://", ignoreCase = true) &&
-                            isPathSameFile(song.path, file.path)
-                    }
+                    val candidates = baselineIndex.rowsForPath(file.path)
                     candidates.isEmpty() || candidates.any { old ->
                         old.fileSize != file.length() ||
                             old.dateModified <= 0L ||
@@ -721,9 +791,8 @@ object MediaStoreScanner {
             }
         )
         val reused = if (incrementalDirectoryScan && walk.skippedDirectories.isNotEmpty()) {
-            baselineSongs.physicalScanRows().filter { song ->
-                !song.path.startsWith("content://", ignoreCase = true) &&
-                    walk.skippedDirectories.any { directory -> isDirectFileUnderDirectory(song.path, directory) }
+            walk.skippedDirectories.flatMap(baselineIndex::directRows).physicalScanRows().filter { song ->
+                java.io.File(song.path).let { it.isFile && it.canRead() }
             }
         } else {
             emptyList()
@@ -738,9 +807,6 @@ object MediaStoreScanner {
 
         val parsed = files.mapNotNull { file ->
             if (quickScan) quickAudioFileByPath(file) else readAudioFileByPath(context, file)
-        }
-        if (incrementalDirectoryScan && walk.failedDirectories.isEmpty()) {
-            DirectoryScanState.commit(walk.directorySnapshots.mapKeys { (path, _) -> DirectoryScanState.fileSystemKey(path) })
         }
         val out = (parsed + reused).distinctBy(::scanIdentity)
         Log.d(TAG, "recursive path parsed: ${out.size} quick=$quickScan")
@@ -913,7 +979,7 @@ object MediaStoreScanner {
     private val LEGACY_AUDIO_EXTENSIONS = setOf(
         "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus",
         "ape", "wv", "tta", "tak", "alac", "aiff", "aif",
-        "dsf", "dff", "mka", "mpc", "ac3", "eac3", "ec3",
+        "dsf", "dff", "mka", "mpc", "ac3", "eac3", "ec3", "iso",
         "truehd", "thd", "mlp"
     )
 

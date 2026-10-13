@@ -24,6 +24,7 @@ import com.rawsmusic.core.ui.scene.NavScene
 @Stable
 internal class ReferenceRegisteredVirtualList(
     val scene: NavScene,
+    physicalPoolIdentity: Any = Any(),
 ) {
     /** Concrete route/provider identity for detail scenes (album key, artist key, folder path...). */
     var providerIdentity: String = ""
@@ -35,8 +36,12 @@ internal class ReferenceRegisteredVirtualList(
      * album/artist/folder item; a different argument must therefore not inherit the previous
      * detail's holder bank/holder slot holder pool merely because the NavScene class is the same.
      */
-    private var physicalPoolIdentityState: Any = Any()
+    private var physicalPoolIdentityState: Any = physicalPoolIdentity
     internal val physicalPoolIdentity: Any get() = physicalPoolIdentityState
+    private val nestedPhysicalIdentities = hashMapOf("" to physicalPoolIdentity)
+
+    internal fun nestedPhysicalIdentity(path: String): Any =
+        nestedPhysicalIdentities.getOrPut(path) { Any() }
 
     internal fun rebindProviderIdentity(next: String) {
         if (providerIdentity == next) return
@@ -55,6 +60,9 @@ internal class ReferenceRegisteredVirtualList(
     var persistentHeaderHeight: Dp = 0.dp
     var persistentHeaderVisibilityHeight: Dp = 0.dp
     var persistentHeaderSceneItemVisibilityHeight: Dp = 0.dp
+    var persistentHeaderSceneItemLeft: Dp = 0.dp
+    var persistentHeaderSceneItemTop: Dp = 0.dp
+    var persistentHeaderSceneItemWidth: Dp? = null
     var persistentHeaderSceneItemId: String = ""
     var virtualListEdgeEnabled: Boolean = false
     var contentBottomPadding: Dp? = null
@@ -64,6 +72,26 @@ internal class ReferenceRegisteredVirtualList(
     var sharedCoverSceneId: String = ""
     var customProvider: VirtualListCustomProvider? = null
     var providerNavigationActive: Boolean by mutableStateOf(false)
+    var providerNavigationFrame = VirtualListProviderNavigationFrame()
+        private set
+    var providerSharedTransitionSpec = com.rawsmusic.core.ui.scene.SharedTransitionSpec()
+        private set
+
+    fun publishNavigationContext(
+        frame: VirtualListProviderNavigationFrame,
+        sharedSpec: com.rawsmusic.core.ui.scene.SharedTransitionSpec,
+    ) {
+        val changed = providerNavigationFrame != frame || providerSharedTransitionSpec != sharedSpec
+        // Directory changes keep the outer scene identity, but not the source directory's bank.
+        // RETAINED receives this same token so freezing a source never reallocates its holder.
+        frame.physicalProviderIdentity?.let { physicalPoolIdentityState = nestedPhysicalIdentity(it) }
+        // The page publishes outside the physical body's CompositionLocal scope. Carry the whole
+        // transaction (including its acknowledgement), not just the host's motion-active flag.
+        providerNavigationFrame = frame
+        providerSharedTransitionSpec = sharedSpec
+        providerNavigationActive = frame.active
+        if (changed) markBehaviorRebound()
+    }
 
     // Callback/lambda fields intentionally are ordinary vars. Their owner page remains composed and
     // updates them every frame; changing a callback identity is not a provider/layout invalidation.

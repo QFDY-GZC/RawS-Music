@@ -10,8 +10,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.isActive
-import kotlin.math.abs
-import kotlin.math.sqrt
 
 /**
  * A frame-clock driven retargetable spring for the visual lyric stack.
@@ -28,9 +26,10 @@ internal class LyricStackMotionState {
         private set
 
     private var velocityPxPerSecond = 0f
+    private val springState = LyricSpringState()
     private var lastFrameTimeMs = Long.MIN_VALUE
-    private var dampingRatio = 1f
-    private var stiffness = 440f
+    private var dampingRatio = LyricAmMotionSpec.DAMPING_RATIO
+    private var stiffness = LyricAmMotionSpec.STIFFNESS
 
     var running: Boolean by mutableStateOf(false)
         private set
@@ -39,7 +38,7 @@ internal class LyricStackMotionState {
         if (!deltaPx.isFinite() || deltaPx == 0f) return
         offsetPx += deltaPx
         dampingRatio = motion.dampingRatio.coerceIn(0.75f, 1.05f)
-        stiffness = motion.stiffness.coerceIn(140f, 620f)
+        stiffness = motion.stiffness.coerceIn(1f, 620f)
         // Keep the frame clock and velocity alive when another lyric target arrives mid-flight.
         // Resetting the timestamp here creates one empty vsync and looks like lift/pause/lift.
         if (!running) lastFrameTimeMs = Long.MIN_VALUE
@@ -58,33 +57,18 @@ internal class LyricStackMotionState {
         val previous = lastFrameTimeMs
         lastFrameTimeMs = frameTimeMs
 
-        // A stalled frame must not make the spring jump through the rest of its trajectory. The
-        // four 8 ms substeps retain stable damping on 120 Hz displays and remain safe after a
-        // short UI-thread pause.
-        // On the first frame after a new target, use one display-sized step instead of publishing
-        // an unchanged offset. That unchanged first frame was the visible pause between lifts.
+        // Keep stalls bounded; analytic stepping remains independent of the display frame rate.
         val deltaSeconds = if (previous == Long.MIN_VALUE) {
             1f / 120f
         } else {
             ((frameTimeMs - previous).coerceIn(1L, 32L)) / 1000f
         }
-        val substepSeconds = 0.008f
-        var remaining = deltaSeconds
-        while (remaining > 0f) {
-            val step = minOf(remaining, substepSeconds)
-            val angularStiffness = sqrt(stiffness)
-            val damping = 2f * dampingRatio * angularStiffness
-            val acceleration = -stiffness * offsetPx - damping * velocityPxPerSecond
-            velocityPxPerSecond += acceleration * step
-            offsetPx += velocityPxPerSecond * step
-            remaining -= step
-        }
-
-        if (abs(offsetPx) < 0.35f && abs(velocityPxPerSecond) < 8f) {
-            offsetPx = 0f
-            velocityPxPerSecond = 0f
-            running = false
-        }
+        springState.value = offsetPx
+        springState.velocity = velocityPxPerSecond
+        springState.advance(deltaSeconds, stiffness, dampingRatio)
+        offsetPx = springState.value
+        velocityPxPerSecond = springState.velocity
+        running = springState.running
     }
 }
 

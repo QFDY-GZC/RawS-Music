@@ -148,9 +148,11 @@ void Processor::publish_command(CommandType type, int duration_ms) noexcept {
 
 void Processor::arm(
     int duration_ms,
-    int pivot_ms
+    int pivot_ms,
+    int gentle_ms
 ) noexcept {
     pivot_ms_.store(std::max(1, pivot_ms), std::memory_order_relaxed);
+    gentle_ms_.store(std::max(0, gentle_ms), std::memory_order_relaxed);
     publish_command(CommandType::Arm, std::max(1, duration_ms));
 }
 
@@ -219,6 +221,7 @@ void Processor::consume_command(uint64_t word, int sample_rate) noexcept {
         current_outgoing_gain_ = kUnity;
         current_incoming_gain_ = kSilence;
         entry_gain_initialized_ = false;
+        levels_initialized_ = false;
         active_snapshot_.store(false, std::memory_order_release);
         consumed_frames_snapshot_.store(0, std::memory_order_release);
         processed_frames_snapshot_.store(0, std::memory_order_release);
@@ -238,6 +241,9 @@ void Processor::consume_command(uint64_t word, int sample_rate) noexcept {
     processed_frames_ = 0;
 
     if (type == CommandType::Arm) {
+        gentle_entry_gain_ = .05f;
+        gentle_frames_ = std::min<int64_t>(total_frames_ - 1,
+            static_cast<int64_t>(gentle_ms_.load(std::memory_order_relaxed)) * sample_rate_ / 1000);
         consumed_frames_ = 0;
         start_outgoing_gain_ = kUnity;
         start_incoming_gain_ = kSilence;
@@ -252,9 +258,12 @@ void Processor::consume_command(uint64_t word, int sample_rate) noexcept {
             )
         );
         entry_gain_initialized_ = false;
+        base_pivot_fraction_ = pivot_fraction_;
+        levels_initialized_ = false;
     } else {
         // Quiet-tail retiming begins from the real render gains and never reopens
         // the follow track at its initial floor.
+        gentle_frames_ = 0;
         start_outgoing_gain_ = current_outgoing_gain_;
         start_incoming_gain_ = current_incoming_gain_;
         entry_gain_initialized_ = true;
@@ -272,17 +281,33 @@ void Processor::initialize_entry_gain(
     const uint8_t* current,
     const uint8_t* pending,
     size_t length,
-    SampleFormat format
+    SampleFormat format,
+    int frame_size
 ) noexcept {
-    if (entry_gain_initialized_) return;
     const float outgoing_db = rms_db(current, length, format);
     const float incoming_db = rms_db(pending, length, format);
-    const float loudness_delta = std::max(-12.0f, std::min(12.0f, incoming_db - outgoing_db));
-    pivot_fraction_ = std::max(0.35f, std::min(0.75f, pivot_fraction_ + loudness_delta / 80.0f));
-    // Independent volume ramps begin at 1/0. Per-item loudness normalization belongs to
-    // the playback volume path, not the transition envelope.
-    start_incoming_gain_ = kSilence;
-    current_incoming_gain_ = kSilence;
+    if (gentle_frames_ > 0 && !entry_gain_initialized_) {
+        gentle_entry_gain_ = (outgoing_db > -60.f && incoming_db > -60.f)
+            ? std::max(.015f, std::min(.05f, .05f * std::pow(10.f, -std::max(0.f, incoming_db - outgoing_db) / 20.f)))
+            : .015f;
+    }
+    const float seconds = static_cast<float>(length / static_cast<size_t>(frame_size)) / sample_rate_;
+    if (outgoing_db > -60.0f && incoming_db > -60.0f) {
+        const float alpha = seconds / (0.5f + seconds);
+        if (!levels_initialized_) {
+            smoothed_outgoing_db_ = outgoing_db;
+            smoothed_incoming_db_ = incoming_db;
+            levels_initialized_ = true;
+        } else {
+            smoothed_outgoing_db_ += alpha * (outgoing_db - smoothed_outgoing_db_);
+            smoothed_incoming_db_ += alpha * (incoming_db - smoothed_incoming_db_);
+        }
+        const float delta = std::max(-12.0f, std::min(12.0f, smoothed_incoming_db_ - smoothed_outgoing_db_));
+        const float loud_tail_delay = std::max(0.0f, std::min(1.0f, (smoothed_outgoing_db_ + 17.0f) / 17.0f)) * 0.05f;
+        const float desired = std::max(0.35f, std::min(0.75f, base_pivot_fraction_ + delta / 80.0f + loud_tail_delay));
+        const float step = seconds * 0.1f;
+        pivot_fraction_ += std::max(-step, std::min(step, desired - pivot_fraction_));
+    }
     entry_gain_initialized_ = true;
 }
 
@@ -290,7 +315,17 @@ void Processor::gains_for_frame(int64_t local_frame, float& outgoing, float& inc
     const int64_t duration = std::max<int64_t>(1, total_frames_);
     const int64_t local = std::max<int64_t>(0, std::min<int64_t>(duration, local_frame));
     float progress = 0.0f;
-    if (local >= duration) {
+    if (gentle_frames_ > 0 && local < duration) {
+        if (local <= gentle_frames_) {
+            const float t = std::min(1.f, static_cast<float>(local) /
+                static_cast<float>(std::min<int64_t>(gentle_frames_, 2LL * sample_rate_)));
+            progress = gentle_entry_gain_ * t * t * (3.f - 2.f * t);
+        } else {
+            const float t = static_cast<float>(local - gentle_frames_) / (duration - gentle_frames_);
+            const float original = std::exp(std::log(.15f) * (1.f - t * t * (3.f - 2.f * t)));
+            progress = gentle_entry_gain_ + (1.f - gentle_entry_gain_) * (original - .15f) / .85f;
+        }
+    } else if (local >= duration) {
         progress = 1.0f;
     } else if (local > 0) {
         const int64_t pivot = std::max<int64_t>(
@@ -303,6 +338,10 @@ void Processor::gains_for_frame(int64_t local_frame, float& outgoing, float& inc
                 static_cast<float>(duration - pivot);
     }
     outgoing = lerp(start_outgoing_gain_, kSilence, progress);
+    if (gentle_frames_ > 0) {
+        const float tail = std::max(0.f, std::min(1.f, (progress - gentle_entry_gain_) / (.9f - gentle_entry_gain_)));
+        outgoing *= 1.f - tail * tail * (3.f - 2.f * tail);
+    }
     incoming = lerp(start_incoming_gain_, kUnity, progress);
     outgoing = clamp_gain(outgoing);
     incoming = clamp_gain(incoming);
@@ -338,19 +377,18 @@ int64_t Processor::process(
     if (command_serial(word) != applied_serial_) consume_command(word, sample_rate);
     if (!active_) return 0;
 
-    const bool first_audible_block = consumed_frames_ == 0 && !entry_gain_initialized_;
-    initialize_entry_gain(current, pending, length, format);
     const size_t frame_count = length / static_cast<size_t>(frame_size);
+    initialize_entry_gain(current, pending, length, format, frame_size);
+    const float start_outgoing = current_outgoing_gain_;
+    const float start_incoming = current_incoming_gain_;
+    float end_outgoing, end_incoming;
+    gains_for_frame(processed_frames_ + static_cast<int64_t>(frame_count), end_outgoing, end_incoming);
+    end_outgoing = std::min(start_outgoing, end_outgoing);
+    end_incoming = std::max(start_incoming, end_incoming);
     for (size_t frame_index = 0; frame_index < frame_count; ++frame_index) {
-        const int64_t absolute = processed_frames_ + static_cast<int64_t>(frame_index);
-        float outgoing = kUnity;
-        float incoming = kSilence;
-        gains_for_frame(absolute, outgoing, incoming);
-        if (first_audible_block && frame_count > 0) {
-            const float entry_progress = static_cast<float>(frame_index + 1U) /
-                static_cast<float>(frame_count);
-            incoming *= entry_progress;
-        }
+        const float fraction = frame_count <= 1 ? 1.0f : static_cast<float>(frame_index) / (frame_count - 1);
+        const float outgoing = lerp(start_outgoing, end_outgoing, fraction);
+        const float incoming = lerp(start_incoming, end_incoming, fraction);
         mix_frame(
             current + frame_index * static_cast<size_t>(frame_size),
             pending + frame_index * static_cast<size_t>(frame_size),

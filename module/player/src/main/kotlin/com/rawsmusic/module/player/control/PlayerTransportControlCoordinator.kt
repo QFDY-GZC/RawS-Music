@@ -259,8 +259,30 @@ internal class PlayerTransportControlCoordinator(
         }
         callbacks.clearAutomaticFocusResume("explicit_resume")
         callbacks.markAppForegroundForResume()
+        val state = callbacks.backendState()
         callbacks.logWarn("resume() called, ${callbacks.backendStateSummary()}")
-        eventQueue.submitResume { callbacks.resumeInternal() }
+        when (state) {
+            BackendState.PAUSED ->
+                eventQueue.submitResume { callbacks.resumeInternal() }
+
+            BackendState.IDLE,
+            BackendState.STOPPED,
+            BackendState.ERROR,
+            BackendState.COMPLETED -> {
+                // MediaSession ACTION_PLAY means "ensure playback", not "resume an already
+                // prepared renderer only".  A USB-exclusive session can legitimately be armed
+                // with nativeState=CLOSED until the first track starts; route that cold state
+                // through the normal PLAY lane instead of misclassifying it as transport loss.
+                callbacks.logWarn("resume(): backend=$state requires cold start; routing through play lane")
+                startFromSeedOrIdle()
+            }
+
+            BackendState.PREPARING ->
+                callbacks.logWarn("resume(): already PREPARING; ignoring duplicate PLAY")
+
+            BackendState.PLAYING ->
+                callbacks.logWarn("resume(): already PLAYING; ignoring duplicate PLAY")
+        }
     }
 
     fun stop() {

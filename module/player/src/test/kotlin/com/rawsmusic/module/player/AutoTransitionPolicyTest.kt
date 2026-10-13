@@ -4,14 +4,122 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.common.model.LyricLine
 import com.rawsmusic.core.common.model.LyricWord
+import com.rawsmusic.module.scanner.parser.LyricParserBase
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.pow
 
 class AutoTransitionPolicyTest {
+    @Test fun `sparse lyrics allow loud sustained fade in bounded earlier tail`() {
+        val runtime = AutoTransitionRuntime("test")
+        val current = song("/a.flac", duration = 300_000L)
+        runtime.updateRecipe(AutoTransitionPolicy.build(current, song("/b.flac", album = "Other"),
+            LyricData(listOf(LyricLine(0, "instrumental"), LyricLine(1_000, "music")))).recipe)
+        // Still loud (roughly -6 to -14 dBFS), but continuously falling over four seconds.
+        repeat(21) { index ->
+            val amplitude = (16_000 * 10.0.pow(-index * 0.4 / 20.0)).toInt()
+            val pcm = ByteArray(256)
+            repeat(128) { i -> pcm[i * 2] = amplitude.toByte(); pcm[i * 2 + 1] = (amplitude shr 8).toByte() }
+            runtime.observeCurrentPcm(250_000L + index * 200L, pcm, pcm.size, false, false, 16)
+        }
+        assertNull(runtime.resolveStartPlan(100_000L, current.duration))
+        assertNotNull(runtime.resolveStartPlan(254_000L, current.duration))
+    }
+    @Test
+    fun `parser supplied display end permits gentle fallback without claiming vocal end`() {
+        val lines = mutableListOf(
+            LyricLine(5_000, "one"), LyricLine(60_000, "two"),
+            LyricLine(120_000, "three"), LyricLine(220_000, "last"),
+        )
+        LyricParserBase.fillEndTimes(lines)
+        val recipe = AutoTransitionPolicy.build(
+            song("/a.flac"), song("/b.flac", album = "Other"), LyricData(lines),
+        ).recipe!!
+        assertFalse(recipe.vocalEndKnown)
+        assertEquals(222000L, recipe.gentleStartPositionMs)
+        val runtime = AutoTransitionRuntime("test")
+        runtime.updateRecipe(recipe)
+        assertNotNull(runtime.resolveStartPlan(225_000L, 240_000L))
+    }
+
+    @Test
+    fun `republishing unchanged recipe retains measured quiet tail`() {
+        val recipe = AutoTransitionPolicy.build(
+            song("/a.flac"), song("/b.flac", album = "Other"), null,
+        ).recipe!!
+        val runtime = AutoTransitionRuntime("test")
+        runtime.updateRecipe(recipe)
+        repeat(9) { index ->
+            runtime.observeCurrentPcm(220_000L + index * 100L, ByteArray(256), 256, false, false, 16)
+        }
+        assertNotNull(runtime.resolveStartPlan(220_800L, 240_000L))
+        runtime.updateRecipe(recipe.copy())
+        assertNotNull(runtime.resolveStartPlan(220_800L, 240_000L))
+        runtime.updateRecipe(recipe.copy(targetPath = "/c.flac"))
+        assertNull(runtime.resolveStartPlan(220_800L, 240_000L))
+    }
+
+    @Test
+    fun `double speed envelope window uses the same source time as lyrics`() {
+        val timeline = com.rawsmusic.core.common.utils.LyricPlaybackTimeline
+        timeline.speed = 2f
+        try {
+            val runtime = AutoTransitionRuntime("test")
+            runtime.updateRecipe(AutoTransitionPolicy.build(
+                song("/a.flac"), song("/b.flac", album = "Other"), null,
+            ).recipe)
+            repeat(9) { index ->
+                runtime.observeCurrentPcm(100_000L + index * 100L, ByteArray(256), 256, false, false, 16)
+            }
+            assertNull(runtime.resolveStartPlan(100_800L, 120_000L))
+            assertNotNull(runtime.resolveStartPlan(105_000L, 120_000L))
+        } finally {
+            timeline.speed = 1f
+        }
+    }
+
+    @Test
+    fun `long trusted outro falls back to gentle mix two seconds into final lyric`() {
+        val current = song("/a.flac")
+        val lyrics = LyricData(listOf(
+            LyricLine(5_000, "one"), LyricLine(60_000, "two"), LyricLine(120_000, "three"),
+            LyricLine(180_000, "last", words = listOf(LyricWord("last", 180_000, 195_000))),
+        ))
+        val runtime = AutoTransitionRuntime("test")
+        runtime.updateRecipe(AutoTransitionPolicy.build(current, song("/b.flac", album = "Other"), lyrics).recipe)
+        assertNull(runtime.resolveStartPlan(181_999L, 240_000L))
+        assertEquals(13000, runtime.resolveStartPlan(182_000L, 240_000L)?.preRollMs)
+        assertEquals(15000, runtime.resolveStartPlan(195_000L, 240_000L)?.handoverMs)
+        // A measured monotonic amplitude fall, well before the final thirty-second window.
+        val amplitudes = listOf(16000, 14500, 13000, 11500, 10000, 8500, 7000, 5500,
+            4300, 3300, 2600, 2100, 1800, 1500, 1200, 900)
+        amplitudes.forEachIndexed { index, amplitude ->
+            val pcm = ByteArray(256)
+            for (sample in 0 until 128) {
+                pcm[sample * 2] = amplitude.toByte()
+                pcm[sample * 2 + 1] = (amplitude shr 8).toByte()
+            }
+            runtime.observeCurrentPcm(196_000L + index * 200L, pcm, pcm.size, false, false, 16)
+        }
+        assertEquals(15000, runtime.resolveStartPlan(200_000L, 240_000L)?.handoverMs)
+    }
+    @Test fun doubleSpeedUsesPlaybackTimeForSemanticHandover() {
+        val timeline = com.rawsmusic.core.common.utils.LyricPlaybackTimeline
+        val old = timeline.speed
+        try {
+            timeline.speed = 2f
+            val runtime = AutoTransitionRuntime("test")
+            runtime.updateRecipe(AutoTransitionPolicy.Recipe(
+                "/b.flac", AutoTransitionPolicy.Source.LYRICS, 170000L, 180000L, 12000, confidence = 1f,
+            ))
+            assertNull(runtime.resolveStartPlan(89999L, 120000L))
+            assertEquals(6000, runtime.resolveStartPlan(90000L, 120000L)?.handoverMs)
+        } finally { timeline.speed = old }
+    }
     private fun song(
         path: String,
         duration: Long = 240_000L,
@@ -62,7 +170,7 @@ class AutoTransitionPolicyTest {
         val handoverStart = recipe?.handoverPositionMs ?: 0L
         val handoverMs = recipe?.handoverDurationMs ?: 0
         assertEquals(224_000L, handoverStart)
-        assertEquals(16_000, handoverMs)
+        assertEquals(15_000, handoverMs)
         assertEquals(220_000L, recipe?.triggerPositionMs)
         assertEquals(1.0f, recipe?.confidence ?: 0f, 0.0001f)
     }
@@ -99,6 +207,22 @@ class AutoTransitionPolicyTest {
         assertTrue(decision.forceGapless)
         assertNull(decision.recipe)
         assertEquals("same_item_repeat_gapless", decision.reason)
+    }
+
+    @Test
+    fun `repeat one may crossfade a pcm track into a fresh decoder of itself`() {
+        val current = song("/a.flac", album = "A")
+        val decision = AutoTransitionPolicy.build(
+            current = current,
+            next = current,
+            lyrics = null,
+            allowSameItemCrossfade = true,
+        )
+
+        assertFalse(decision.forceGapless)
+        assertNotNull(decision.recipe)
+        assertEquals(AutoTransitionPolicy.Source.ENVELOPE, decision.recipe?.source)
+        assertEquals(current.path, decision.recipe?.targetPath)
     }
 
     @Test
@@ -176,7 +300,7 @@ class AutoTransitionPolicyTest {
                 LyricLine(60_000, "two"),
                 LyricLine(120_000, "three"),
                 LyricLine(180_000, "four"),
-                LyricLine(lastStart, "last"),
+                LyricLine(lastStart, "last", endTime = lastStart + 4_500L),
             ),
         )
 
@@ -193,7 +317,7 @@ class AutoTransitionPolicyTest {
     }
 
     @Test
-    fun `late final lyric prioritizes end anchor over forcing an early eight second fade`() {
+    fun `late final lyric permits gentle overlap but keeps formal end anchor`() {
         val current = song("/a.flac", duration = 240_000L)
         val next = song("/b.flac", album = "Other")
         val lyrics = LyricData(
@@ -214,17 +338,19 @@ class AutoTransitionPolicyTest {
         assertNotNull(recipe)
         assertEquals(AutoTransitionPolicy.Source.LYRICS, recipe?.source)
         assertEquals(238_000L, recipe?.handoverPositionMs)
-        // Only 2 s of physical PCM remains after the requested lyric-end anchor. Do not pull the
-        // fade eight seconds earlier just to satisfy the nominal window.
+        // Only 2 s remains after the final vocal. A short gentle overlap protects the final
+        // phrase; the main exchange still starts at the trusted end instead of cutting it.
         assertEquals(2_000, recipe?.handoverDurationMs)
 
         val runtime = AutoTransitionRuntime("test")
         runtime.updateRecipe(recipe)
-        assertNull(runtime.resolveStartPlan(recipe?.triggerPositionMs ?: 0L, current.duration))
+        val gentle = runtime.resolveStartPlan(recipe?.triggerPositionMs ?: 0L, current.duration)
+        assertEquals(3_000, gentle?.preRollMs)
+        assertEquals(6_000, gentle?.handoverMs)
         val plan = runtime.resolveStartPlan(recipe?.handoverPositionMs ?: 0L, current.duration)
         assertNotNull(plan)
         assertEquals(0, plan?.preRollMs)
-        assertEquals(2_000, plan?.handoverMs)
+        assertEquals(6_000, plan?.handoverMs)
     }
 
     @Test
@@ -234,12 +360,12 @@ class AutoTransitionPolicyTest {
     }
 
     @Test
-    fun `automatic transition uses adaptive AM style timing`() {
+    fun `automatic transition caps adjustment at fifteen seconds`() {
         assertEquals(6_000, AutoTransitionPolicy.MIN_HANDOVER_MS)
         assertEquals(12_000, AutoTransitionPolicy.DEFAULT_HANDOVER_MS)
-        assertEquals(20_000, AutoTransitionPolicy.MAX_HANDOVER_MS)
+        assertEquals(15_000, AutoTransitionPolicy.MAX_HANDOVER_MS)
         assertEquals(55, AutoTransitionPolicy.SMART_PIVOT_PERCENT)
-        assertEquals(20_000, AutoTransitionPolicy.adaptiveHandoverMs(28_000L))
+        assertEquals(15_000, AutoTransitionPolicy.adaptiveHandoverMs(28_000L))
         assertEquals(7_000, AutoTransitionPolicy.adaptiveHandoverMs(7_000L))
         assertEquals(6_600, AutoTransitionPolicy.pivotMs(12_000))
     }

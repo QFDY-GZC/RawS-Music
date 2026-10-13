@@ -121,7 +121,7 @@ internal fun PersistentSceneBackgroundLayers(
                 // A scene transition only changes layer alpha. Keep the carousel clock stopped
                 // unless its artwork is actually changing; this mirrors the retained-view implementation's demand-driven
                 // animation callbacks and avoids waking the renderer during category entry.
-                motionEnabled = homeCarouselBackdropTransitionActive,
+                motionEnabled = homeCarouselBackdropTransitionActive && uiForeground,
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -149,13 +149,15 @@ internal fun PersistentSceneBackgroundLayers(
                 mode = rawFlowMode,
                 sourceCoverKey = currentSong.resolvePlaybackArtworkKey(null),
                 modifier = Modifier.fillMaxSize(),
-                active = uiForeground && rawBackgroundAllowed &&
+                // Keep the retained pixels during another Activity's predictive-back preview.
+                // Foreground controls motion, not whether the background still exists.
+                active = rawBackgroundAllowed &&
                     (frameActive || !fromHome || toHome || homeCarouselBackdropTransitionActive),
                 // FLOW uses a global phase epoch and catches up on re-enable. Keep the caller's
                 // normal demand-driven motion policy during scene handoff instead of waking a
                 // full-screen 16 ms animation loop underneath every VirtualList PivotTransition frame.
                 motionEnabled = persistentRawFlowMotionEnabled(
-                    normalMotionActive = rawFlowMotionActive,
+                    normalMotionActive = rawFlowMotionActive && uiForeground,
                     sceneTransitionActive = frameActive,
                 ),
                 frameIntervalMs = PERSISTENT_BACKGROUND_FRAME_INTERVAL_MS,
@@ -163,7 +165,8 @@ internal fun PersistentSceneBackgroundLayers(
         }
 
         CustomMediaBackground(
-            active = uiForeground,
+            active = true,
+            playbackActive = uiForeground,
             modifier = Modifier.fillMaxSize(),
         )
     }

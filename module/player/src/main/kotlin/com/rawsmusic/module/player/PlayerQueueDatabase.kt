@@ -91,18 +91,18 @@ internal class PlayerQueueDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     fun saveSnapshot(
-        entries: List<Entry>,
+        entries: List<Entry>?,
         currentEntryId: Long?,
-        prioritySongsJson: List<String>,
-        shuffleTraversalOrder: List<Int> = emptyList(),
+        prioritySongsJson: List<String>?,
+        shuffleTraversalOrder: List<Int>? = emptyList(),
         shuffleTraversalCursor: Int = -1,
     ) {
         val db = writableDatabase
         db.beginTransactionNonExclusive()
         try {
-            db.delete(TABLE_QUEUE, null, null)
             val createdAt = System.currentTimeMillis()
-            entries.forEach { entry ->
+            if (entries != null) db.delete(TABLE_QUEUE, null, null)
+            entries?.forEach { entry ->
                 db.insertOrThrow(
                     TABLE_QUEUE,
                     null,
@@ -127,8 +127,8 @@ internal class PlayerQueueDatabase(context: Context) : SQLiteOpenHelper(
                 },
             )
 
-            db.delete(TABLE_PRIORITY, null, null)
-            prioritySongsJson.forEachIndexed { index, songJson ->
+            if (prioritySongsJson != null) db.delete(TABLE_PRIORITY, null, null)
+            prioritySongsJson?.forEachIndexed { index, songJson ->
                 db.insertOrThrow(
                     TABLE_PRIORITY,
                     null,
@@ -138,16 +138,15 @@ internal class PlayerQueueDatabase(context: Context) : SQLiteOpenHelper(
                     },
                 )
             }
-            db.delete(TABLE_TRAVERSAL, null, null)
-            db.insertOrThrow(
-                TABLE_TRAVERSAL,
-                null,
-                ContentValues().apply {
-                    put("singleton", 1)
-                    put("traversal_order", shuffleTraversalOrder.joinToString(","))
-                    put("traversal_cursor", shuffleTraversalCursor)
-                },
-            )
+            val traversalValues = ContentValues().apply {
+                put("traversal_cursor", shuffleTraversalCursor)
+                if (shuffleTraversalOrder != null) put("traversal_order", shuffleTraversalOrder.joinToString(","))
+            }
+            if (db.update(TABLE_TRAVERSAL, traversalValues, "singleton = 1", null) == 0) {
+                traversalValues.put("singleton", 1)
+                if (shuffleTraversalOrder == null) traversalValues.put("traversal_order", "")
+                db.insertOrThrow(TABLE_TRAVERSAL, null, traversalValues)
+            }
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()

@@ -79,6 +79,7 @@ class ImmersiveLyricActivity : ComponentActivity() {
         displayRoma = AppPreferences.Lyricon.displayRoma
 
         setContent {
+            com.rawsmusic.core.ui.widget.bitmaps.SceneHdrWindow(com.rawsmusic.module.data.prefs.HdrScene.LYRICS)
             ImmersiveLyricScreen(
                 coverPath = coverPath,
                 lyricSong = lyricSong,
@@ -133,7 +134,10 @@ class ImmersiveLyricActivity : ComponentActivity() {
         ) {
             ImmersiveBackgroundCompose(
                 coverPath = coverPath,
-                isDarkMode = !ThemeManager.isLightBackground,
+                // ALBUM_COLOR is always a dark (white-text) surface; isLightBackground is only
+                // refreshed on track/theme changes and may still hold the previous style's value.
+                isDarkMode = !ThemeManager.isLightBackground ||
+                    ThemeManager.albumColorForcesDark(this@ImmersiveLyricActivity),
                 modifier = Modifier.fillMaxSize()
             )
 

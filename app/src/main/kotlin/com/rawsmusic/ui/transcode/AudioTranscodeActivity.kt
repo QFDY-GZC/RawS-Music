@@ -11,6 +11,7 @@ import android.os.Environment
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.widget.Toast
+import com.rawsmusic.R
 import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.common.ui.AppNoticeIcon
 import androidx.activity.result.IntentSenderRequest
@@ -49,11 +50,11 @@ class AudioTranscodeActivity : BaseSettingsActivity() {
         directOutputStorageAccess.value = granted
         if (granted) {
             AppNoticeBus.post(
-                message = "已获得文件访问权限，可以开始转换",
+                message = getString(R.string.transcode_storage_access_granted),
                 icon = AppNoticeIcon.TRANSCODE,
             )
         } else {
-            AppNoticeBus.error("未获得文件访问权限，无法写入转换结果")
+            AppNoticeBus.error(getString(R.string.transcode_storage_access_denied))
         }
     }
 
@@ -83,7 +84,7 @@ class AudioTranscodeActivity : BaseSettingsActivity() {
             AudioTranscodeQueue.markAuthorizedSourceDeleteResult(
                 id = taskId,
                 deleted = false,
-                detail = "用户未授权删除源文件，已保留原文件",
+                detail = getString(R.string.transcode_delete_consent_denied),
             )
             return@registerForActivityResult
         }
@@ -95,9 +96,9 @@ class AudioTranscodeActivity : BaseSettingsActivity() {
             id = taskId,
             deleted = deleted,
             detail = if (deleted) {
-                "系统授权后源文件已删除"
+                getString(R.string.transcode_source_deleted_after_consent)
             } else {
-                "系统授权已返回，但源文件仍存在"
+                getString(R.string.transcode_source_still_exists_after_consent)
             },
         )
     }
@@ -136,15 +137,17 @@ class AudioTranscodeActivity : BaseSettingsActivity() {
                     hasDirectOutputStorageAccess = outputAccessGranted,
                     onRequestDirectOutputStorageAccess = ::requestDirectOutputStorageAccess,
                     onPickExternalFiles = {
-                        openAudioDocuments.launch(
-                            arrayOf(
-                                "audio/*",
-                                "application/octet-stream",
-                                "application/ogg",
-                                "application/x-ogg",
-                                "application/x-flac",
+                        withSystemFileAccess {
+                            openAudioDocuments.launch(
+                                arrayOf(
+                                    "audio/*",
+                                    "application/octet-stream",
+                                    "application/ogg",
+                                    "application/x-ogg",
+                                    "application/x-flac",
+                                )
                             )
-                        )
+                        }
                     },
                     onAuthorizeSourceDelete = ::requestSourceDeleteConsent,
                     onBack = { finish() },
@@ -176,7 +179,7 @@ class AudioTranscodeActivity : BaseSettingsActivity() {
                     Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
                 )
             }.onFailure {
-                AppNoticeBus.error("无法打开文件访问权限设置")
+                AppNoticeBus.error(getString(R.string.transcode_open_storage_settings_failed))
             }
         }
     }
@@ -194,7 +197,7 @@ class AudioTranscodeActivity : BaseSettingsActivity() {
             AudioTranscodeQueue.markAuthorizedSourceDeleteResult(
                 id = taskId,
                 deleted = true,
-                detail = "源文件已不存在",
+                detail = getString(R.string.transcode_source_already_missing),
             )
             return
         }
@@ -203,7 +206,7 @@ class AudioTranscodeActivity : BaseSettingsActivity() {
             AudioTranscodeQueue.markAuthorizedSourceDeleteResult(
                 id = taskId,
                 deleted = false,
-                detail = request.detail ?: "无法发起系统删除授权",
+                detail = request.detail ?: getString(R.string.transcode_delete_consent_launch_failed),
             )
             return
         }

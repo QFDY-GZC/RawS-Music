@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="sample_rates">
+        <item>自動</item>
+        <item>44.1 kHz</item><item>48 kHz</item><item>88.2 kHz</item><item>96 kHz</item>
+        <item>176.4 kHz</item><item>192 kHz</item><item>352.8 kHz</item><item>384 kHz</item>
+    </string-array>
+    <string-array name="bit_depths">
+        <item>自動</item><item>16 bit</item><item>24 bit</item><item>32 bit</item>
+    </string-array>
+</resources>

@@ -11,6 +11,8 @@ class GaplessPlanHandoffGateTest {
     fun nextAfterCurrentPlanWaitsUntilAudiblePendingTrackCommits() {
         val gate = GaplessPlanHandoffGate()
         gate.armRenderedPending("B.flac", decoderSerial = 35L, generation = 8)
+        assertTrue(gate.isCommitting(8))
+        assertFalse(gate.isCommitting(9))
 
         assertTrue(
             gate.deferPlanIfCommitting(
@@ -27,6 +29,7 @@ class GaplessPlanHandoffGateTest {
             expectedDecoderSerial = 35L,
         )
         assertEquals("C.flac", deferred?.nextPath)
+        assertFalse(gate.isCommitting(8))
         assertEquals("queue_advance", deferred?.reason)
         assertFalse(
             gate.deferPlanIfCommitting(

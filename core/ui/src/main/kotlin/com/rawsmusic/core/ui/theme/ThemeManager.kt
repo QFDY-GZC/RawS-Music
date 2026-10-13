@@ -2,6 +2,8 @@ package com.rawsmusic.core.ui.theme
 
 import android.content.Context
 import com.rawsmusic.core.common.prefs.UIPreferences
+import com.rawsmusic.core.ui.widget.flow.RawBackgroundStyle
+import com.rawsmusic.core.ui.widget.flow.RawFlowTuningState
 
 object ThemeManager {
 
@@ -41,7 +43,19 @@ object ThemeManager {
         return ThemeMode.entries.getOrElse(UIPreferences.themeMode) { ThemeMode.SYSTEM }
     }
 
+    /**
+     * The album-colour flow background is a dark foreground surface: its moving highlights make
+     * theme-black text unreadable, so ALBUM_COLOR forces the dark theme regardless of the user's
+     * light/dark/system choice. This is the single rule shared by the theme root and every View /
+     * native-text owner that resolves its own foreground (lists, player, lyrics).
+     */
+    fun albumColorForcesDark(context: Context): Boolean {
+        RawFlowTuningState.ensureInitialized(context)
+        return RawFlowTuningState.style == RawBackgroundStyle.ALBUM_COLOR
+    }
+
     fun isDarkMode(context: Context): Boolean {
+        if (albumColorForcesDark(context)) return true
         return when (getCurrentTheme()) {
             ThemeMode.DARK -> true
             ThemeMode.LIGHT -> false

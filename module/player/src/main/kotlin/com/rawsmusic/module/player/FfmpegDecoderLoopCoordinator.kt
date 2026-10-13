@@ -1,5 +1,6 @@
 package com.rawsmusic.module.player
 
+import android.content.Context
 import android.os.Process
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.common.utils.OnlinePlaybackDiagnostics
@@ -8,6 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Owns the blocking FFmpeg decode loop and its decoder-thread cleanup rules. */
 internal class FfmpegDecoderLoopCoordinator(
+    private val context: Context,
     private val tag: String,
     private val decoderChunkWriter: FfmpegDecoderChunkWriter,
     private val gaplessAuditRegistry: DecoderGaplessAuditRegistry,
@@ -23,7 +25,7 @@ internal class FfmpegDecoderLoopCoordinator(
     private val activeDecoderHandle: () -> Long,
     private val activeRingBuffer: () -> RingBuffer?,
     private val activeStopToken: () -> DecoderStopToken,
-    private val markDecoderDone: () -> Unit,
+    private val markDecoderDone: (DecoderStopToken) -> Unit,
     private val setState: (FfmpegAudioPlayer.State) -> Unit,
     private val onPlaybackError: (String) -> Unit,
     private val decoderHandleTransferred: AtomicBoolean,
@@ -33,6 +35,7 @@ internal class FfmpegDecoderLoopCoordinator(
     private val onSeekFailed: (serial: Long, targetMs: Long, reason: String) -> Unit = { _, _, _ -> },
     private val onDecoderEof: (sourcePath: String, generation: Int, totalDecodedBytes: Long) -> Unit = { _, _, _ -> },
     private val onDecodeFailed: (sourcePath: String, generation: Int, result: Int) -> Unit = { _, _, _ -> },
+    private val canContinuePresentedCrossfade: (outgoingHandle: Long) -> Boolean = { false },
 ) {
     fun run(
         handle: Long,
@@ -229,7 +232,7 @@ internal class FfmpegDecoderLoopCoordinator(
                                 "rb.available=${ringBuffer.available()})",
                         )
                         if (ownsActiveDecoder) {
-                            markDecoderDone()
+                            markDecoderDone(stopToken)
                         }
                         val gaplessAudit = gaplessAuditRegistry.finish(handle)
                         onDecoderEof(sourcePath, generation, totalDecodedBytes)
@@ -246,6 +249,37 @@ internal class FfmpegDecoderLoopCoordinator(
                     }
 
                     else -> {
+                        val ownsDecoder = DecoderCompletionOwnership.ownsActiveDecoder(
+                            activeHandle = activeDecoderHandle(), loopHandle = handle,
+                            sameRingBuffer = activeRingBuffer() === ringBuffer,
+                            sameStopToken = activeStopToken() === stopToken,
+                            stopRequested = stopToken.isStopRequested,
+                        )
+                        if (ownsDecoder && isStillCurrentPlayback(sourcePath, generation) &&
+                            canContinuePresentedCrossfade(handle)) {
+                            // B is already the public song, while A still supplies the fading tail.
+                            // Reporting A's failure globally would make the controller skip B to C.
+                            // Drain A's buffered PCM, then let the automatic mixer finish over silence.
+                            reachedEofForThisDecoder = true
+                            markDecoderDone(stopToken)
+                            ringBuffer.markEOF()
+                            gaplessAuditRegistry.invalidate(handle, "outgoing_crossfade_decode_error_$decoded")
+                            AppLogger.w(tag, "Outgoing decoder failed during presented automatic crossfade; " +
+                                "keep incoming track handle=$handle result=$decoded buffered=${ringBuffer.available()}")
+                            onDecodeFailed(sourcePath, generation, decoded)
+                            break
+                        }
+                        if (DecoderCompletionOwnership.ownsActiveDecoder(
+                                activeHandle = activeDecoderHandle(), loopHandle = handle,
+                                sameRingBuffer = activeRingBuffer() === ringBuffer,
+                                sameStopToken = activeStopToken() === stopToken,
+                                stopRequested = stopToken.isStopRequested,
+                            ) && isStillCurrentPlayback(sourcePath, generation)) {
+                            markDecoderDone(stopToken)
+                            setPlaying(false)
+                            setState(FfmpegAudioPlayer.State.ERROR)
+                            onPlaybackError("音频解码失败：$decoded")
+                        }
                         AppLogger.e(
                             tag,
                             "Decoder thread: decode error: $decoded " +
@@ -285,7 +319,12 @@ internal class FfmpegDecoderLoopCoordinator(
                 if (ownsCurrentPlayback) {
                     setPlaying(false)
                     setState(FfmpegAudioPlayer.State.ERROR)
-                    onPlaybackError("解码线程异常: ${error.message}")
+                    onPlaybackError(
+                        context.getString(
+                            R.string.player_error_decoder_thread,
+                            error.message.orEmpty(),
+                        )
+                    )
                 } else {
                     AppLogger.w(
                         tag,

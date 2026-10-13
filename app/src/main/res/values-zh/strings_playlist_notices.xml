@@ -1,0 +1,9 @@
+<resources>
+    <string name="notice_playlist_added_song">已将“%1$s”添加到“%2$s”</string>
+    <string name="notice_playlist_added_songs">已将“%1$d首歌曲”添加到“%2$s”</string>
+    <string name="notice_playlist_removed_song">已将“%1$s”移出“%2$s”</string>
+    <string name="notice_playlist_removed_songs">已将“%1$d首歌曲”移出“%2$s”</string>
+    <string name="notice_playlist_deleted">已删除歌单“%1$s”</string>
+    <string name="notice_playlist_delete_failed">删除歌单失败，请重试。</string>
+    <string name="notice_playlist_partial_failure">部分歌单操作失败。</string>
+</resources>

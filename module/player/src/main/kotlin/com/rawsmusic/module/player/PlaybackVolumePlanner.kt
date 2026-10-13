@@ -16,31 +16,22 @@ internal data class ReplayGainDecision(
 internal object PlaybackVolumePlanner {
     fun replayGain(
         song: AudioFile,
-        normalizationEnabled: Boolean,
-        replayGainEnabled: Boolean,
         replayGainMode: Int
     ): ReplayGainDecision {
-        val active = normalizationEnabled || replayGainEnabled
-        if (!active) {
+        val mode = replayGainMode.coerceIn(0, 2)
+        if (mode == 0) {
             return ReplayGainDecision(false, 0f, 1f, 1f)
         }
 
-        val gainDb = when {
-            replayGainEnabled -> when (replayGainMode) {
-                1 -> song.trackGain
-                2 -> song.albumGain
-                else -> 0f
-            }
-            song.trackGain != 0f -> song.trackGain
+        val gainDb = when (mode) {
+            1 -> song.trackGain
+            2 -> song.albumGain
             else -> 0f
         }
-        val peak = when {
-            replayGainEnabled -> when (replayGainMode) {
-                1 -> song.trackPeak
-                2 -> song.albumPeak
-                else -> 1f
-            }
-            else -> song.trackPeak.takeIf { it > 0f } ?: 1f
+        val peak = when (mode) {
+            1 -> song.trackPeak
+            2 -> song.albumPeak
+            else -> 1f
         }
         var linearGain = dbToLinear(gainDb)
         if (peak > 0f && linearGain * peak > 1f) {

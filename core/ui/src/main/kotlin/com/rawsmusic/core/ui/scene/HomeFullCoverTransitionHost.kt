@@ -88,6 +88,7 @@ internal fun HomeFullCoverTransitionHost(
     var predictiveBackStartProgress by remember { mutableFloatStateOf(0f) }
     var hostBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     var sourceBoundsInHost by remember { mutableStateOf<Rect?>(null) }
+    var latestHomeBoundsInHost by remember { mutableStateOf<Rect?>(null) }
     var sourceCornerRadiusDp by remember { mutableFloatStateOf(0f) }
     var targetBoundsInHost by remember { mutableStateOf<Rect?>(null) }
     var pendingOpenAnimation by remember { mutableStateOf(false) }
@@ -186,6 +187,7 @@ internal fun HomeFullCoverTransitionHost(
         transitionJob?.cancel()
         transitionJob = null
         sourceBoundsInHost = sourceLocal
+        latestHomeBoundsInHost = sourceLocal
         sourceCornerRadiusDp = sourceAnchor.cornerRadiusDp.coerceAtLeast(0f)
         targetBoundsInHost = null
         pendingOpenAnimation = true
@@ -229,6 +231,9 @@ internal fun HomeFullCoverTransitionHost(
 
     fun close() {
         if (!fullCoverVisible && transitionProgress <= 0.001f) return
+        // Freeze the current home holder before the return starts. The entry rectangle may no
+        // longer describe it after a relayout/scroll; never retarget this during the flight.
+        if (!returningToHome) latestHomeBoundsInHost?.let { sourceBoundsInHost = it }
         val sceneArtworkKey = resolveHomePortraitDialReturnArtworkKey(
             fullscreenCenterArtworkKey = fullscreenCenterArtworkKey,
             currentArtworkKey = currentSong.resolvePlaybackArtworkKey(null).orEmpty(),
@@ -243,6 +248,7 @@ internal fun HomeFullCoverTransitionHost(
     fun beginPredictiveBack() {
         if (!fullCoverVisible && transitionProgress <= 0.001f) return
         if (!predictiveBackActive) {
+            if (!returningToHome) latestHomeBoundsInHost?.let { sourceBoundsInHost = it }
             val sceneArtworkKey = resolveHomePortraitDialReturnArtworkKey(
                 fullscreenCenterArtworkKey = fullscreenCenterArtworkKey,
                 currentArtworkKey = currentSong.resolvePlaybackArtworkKey(null).orEmpty(),
@@ -355,9 +361,22 @@ internal fun HomeFullCoverTransitionHost(
             homeCenterReflectionAlpha,
             if (returningToHome) sharedSceneArtworkKey else "",
             ::open,
-            { _, _ ->
-                // The source rectangle is captured once by the long-press event. Closing reuses the
-                // exact same host-local rectangle, matching the landscape player/full-cover path.
+            { _, bounds ->
+                // boundsInRoot includes the home foreground graphicsLayer. Remove that scale
+                // around the host pivot, otherwise the shared lane lands on the shrunken holder
+                // and jumps when HOME returns to scale 1. Ignore intermediate flight geometry.
+                if (!transitionRunning && !predictiveBackActive) {
+                    hostBoundsInRoot?.let { host ->
+                        fun x(value: Float) = homeFullCoverUnscaledCoordinate(
+                            value, host.left, host.width * .5f, homeScale,
+                        )
+                        fun y(value: Float) = homeFullCoverUnscaledCoordinate(
+                            value, host.top, host.height * .5f, homeScale,
+                        )
+                        val settled = Rect(x(bounds.left), y(bounds.top), x(bounds.right), y(bounds.bottom))
+                        if (settled.width > 1f && settled.height > 1f) latestHomeBoundsInHost = settled
+                    }
+                }
             },
         )
 

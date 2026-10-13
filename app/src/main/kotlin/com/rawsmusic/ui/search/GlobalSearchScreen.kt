@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -56,6 +58,7 @@ import androidx.compose.ui.zIndex
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.scene.GlobalSearchScope
+import com.rawsmusic.core.ui.scene.LocalRawWindowLayoutProfile
 import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
 import com.rawsmusic.core.ui.widget.virtuallist.ListZoomIndex
 import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListState
@@ -122,6 +125,7 @@ fun GlobalSearchScreen(
     onShuffle: (List<AudioFile>) -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
     val session = remember(context, initialScope) {
         GlobalSearchSessionStore.get(context, initialScope)
     }
@@ -269,12 +273,19 @@ fun GlobalSearchScreen(
     val rotatingSearchHint = history.getOrNull(historyHintIndex)
         ?: stringResource(R.string.global_search_hint_short)
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Transparent)
             .statusBarsPadding()
     ) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = windowLayoutProfile.contentMaxWidth)
+                .fillMaxWidth()
+                .fillMaxHeight()
+                .align(Alignment.TopCenter)
+        ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -439,6 +450,7 @@ fun GlobalSearchScreen(
                         ?: onCategoryClick(entry.scope, entry.key)
                 }
             )
+        }
         }
     }
 

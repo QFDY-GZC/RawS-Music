@@ -184,7 +184,7 @@ internal class AudioTranscodeQueueStore(context: Context) {
             deleteSourceOnSuccess = json.optBoolean("deleteSourceOnSuccess", false),
             autoScanOnSuccess = json.optBoolean("autoScanOnSuccess", false),
             overwrite = json.optBoolean("overwrite", false),
-        )
+        ).withCanonicalOutputExtension()
     }
 
     private fun parseProgress(json: JSONObject?): AudioTranscodeProgress? {

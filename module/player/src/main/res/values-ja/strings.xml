@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RawS Music</string>
+    <string name="notification_channel_live_lyrics">リアルタイム歌詞</string>
+    <string name="notification_channel_live_lyrics_description">現在の歌詞行</string>
+    <string name="usb_bitperfect_enabled">Bit-perfect を有効にしました</string>
+    <string name="usb_volume_transition">USB を切り替えています。しばらくしてからハードウェア音量を再度お試しください</string>
+    <string name="usb_volume_exclusive_only">ハードウェア音量は USB 排他モードでのみ利用できます</string>
+    <string name="usb_volume_disabled">ハードウェア音量は無効です</string>
+</resources>

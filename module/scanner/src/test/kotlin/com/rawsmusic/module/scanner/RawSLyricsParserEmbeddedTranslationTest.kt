@@ -7,6 +7,45 @@ import org.junit.Test
 
 class RawSLyricsParserEmbeddedTranslationTest {
     @Test
+    fun enhancedLrcMergesLaterTranslationBlockByMatchingTimestamps() {
+        val lyrics = """
+            [00:21.804]<00:21.804>Listen <00:22.739>close<00:23.661>
+            [00:27.317]<00:27.317>Morning <00:28.100>comes<00:29.200>
+            [00:33.306]<00:33.306>I'm <00:34.000>floating<00:35.000>
+
+            [00:21.804]仔细听，别茫然无措
+            [00:27.317]清晨我们会在此
+            [00:33.306]因为我只是漂浮着
+        """.trimIndent()
+
+        val lines = RawSLyricsParser.parse(lyrics).lines
+        assertEquals(3, lines.size)
+        assertEquals("Listen close", lines[0].text)
+        assertEquals("仔细听，别茫然无措", lines[0].translation.replace("\u2060", ""))
+        assertEquals("清晨我们会在此", lines[1].translation.replace("\u2060", ""))
+        assertEquals("因为我只是漂浮着", lines[2].translation.replace("\u2060", ""))
+        assertTrue(lines.all { it.words.isNotEmpty() })
+    }
+
+    @Test
+    fun enhancedLrcKeepsIncompleteOrTimedRepeatedBlockAsSeparateLyrics() {
+        val incomplete = """
+            [00:01.000]<00:01.000>One<00:02.000>
+            [00:03.000]<00:03.000>Two<00:04.000>
+            [00:01.000]第一句
+        """.trimIndent()
+        val repeated = """
+            [00:01.000]<00:01.000>One<00:02.000>
+            [00:03.000]<00:03.000>Two<00:04.000>
+            [00:01.000]<00:01.000>One<00:02.000>
+            [00:03.000]<00:03.000>Two<00:04.000>
+        """.trimIndent()
+
+        assertEquals(3, RawSLyricsParser.parse(incomplete).lines.size)
+        assertEquals(4, RawSLyricsParser.parse(repeated).lines.size)
+    }
+
+    @Test
     fun m4aEnhancedLrcKeepsRomanizationAndChineseTranslationAtSameTimestamp() {
         val lyrics = """
             [00:12.651] <00:12.651>か<00:12.884>弱<00:13.476>い<00:13.678>光<00:14.553>が<00:14.897>指<00:15.616>差<00:16.936>す<00:17.007>先<00:18.056>

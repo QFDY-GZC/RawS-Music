@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +36,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.ui.widget.player.KaraokeLyricLine
+import com.rawsmusic.core.ui.widget.player.LocalJapaneseLyricDocument
+import com.rawsmusic.core.ui.widget.player.isJapaneseLyricDocument
+import com.rawsmusic.core.ui.widget.player.lyricGlyphLocales
 import com.rawsmusic.core.ui.widget.player.LyricColorSurface
 import com.rawsmusic.core.ui.widget.player.LyricTimelineIndex
 import com.rawsmusic.core.ui.widget.player.calculateLyricInterludes
@@ -51,7 +55,8 @@ private data class HomeCarouselLyricLine(
     val index: Int,
     val line: IRichLyricLine?,
     val primary: String,
-    val translation: String
+    val translation: String,
+    val japaneseDocument: Boolean = false,
 )
 
 @Composable
@@ -76,7 +81,7 @@ internal fun HomeHorizontalCarouselLyric(
         albumAccent = albumAccent,
     )
     val fontScale = LocalDensity.current.fontScale
-    val lyricLaneHeight = 88.dp + (24.dp * (fontScale - 1f).coerceIn(0f, 0.5f))
+    val lyricLaneHeight = 88.dp + (24.dp * (fontScale - 1f).coerceAtLeast(0f))
     AnimatedContent(
         targetState = current,
         transitionSpec = {
@@ -244,37 +249,39 @@ private fun HomePrimaryLyric(
     textAlign: TextAlign,
     modifier: Modifier
 ) {
-    val timedLine = lyric.line
-    if (timedLine != null && !timedLine.words.isNullOrEmpty()) {
-        KaraokeLyricLine(
-            renderClock = renderClock,
-            line = timedLine,
-            positionMs = positionMs,
-            highlightColor = primaryColor,
-            dimColor = dimColor,
-            fontSize = 18.sp,
-            lineHeight = 23.sp,
-            fontWeight = FontWeight.SemiBold,
-            textAlign = textAlign,
-            wordLiftDp = 0.45.dp,
-            wordLiftScale = 0.015f,
-            glowEnabled = true,
-            liftEnabled = true,
-            modifier = modifier.lyricRainbowMask(rainbow)
-        )
-    } else {
-        Text(
-            text = lyric.primary,
-            color = primaryColor.copy(alpha = primaryColor.alpha.coerceAtMost(0.96f)),
-            fontSize = 18.sp,
-            lineHeight = 23.sp,
-            fontWeight = FontWeight.SemiBold,
-            textAlign = textAlign,
-            maxLines = 4,
-            overflow = TextOverflow.Ellipsis,
-            style = HomeLyricShadowStyle,
-            modifier = modifier.lyricRainbowMask(rainbow)
-        )
+    CompositionLocalProvider(LocalJapaneseLyricDocument provides lyric.japaneseDocument) {
+        val timedLine = lyric.line
+        if (timedLine != null && !timedLine.words.isNullOrEmpty()) {
+            KaraokeLyricLine(
+                renderClock = renderClock,
+                line = timedLine,
+                positionMs = positionMs,
+                highlightColor = primaryColor,
+                dimColor = dimColor,
+                fontSize = 18.sp,
+                lineHeight = 23.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = textAlign,
+                wordLiftDp = 0.45.dp,
+                wordLiftScale = 0.015f,
+                glowEnabled = true,
+                liftEnabled = true,
+                modifier = modifier.lyricRainbowMask(rainbow)
+            )
+        } else {
+            Text(
+                text = lyric.primary,
+                color = primaryColor.copy(alpha = primaryColor.alpha.coerceAtMost(0.96f)),
+                fontSize = 18.sp,
+                lineHeight = 23.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = textAlign,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+                style = HomeLyricShadowStyle.copy(localeList = lyricGlyphLocales(lyric.primary)),
+                modifier = modifier.lyricRainbowMask(rainbow)
+            )
+        }
     }
 }
 
@@ -300,7 +307,7 @@ private fun HomeTranslationLyric(
             textAlign = textAlign,
             maxLines = maxLines,
             overflow = TextOverflow.Ellipsis,
-            style = HomeTranslationUnderlayStyle,
+            style = HomeTranslationUnderlayStyle.copy(localeList = lyricGlyphLocales(text, inheritOriginal = false)),
             modifier = Modifier.fillMaxWidth(),
         )
         Text(
@@ -312,7 +319,8 @@ private fun HomeTranslationLyric(
             textAlign = textAlign,
             maxLines = maxLines,
             overflow = TextOverflow.Ellipsis,
-            style = if (rainbow) TextStyle.Default else HomeLyricShadowStyle,
+            style = (if (rainbow) TextStyle.Default else HomeLyricShadowStyle)
+                .copy(localeList = lyricGlyphLocales(text, inheritOriginal = false)),
             modifier = Modifier
                 .fillMaxWidth()
                 .lyricRainbowMask(rainbow),
@@ -328,6 +336,7 @@ private fun rememberHomeCarouselLyricLine(
     fallbackTranslation: String
 ): HomeCarouselLyricLine? {
     val lines = remember(song) { song?.lyrics.orEmpty() }
+    val japaneseGlyphDocument = remember(lines) { isJapaneseLyricDocument(lines) }
     val interludes = remember(lines) { calculateLyricInterludes(lines) }
     val lyricTimeline = remember(lines, interludes) { LyricTimelineIndex(lines, interludes) }
     val playbackState = remember(lyricTimeline, positionMs) {
@@ -356,7 +365,9 @@ private fun rememberHomeCarouselLyricLine(
                 index = resolvedIndex,
                 line = timed,
                 primary = primary,
-                translation = translation
+                translation = translation,
+                japaneseDocument = japaneseGlyphDocument &&
+                    (!timed.text.isNullOrBlank() || !timed.secondary.isNullOrBlank()),
             )
         }
     }

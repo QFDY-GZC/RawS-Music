@@ -1,0 +1,5 @@
+{
+  "plugin.name": "Japanese Lyrics Source",
+  "plugin.description": "Searches Japanese lyrics only and automatically adds furigana to kanji. Lyrico's TTML export includes tts:ruby annotations. Lyrics source only: no metadata or cover search. Only Japanese lyrics are returned; lyrics in Chinese or other languages never appear in search results.",
+  "error.lyricsCandidate": "Lyrics candidate %1$s failed: %2$s"
+}

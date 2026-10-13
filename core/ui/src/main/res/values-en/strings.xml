@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="song_credits_title">Song &amp; contributors</string>
+    <string name="song_credits_close">Close</string>
+    <string name="song_credits_unknown_album">Unknown album</string>
+    <string name="song_credits_song_artists">Song artists</string>
+    <string name="song_credits_album_artist">Album artist</string>
+    <string name="song_credits_album_participants">Album contributors</string>
+    <string name="song_credits_totals">%1$d artists · %2$d tracks · %3$d collaborations</string>
+    <string name="song_credits_song_count">Appears on %1$d tracks</string>
+    <string name="song_credits_no_performers">No artist credits found in local metadata</string>
+    <string name="song_credits_composers">Composers</string>
+    <string name="song_credits_local_source">Based on locally available artist, album artist and composer tags. Not a complete official credit list.</string>
     <string name="sort_by_modified">Modified date</string>
     <string name="sort_by_added">Added date</string>
     <string name="player_favorite">Favorite</string>
@@ -103,6 +114,22 @@
     <string name="player_more_spectrum_analysis">File spectrum</string>
     <string name="common_back">Back</string>
     <string name="common_cancel">Cancel</string>
+    <string name="album_color_background_dialog_title">Album colors</string>
+    <string name="album_color_background_dialog_summary">Extract a light or dark palette from the current cover and turn its colors into a continuously moving background.</string>
+    <string name="album_color_switch_to_flow_title">Switch to flow</string>
+    <string name="album_color_switch_to_flow_summary">Return to normal flow and restore dark, light, and universal flow options.</string>
+    <string name="flow_background_style_album_color">Album colors</string>
+    <string name="flow_background_style_album_color_summary">Animated cover-derived colors</string>
+    <string name="player_album_detail_title">Album details</string>
+    <string name="player_album_detail_full_metadata">Full metadata ›</string>
+    <string name="player_album_detail_year">Year</string>
+    <string name="player_album_detail_genre">Genre</string>
+    <string name="player_album_detail_composer">Composer</string>
+    <string name="player_album_detail_tracks">Tracks on this album</string>
+    <string name="player_album_detail_play_all">Play all</string>
+    <string name="player_album_detail_summary">%1$d tracks</string>
+    <string name="player_album_detail_summary_with_duration">%1$d tracks · %2$s</string>
+    <string name="source_search_results_count">%1$d related · max %2$d</string>
     <string name="common_confirm">Confirm</string>
     <string name="artist_biography_action">Artist biography</string>
     <string name="artist_biography_button">Biography</string>
@@ -168,6 +195,7 @@
     <string name="library_title_albums">Albums</string>
     <string name="library_album_count">%1$d albums</string>
     <string name="library_title_artists">Artists</string>
+    <string name="library_artist_all_songs">All Artist Songs</string>
     <string name="library_title_playlists">Playlists</string>
     <string name="library_title_queue">Queue</string>
     <string name="library_title_recently_added">Recently added</string>
@@ -249,6 +277,8 @@
     <string name="settings_player_interface_title">Player interface</string>
     <string name="settings_album_art_title">Artwork</string>
     <string name="settings_global_font_title">Global font</string>
+    <string name="settings_font_settings_title">Font settings</string>
+    <string name="settings_font_settings_summary">Global and lyric fonts, weight, size, and font capabilities</string>
     <string name="settings_audio_settings_title">Playback and output</string>
     <string name="settings_transition_settings_title">Fades</string>
     <string name="settings_audio_effects_title">Audio effects</string>
@@ -347,6 +377,7 @@
     <string name="home_card_settings_entry_summary">Show, hide, and reorder Home category cards</string>
     <string name="home_card_reset">Restore default cards</string>
     <string name="home_card_drag_hint_short">Long-press a card again on Home to drag it</string>
+    <string name="home_card_edit_drag_notice">Long-press any card again to drag and rearrange it</string>
     <string name="home_card_content_count">%1$d items</string>
     <string name="home_card_statistics_folders">%1$d folders</string>
     <string name="home_card_statistics_albums">%1$d albums</string>
@@ -357,4 +388,8 @@
 
     <string name="mini_player_previous">Previous</string>
     <string name="songs_selection_range">Range</string>
+    <string name="scan_settings_automatic_title">Automatic scanning</string>
+    <string name="scan_settings_automatic_summary">Check selected folders on startup and audio file changes. Manual scanning remains available when disabled.</string>
+    <string name="scan_settings_immediate_title">Respond quickly to file changes</string>
+    <string name="scan_settings_immediate_summary">Reduce the wait after system changes. Leave off when copying many files.</string>
 </resources>

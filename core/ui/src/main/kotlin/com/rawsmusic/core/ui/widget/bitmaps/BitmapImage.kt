@@ -80,6 +80,9 @@ fun BitmapImage(
     // Request lifetime may restart when freeze toggles, but handle lifetime deliberately does not.
     // Cancelling an in-flight request is enough to make the frozen transition cheap and stable.
     DisposableEffect(key, targetWidth, targetHeight, priority, surface, freezeBitmapUpdates, aspectPolicy, exactTarget) {
+        android.util.Log.i("ArtworkBindingDiagnostic",
+            "bind surface=$surface target=${targetWidth}x${targetHeight} freeze=$freezeBitmapUpdates " +
+                "resident=${handle?.isValid == true} key=$key")
         requestSlot[0]?.let(BitmapProvider::cancel)
         requestSlot[0] = if (!freezeBitmapUpdates && key.isNotBlank()) {
             BitmapProvider.loadHandle(
@@ -91,6 +94,9 @@ fun BitmapImage(
                 aspectPolicy = aspectPolicy,
                 exactTarget = exactTarget,
             ) { delivered ->
+                android.util.Log.i("ArtworkBindingDiagnostic",
+                    "result surface=$surface target=${targetWidth}x${targetHeight} freeze=${freezeUpdates} " +
+                        "valid=${delivered?.isValid == true} bitmap=${delivered?.bitmap?.width}x${delivered?.bitmap?.height} key=$key")
                 // A completion already queued on the main thread may race with the freeze edge.
                 // Never let that late result replace the pixels owned by the active transition.
                 if (freezeUpdates) {

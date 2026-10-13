@@ -30,14 +30,17 @@ object MediaStoreChangeObserver {
         return callbackFlow {
             val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
                 override fun onChange(selfChange: Boolean) {
+                    if (selfChange) return
                     trySend(Change(uri = null, flags = 0))
                 }
 
                 override fun onChange(selfChange: Boolean, uri: Uri?) {
+                    if (selfChange) return
                     trySend(Change(uri = uri, flags = 0))
                 }
 
                 override fun onChange(selfChange: Boolean, uris: Collection<Uri>, flags: Int) {
+                    if (selfChange) return
                     trySend(Change(uri = uris.firstOrNull(), flags = flags))
                 }
             }

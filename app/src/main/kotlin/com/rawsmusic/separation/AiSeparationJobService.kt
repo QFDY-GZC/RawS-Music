@@ -19,6 +19,7 @@ import androidx.core.content.ContextCompat
 import com.rawsmusic.R
 import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.utils.AppLogger
+import com.rawsmusic.locale.localizedErrorMessage
 import com.rawsmusic.ui.settings.AiSeparationActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,7 +53,10 @@ class AiSeparationJobService : Service() {
             val taskId = intent.getStringExtra(EXTRA_TASK_ID).orEmpty()
             if (taskId.isBlank() || taskId == activeTaskId) {
                 cancelled.set(true)
-                AiSeparationJobProgressBus.requestCancel(activeTaskId)
+                AiSeparationJobProgressBus.requestCancel(
+                    activeTaskId,
+                    getString(R.string.settings_ai_job_cancelling),
+                )
             }
             return START_NOT_STICKY
         }
@@ -76,7 +80,7 @@ class AiSeparationJobService : Service() {
                     sourceName = sourceName,
                     sourceIdentity = sourceUri,
                     phase = AiSeparationJobPhase.FAILED,
-                    message = "请先选择已安装的 schema 2/3 可执行模型",
+                    message = getString(R.string.settings_ai_job_select_executable_model),
                 )
             )
             return START_NOT_STICKY
@@ -89,7 +93,7 @@ class AiSeparationJobService : Service() {
             sourceName = sourceName,
             sourceIdentity = sourceUri,
             phase = AiSeparationJobPhase.PREPARING,
-            message = "准备 AI 分离任务",
+            message = getString(R.string.settings_ai_job_preparing_task),
         )
         if (!AiSeparationJobProgressBus.begin(initial)) return START_NOT_STICKY
 
@@ -152,21 +156,27 @@ class AiSeparationJobService : Service() {
             val separationResultStore = AiSeparationResultStore.get(this)
             val sourceModifiedEpochMs = separationResultStore.captureSourceModifiedEpochMs(sourceUri)
             if (AiOnnxRuntimeLoader.ensureLoaded(this).isFailure) {
-                update(taskId, AiSeparationJobPhase.PREPARING, "首次准备 AI 推理运行库")
+                update(
+                    taskId,
+                    AiSeparationJobPhase.PREPARING,
+                    getString(R.string.settings_ai_job_runtime_first_prepare),
+                )
                 AiSeparationPluginStore.get(this).downloadAndInstallRuntime(
                     onProgress = { downloaded, total ->
                         val percent = if (total > 0L) downloaded * 100L / total else 0L
                         update(
                             taskId,
                             AiSeparationJobPhase.PREPARING,
-                            "正在下载 AI 推理运行库 $percent%",
+                            getString(R.string.settings_ai_job_runtime_downloading_percent, percent),
                         )
                     },
                     onPhase = { phase ->
                         val message = when (phase) {
-                            AiSeparationDownloadPhase.VERIFYING -> "正在校验 AI 推理运行库"
-                            AiSeparationDownloadPhase.INSTALLING -> "正在安装 AI 推理运行库"
-                            else -> "正在准备 AI 推理运行库"
+                            AiSeparationDownloadPhase.VERIFYING ->
+                                getString(R.string.settings_ai_job_runtime_verifying)
+                            AiSeparationDownloadPhase.INSTALLING ->
+                                getString(R.string.settings_ai_job_runtime_installing)
+                            else -> getString(R.string.settings_ai_job_runtime_preparing)
                         }
                         update(taskId, AiSeparationJobPhase.PREPARING, message)
                     },
@@ -217,7 +227,11 @@ class AiSeparationJobService : Service() {
                     "frames=$totalFrames shared=true lowLatency=$liveStreamingEnabled",
             )
 
-            update(taskId, AiSeparationJobPhase.LOADING_MODEL, "正在加载 ONNX Runtime 模型") {
+            update(
+                taskId,
+                AiSeparationJobPhase.LOADING_MODEL,
+                getString(R.string.settings_ai_job_loading_model),
+            ) {
                 copy(totalFrames = totalFrames)
             }
             val modelFile = File(model.directory, model.catalog.modelFile)
@@ -255,7 +269,7 @@ class AiSeparationJobService : Service() {
                                 totalSegments = segmentCount,
                                 elapsedMs = elapsedMs,
                                 realtimeFactor = realtimeFactor,
-                                message = "正在分离人声与伴奏",
+                                message = getString(R.string.settings_ai_job_separating),
                             )
                         }
                         AiSeparationLiveStreamBus.publish(
@@ -295,9 +309,9 @@ class AiSeparationJobService : Service() {
                     taskId,
                     AiSeparationJobPhase.COMMITTING,
                     if (losslessOutput) {
-                        "正在编码 FLAC · 16-bit/44.1kHz · Level 8"
+                        getString(R.string.settings_ai_job_encoding_flac)
                     } else {
-                        "正在编码 AAC-LC · 44.1kHz"
+                        getString(R.string.settings_ai_job_encoding_aac)
                     },
                 ) {
                     copy(
@@ -315,7 +329,11 @@ class AiSeparationJobService : Service() {
                     losslessOutput,
                 ).getOrThrow()
                 ensureNotCancelled(taskId)
-                update(taskId, AiSeparationJobPhase.COMMITTING, "正在原子提交分离结果")
+                update(
+                    taskId,
+                    AiSeparationJobPhase.COMMITTING,
+                    getString(R.string.settings_ai_job_committing),
+                )
                 val result = separationResultStore.commit(
                     vocals = encodedVocals,
                     instrumental = encodedInstrumental,
@@ -344,14 +362,17 @@ class AiSeparationJobService : Service() {
                 publishTerminal(
                     AiSeparationJobProgressBus.state.value.copy(
                         phase = AiSeparationJobPhase.COMPLETED,
-                        message = "AI 人声分离完成",
+                        message = getString(R.string.settings_ai_job_completed),
                         resultId = result.id,
                         cancelRequested = false,
                     )
                 )
                 notificationManager().notify(
                     NOTIFICATION_ID,
-                    buildTerminalNotification("AI 人声分离完成", "$sourceName · 已生成人声与伴奏")
+                    buildTerminalNotification(
+                        getString(R.string.settings_ai_job_completed),
+                        getString(R.string.settings_ai_job_completed_summary, sourceName),
+                    )
                 )
             }
         } catch (error: Throwable) {
@@ -368,20 +389,31 @@ class AiSeparationJobService : Service() {
             if (liveStreamStarted) {
                 AiSeparationLiveStreamBus.fail(
                     taskId,
-                    if (cancelledTask) "AI 分离已取消" else (error.message ?: "AI 分离失败"),
+                    if (cancelledTask) {
+                        getString(R.string.settings_ai_job_cancelled)
+                    } else {
+                        localizedErrorMessage(error, R.string.settings_ai_job_failed)
+                    },
                 )
             }
             publishTerminal(
                 AiSeparationJobProgressBus.state.value.copy(
                     phase = if (cancelledTask) AiSeparationJobPhase.CANCELLED else AiSeparationJobPhase.FAILED,
-                    message = if (cancelledTask) "AI 人声分离已取消" else (error.message ?: "AI 人声分离失败"),
+                    message = if (cancelledTask) {
+                        getString(R.string.settings_ai_job_cancelled)
+                    } else {
+                        localizedErrorMessage(error, R.string.settings_ai_job_failed)
+                    },
                     cancelRequested = cancelledTask,
                 )
             )
             if (!cancelledTask) {
                 notificationManager().notify(
                     NOTIFICATION_ID,
-                    buildTerminalNotification("AI 人声分离失败", error.message ?: "请检查模型契约")
+                    buildTerminalNotification(
+                        getString(R.string.settings_ai_job_failed),
+                        localizedErrorMessage(error, R.string.settings_ai_job_check_model_contract),
+                    )
                 )
             }
         } finally {
@@ -414,7 +446,11 @@ class AiSeparationJobService : Service() {
                 val directPath = "/proc/self/fd/${descriptor.fd}"
                 val durationMs = FFmpegBridge.probeDuration(directPath).coerceAtLeast(0L)
                 ensureDecodeSpace(durationMs, sampleRate)
-                update(taskId, AiSeparationJobPhase.DECODING, "正在直接解码和重采样音频")
+                update(
+                    taskId,
+                    AiSeparationJobPhase.DECODING,
+                    getString(R.string.settings_ai_job_decoding_direct),
+                )
                 val directResult = FFmpegBridge.convertToRawPcm(
                     inputPath = directPath,
                     outputPath = pcmFile.absolutePath,
@@ -435,7 +471,11 @@ class AiSeparationJobService : Service() {
         require(fallbackSource.length() > 0L) { "输入音频为空" }
         val durationMs = FFmpegBridge.probeDuration(fallbackSource.absolutePath).coerceAtLeast(0L)
         ensureDecodeSpace(durationMs, sampleRate)
-        update(taskId, AiSeparationJobPhase.DECODING, "正在解码和重采样音频")
+        update(
+            taskId,
+            AiSeparationJobPhase.DECODING,
+            getString(R.string.settings_ai_job_decoding),
+        )
         val result = FFmpegBridge.convertToRawPcm(
             inputPath = fallbackSource.absolutePath,
             outputPath = pcmFile.absolutePath,
@@ -613,7 +653,11 @@ class AiSeparationJobService : Service() {
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             notificationManager().createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "AI 人声分离", NotificationManager.IMPORTANCE_LOW)
+                NotificationChannel(
+                    CHANNEL_ID,
+                    getString(R.string.settings_ai_job_notification_channel),
+                    NotificationManager.IMPORTANCE_LOW,
+                )
             )
         }
     }
@@ -642,7 +686,10 @@ class AiSeparationJobService : Service() {
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         cancelled.set(true)
-        AiSeparationJobProgressBus.requestCancel(activeTaskId)
+        AiSeparationJobProgressBus.requestCancel(
+            activeTaskId,
+            getString(R.string.settings_ai_job_cancelling),
+        )
         stopSelf(startId)
     }
 
@@ -702,7 +749,9 @@ class AiSeparationJobService : Service() {
             val identity = sourceUri.toString()
             val current = AiSeparationJobProgressBus.state.value
             if (current.active) {
-                require(current.sourceIdentity == identity) { "另一首歌曲正在分离" }
+                require(current.sourceIdentity == identity) {
+                    context.getString(R.string.settings_ai_job_other_song_running)
+                }
                 return@runCatching SharedStartHandle(current.taskId, ownedByCaller = false)
             }
             SharedStartHandle(
@@ -722,7 +771,9 @@ class AiSeparationJobService : Service() {
             sourceName: String,
             forceSharedStream: Boolean,
         ): Result<String> = runCatching {
-            require(!AiSeparationJobProgressBus.hasActiveTask()) { "已有 AI 分离任务正在运行" }
+            require(!AiSeparationJobProgressBus.hasActiveTask()) {
+                context.getString(R.string.settings_ai_job_already_running)
+            }
             val taskId = UUID.randomUUID().toString()
             val intent = Intent(context, AiSeparationJobService::class.java)
                 .putExtra(EXTRA_TASK_ID, taskId)
@@ -734,7 +785,10 @@ class AiSeparationJobService : Service() {
         }
 
         fun cancel(context: Context, taskId: String) {
-            AiSeparationJobProgressBus.requestCancel(taskId)
+            AiSeparationJobProgressBus.requestCancel(
+                taskId,
+                context.getString(R.string.settings_ai_job_cancelling),
+            )
             context.startService(
                 Intent(context, AiSeparationJobService::class.java)
                     .setAction(ACTION_CANCEL)

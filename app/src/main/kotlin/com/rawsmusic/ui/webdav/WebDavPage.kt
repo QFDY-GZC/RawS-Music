@@ -48,6 +48,7 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AudioUtils
 import com.rawsmusic.core.ui.scene.pages.themeColors
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
+import com.rawsmusic.locale.localizedErrorMessage
 import com.rawsmusic.core.ui.widget.predictiveDialogMotion
 import com.rawsmusic.core.ui.widget.rememberPredictiveDialogProgress
 import com.rawsmusic.module.data.prefs.AppPreferences
@@ -151,7 +152,7 @@ fun WebDavPageCompose(onBack: () -> Unit) {
                     isLoading = false
                     emptyMessage = context.getString(
                         R.string.webdav_load_failed,
-                        error.message.orEmpty()
+                        context.localizedErrorMessage(error, R.string.ui_unknown_error),
                     )
                 },
             )
@@ -378,7 +379,9 @@ fun WebDavPageCompose(onBack: () -> Unit) {
                     showSettings = false
                     loadDirectory(updated.url, updated)
                 }.onFailure { error ->
-                    AppNoticeBus.error(error.message ?: context.getString(R.string.webdav_enter_address))
+                    AppNoticeBus.error(
+                        context.localizedErrorMessage(error, R.string.webdav_enter_address)
+                    )
                 }
             }
         )
@@ -572,7 +575,7 @@ private fun WebDavSettingsDialog(
                                 testSuccess = false
                                 testMessage = context.getString(
                                     R.string.webdav_extra_headers_invalid,
-                                    error.message.orEmpty(),
+                                    context.localizedErrorMessage(error, R.string.ui_unknown_error),
                                 )
                                 return@TextButton
                             }
@@ -591,7 +594,14 @@ private fun WebDavSettingsDialog(
                             val result = withContext(Dispatchers.IO) { webDavClient.testConnection(testConfig) }
                             isTesting = false
                             testSuccess = result.success
-                            testMessage = result.message
+                            testMessage = if (result.success) {
+                                context.getString(R.string.webdav_test_success)
+                            } else {
+                                context.localizedErrorMessage(
+                                    result.message,
+                                    R.string.webdav_test_failed,
+                                )
+                            }
                             if (result.success && result.canonicalUrl.isNotBlank()) {
                                 url = result.canonicalUrl
                             }
@@ -618,7 +628,10 @@ private fun WebDavSettingsDialog(
                     val headerError = runCatching { WebDavHeaderCodec.parse(extraHeadersText) }.exceptionOrNull()
                     if (headerError != null) {
                         AppNoticeBus.error(
-                            context.getString(R.string.webdav_extra_headers_invalid, headerError.message.orEmpty())
+                            context.getString(
+                                R.string.webdav_extra_headers_invalid,
+                                context.localizedErrorMessage(headerError, R.string.ui_unknown_error),
+                            )
                         )
                         return@TextButton
                     }

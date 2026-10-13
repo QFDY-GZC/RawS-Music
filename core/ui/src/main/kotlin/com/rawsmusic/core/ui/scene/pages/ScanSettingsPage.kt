@@ -1,12 +1,17 @@
 package com.rawsmusic.core.ui.scene.pages
 
+import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,6 +68,53 @@ import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.roundToInt
 
+private class SystemDocumentsOpenTreeContract : ActivityResultContract<Uri?, Uri?>() {
+    override fun createIntent(context: Context, input: Uri?): Intent {
+        val baseIntent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && input != null) {
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, input)
+            }
+        }
+
+        // Some OEMs replace ACTION_OPEN_DOCUMENT_TREE with a generic file-picker activity which
+        // does not expose the directory grant affordance correctly on newer Android releases.
+        // Prefer the platform DocumentsUI implementation when one is available, but keep the
+        // implicit intent as a safe fallback for devices which legitimately ship another picker.
+        val packageManager = context.packageManager
+        val candidates = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.queryIntentActivities(
+                baseIntent,
+                PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong()),
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.queryIntentActivities(baseIntent, PackageManager.MATCH_DEFAULT_ONLY)
+        }
+        val documentsUiPackage = candidates
+            .asSequence()
+            .mapNotNull { resolveInfo -> resolveInfo.activityInfo?.applicationInfo }
+            .firstOrNull { appInfo ->
+                val flags = appInfo.flags
+                val isSystem = flags and ApplicationInfo.FLAG_SYSTEM != 0 ||
+                    flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0
+                isSystem && appInfo.packageName.contains("documentsui", ignoreCase = true)
+            }
+            ?.packageName
+
+        if (!documentsUiPackage.isNullOrBlank()) {
+            baseIntent.setPackage(documentsUiPackage)
+        }
+        return baseIntent
+    }
+
+    override fun parseResult(resultCode: Int, intent: Intent?): Uri? =
+        intent?.data?.takeIf { resultCode == Activity.RESULT_OK }
+}
+
 @Composable
 fun ScanSettingsPage(
     onBack: () -> Unit,
@@ -79,6 +132,7 @@ fun ScanSettingsPage(
     }
 
     var showLegacyConfirmDialog by remember { mutableStateOf(false) }
+    var pendingFolderPickerAfterAllFilesAccess by remember { mutableStateOf(false) }
 
     var legacyFileAccessEnabled by remember {
         mutableStateOf(AppPreferences.Scanner.legacyFileAccessEnabled)
@@ -87,6 +141,8 @@ fun ScanSettingsPage(
     var coldStartAutoScanEnabled by remember {
         mutableStateOf(AppPreferences.Scanner.coldStartAutoScanEnabled)
     }
+    var automaticScanEnabled by remember { mutableStateOf(AppPreferences.Scanner.automaticScanEnabled) }
+    var immediateAutoScanEnabled by remember { mutableStateOf(AppPreferences.Scanner.immediateAutoScanEnabled) }
 
     var minTrackDurationSeconds by remember {
         mutableStateOf(AppPreferences.Scanner.minTrackDurationSeconds.coerceIn(0, 60))
@@ -122,8 +178,9 @@ fun ScanSettingsPage(
         }
     }
 
+    val folderPickerContract = remember { SystemDocumentsOpenTreeContract() }
     val folderPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
+        contract = folderPickerContract
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
 
@@ -149,6 +206,16 @@ fun ScanSettingsPage(
             icon = AppNoticeIcon.SCAN,
         )
         onRescan()
+    }
+
+    LaunchedEffect(legacyFileAccessEnabled, pendingFolderPickerAfterAllFilesAccess) {
+        if (
+            pendingFolderPickerAfterAllFilesAccess &&
+            (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || legacyFileAccessEnabled)
+        ) {
+            pendingFolderPickerAfterAllFilesAccess = false
+            folderPicker.launch(null)
+        }
     }
 
     OverlayDialog(
@@ -199,6 +266,24 @@ fun ScanSettingsPage(
             SmallTitle(text = stringResource(R.string.scan_settings_library_section))
             CardGroup {
                 SwitchPreference(
+                    title = stringResource(R.string.scan_settings_automatic_title),
+                    summary = stringResource(R.string.scan_settings_automatic_summary),
+                    checked = automaticScanEnabled,
+                    onCheckedChange = { checked: Boolean ->
+                        automaticScanEnabled = checked
+                        AppPreferences.Scanner.automaticScanEnabled = checked
+                    }
+                )
+                SwitchPreference(
+                    title = stringResource(R.string.scan_settings_immediate_title),
+                    summary = stringResource(R.string.scan_settings_immediate_summary),
+                    checked = immediateAutoScanEnabled,
+                    onCheckedChange = { checked: Boolean ->
+                        immediateAutoScanEnabled = checked
+                        AppPreferences.Scanner.immediateAutoScanEnabled = checked
+                    }
+                )
+                SwitchPreference(
                     title = stringResource(R.string.scan_settings_cold_start_auto_title),
                     summary = stringResource(R.string.scan_settings_cold_start_auto_summary),
                     checked = coldStartAutoScanEnabled,
@@ -216,7 +301,17 @@ fun ScanSettingsPage(
                 ArrowPreference(
                     title = stringResource(R.string.scan_settings_choose_folder_title),
                     summary = stringResource(R.string.scan_settings_choose_folder_summary),
-                    onClick = { folderPicker.launch(null) }
+                    onClick = {
+                        if (
+                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                            !Environment.isExternalStorageManager()
+                        ) {
+                            pendingFolderPickerAfterAllFilesAccess = true
+                            onRequestLegacyAudioAccess()
+                        } else {
+                            folderPicker.launch(null)
+                        }
+                    }
                 )
             }
 

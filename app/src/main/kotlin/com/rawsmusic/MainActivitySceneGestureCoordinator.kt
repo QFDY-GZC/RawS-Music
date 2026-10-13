@@ -11,6 +11,8 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import com.rawsmusic.core.ui.scene.NavigationState
 import com.rawsmusic.core.ui.scene.NavScene
+import com.rawsmusic.core.ui.scene.shouldYieldSceneDragToChild
+import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.widget.PlayerSceneController
 import kotlin.math.abs
 
@@ -85,6 +87,8 @@ internal class MainActivitySceneGestureCoordinator(
         var rejected = false
         var dragDirection = 1f
         var progress = 0f
+        var loggedFirstInput = false
+        var loggedOriginCrossing = false
 
         while (true) {
             val event = awaitPointerEvent(PointerEventPass.Final)
@@ -133,12 +137,20 @@ internal class MainActivitySceneGestureCoordinator(
                 } else {
                     dragDirection = if (dx < 0f) -1f else 1f
                     draggingBack = mainNavigation.startBackDrag(dragDirection)
+                    AppLogger.i("SceneGesture", "root START accepted=$draggingBack scene=${mainNavigation.currentScene} direction=$dragDirection originX=${start.x} width=$widthPx slop=$touchSlop")
                 }
             }
 
             if (draggingBack) {
-                progress = ((abs(dx) - touchSlop) / widthPx).coerceIn(0f, 1f)
-                mainNavigation.updateBackDrag(progress)
+                progress = navigationDragProgress(dx, dragDirection, touchSlop, widthPx)
+                val rawProgress = navigationDragRawProgress(dx, dragDirection, touchSlop, widthPx)
+                val crossedOrigin = dx * dragDirection < 0f
+                if (!loggedFirstInput || (crossedOrigin && !loggedOriginCrossing)) {
+                    AppLogger.i("SceneGesture", "root INPUT dx=$dx signedDx=${dx * dragDirection} progress=$progress crossedOrigin=$crossedOrigin")
+                    loggedFirstInput = true
+                    loggedOriginCrossing = loggedOriginCrossing || crossedOrigin
+                }
+                mainNavigation.updateBackDrag(progress, rawProgress)
                 change.consume()
             }
         }
@@ -164,6 +176,12 @@ internal class MainActivitySceneGestureCoordinator(
             val change = event.changes.firstOrNull { it.id == pointerId }
                 ?: event.changes.firstOrNull()
                 ?: return
+
+            // Ignore consumed press/sub-slop jitter and horizontal movement: existing controls
+            // may consume those without owning vertical navigation. Once a vertical child drag
+            // crosses slop, relinquish the entire sequence, including reversal through zero.
+            if (shouldYieldSceneDragToChild(change.isConsumed, dragging,
+                    change.position.x - start.x, change.position.y - start.y, touchSlop)) return
 
             if (
                 isProgressSeekActive() ||

@@ -232,9 +232,15 @@ int openAudioInput(const char* path, OpenAudioInput& opened) {
         LOGE("decoder sample rate unavailable path=%s codecId=%d", path, static_cast<int>(parameters->codec_id));
         return kTranscodeUnsupportedSource;
     }
-    if (opened.decoder->ch_layout.nb_channels <= 0) {
-        const int fallbackChannels = parameters->ch_layout.nb_channels;
+    if (opened.decoder->ch_layout.nb_channels <= 0 ||
+        (opened.decoder->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC &&
+         opened.decoder->ch_layout.nb_channels <= 2)) {
+        // Legacy WAV commonly declares only a mono/stereo channel count. Assign the
+        // standard layout before resampling/DSD encoding; never guess multichannel maps.
+        const int fallbackChannels = opened.decoder->ch_layout.nb_channels > 0
+            ? opened.decoder->ch_layout.nb_channels : parameters->ch_layout.nb_channels;
         if (fallbackChannels <= 0) return kTranscodeUnsupportedSource;
+        av_channel_layout_uninit(&opened.decoder->ch_layout);
         av_channel_layout_default(&opened.decoder->ch_layout, fallbackChannels);
     }
     return 0;
@@ -384,7 +390,13 @@ bool pcmProfileCanOpenForChannels(
     context->sample_rate = sampleRateHz;
     context->sample_fmt = sampleFormat;
     context->time_base = AVRational{1, sampleRateHz};
-    if (target.lossless) context->bits_per_raw_sample = bitDepth;
+    if (target.lossless) {
+        context->bits_per_raw_sample = bitDepth;
+        // FFmpeg otherwise silently opens FLAC32 as FLAC24. Use the same policy
+        // for capability probing and the real encoder.
+        if (codecId == AV_CODEC_ID_FLAC && bitDepth == 32)
+            context->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
+    }
     else {
         context->bit_rate = static_cast<int64_t>(bitRateKbps) * 1000LL;
         context->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
@@ -392,8 +404,9 @@ bool pcmProfileCanOpenForChannels(
     if (target.flac_compression) context->compression_level = 8;
     av_channel_layout_default(&context->ch_layout, channels);
     const int result = avcodec_open2(context, codec, nullptr);
+    const bool exactDepth = !target.lossless || context->bits_per_raw_sample == bitDepth;
     avcodec_free_context(&context);
-    if (result < 0) return false;
+    if (result < 0 || !exactDepth) return false;
     if (openedCodecId) *openedCodecId = codecId;
     return true;
 }
@@ -961,9 +974,11 @@ int transcodePcmTarget(
     int64_t nextPts = 0;
     int64_t decodedSourceSamples = 0;
     const int64_t sourceDurationMs = durationMs(input.format, inputStream);
-    const int64_t expectedSourceSamples = sourceDurationMs > 0
-        ? (sourceDurationMs * static_cast<int64_t>(sourceRate)) / 1000LL
+    const int64_t declaredSourceSamples = inputStream->codecpar->codec_id == AV_CODEC_ID_FLAC
+        ? declaredFlacSampleCount(inputStream->codecpar->extradata, inputStream->codecpar->extradata_size)
         : 0LL;
+    const int64_t expectedSourceSamples = declaredSourceSamples > 0 ? declaredSourceSamples :
+        (sourceDurationMs > 0 ? (sourceDurationMs * static_cast<int64_t>(sourceRate)) / 1000LL : 0LL);
     const int compression = std::clamp(flac_compression_level, 0, 12);
     const bool autoDither = target->lossless && enable_auto_dither &&
         shouldAutoDither(sourceRate, targetRate, sourceBits, targetBits);
@@ -1021,6 +1036,8 @@ int transcodePcmTarget(
     encoder->time_base = AVRational{1, targetRate};
     if (target->lossless) {
         encoder->bits_per_raw_sample = targetBits;
+        if (targetCodecId == AV_CODEC_ID_FLAC && targetBits == 32)
+            encoder->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
     } else {
         encoder->bit_rate = static_cast<int64_t>(targetBitRateKbps) * 1000LL;
         encoder->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
@@ -1038,6 +1055,8 @@ int transcodePcmTarget(
     }
     result = avcodec_open2(encoder, encoderCodec, nullptr);
     if (result < 0) return fail("encoder open", result);
+    if (target->lossless && encoder->bits_per_raw_sample != targetBits)
+        return fail("encoder changed requested bit depth", AVERROR(EINVAL));
 
     outputStream = avformat_new_stream(output, nullptr);
     if (!outputStream) return fail("output stream", AVERROR(ENOMEM));
@@ -1183,8 +1202,11 @@ int transcodePcmTarget(
 
     auto convertDecodedFrame = [&]() -> int {
         if (cancelled()) return kTranscodeCancelled;
+        const int acceptedSamples = boundedDecodedSampleCount(
+            decodedSourceSamples, decodedFrame->nb_samples, declaredSourceSamples);
+        if (acceptedSamples <= 0) return 0;
         const int capacity = static_cast<int>(av_rescale_rnd(
-            swr_get_delay(resampler, input.decoder->sample_rate) + decodedFrame->nb_samples,
+            swr_get_delay(resampler, input.decoder->sample_rate) + acceptedSamples,
             encoder->sample_rate,
             input.decoder->sample_rate,
             AV_ROUND_UP
@@ -1207,7 +1229,7 @@ int transcodePcmTarget(
             converted,
             capacity,
             const_cast<const uint8_t**>(decodedFrame->extended_data),
-            decodedFrame->nb_samples
+            acceptedSamples
         );
         if (convertedSamples < 0) {
             localResult = convertedSamples;
@@ -1218,7 +1240,7 @@ int transcodePcmTarget(
             av_freep(&converted[0]);
             av_freep(&converted);
         }
-        decodedSourceSamples += decodedFrame->nb_samples;
+        decodedSourceSamples += acceptedSamples;
         updateProgress();
         return localResult;
     };
@@ -1667,10 +1689,13 @@ int transcodePcmToDsf(
     AVPacket* inputPacket = nullptr;
     AVFrame* decodedFrame = nullptr;
     const int64_t sourceDurationMs = durationMs(input.format, inputStream);
-    const int64_t expectedSourceSamples = sourceDurationMs > 0
-        ? (sourceDurationMs * static_cast<int64_t>(sourceRate)) / 1000LL
+    const int64_t declaredSourceSamples = inputParameters->codec_id == AV_CODEC_ID_FLAC
+        ? declaredFlacSampleCount(inputParameters->extradata, inputParameters->extradata_size)
         : 0LL;
+    const int64_t expectedSourceSamples = declaredSourceSamples > 0 ? declaredSourceSamples :
+        (sourceDurationMs > 0 ? (sourceDurationMs * static_cast<int64_t>(sourceRate)) / 1000LL : 0LL);
     int64_t decodedSourceSamples = 0;
+    int64_t ignoredTrailingSamples = 0;
 
     auto cleanup = [&]() {
         av_packet_free(&inputPacket);
@@ -1762,8 +1787,14 @@ int transcodePcmToDsf(
 
     auto convertDecodedFrame = [&]() -> int {
         if (session->cancelled()) return kTranscodeCancelled;
+        // Damaged/trailing FLAC data can resynchronize to old, valid frames after the
+        // declared end. Do not append these to DSF or inflate its logical duration.
+        const int acceptedSamples = boundedDecodedSampleCount(
+            decodedSourceSamples, decodedFrame->nb_samples, declaredSourceSamples);
+        ignoredTrailingSamples += decodedFrame->nb_samples - acceptedSamples;
+        if (acceptedSamples <= 0) return 0;
         const int capacity = static_cast<int>(av_rescale_rnd(
-            swr_get_delay(resampler, sourceRate) + decodedFrame->nb_samples,
+            swr_get_delay(resampler, sourceRate) + acceptedSamples,
             sourceRate,
             sourceRate,
             AV_ROUND_UP
@@ -1786,7 +1817,7 @@ int transcodePcmToDsf(
             converted,
             capacity,
             const_cast<const uint8_t**>(decodedFrame->extended_data),
-            decodedFrame->nb_samples
+            acceptedSamples
         );
         if (convertedSamples < 0) {
             localResult = convertedSamples;
@@ -1801,7 +1832,7 @@ int transcodePcmToDsf(
             av_freep(&converted);
         }
         if (localResult >= 0) {
-            decodedSourceSamples += decodedFrame->nb_samples;
+            decodedSourceSamples += acceptedSamples;
             updateProgress();
         }
         return localResult;
@@ -1910,6 +1941,12 @@ int transcodePcmToDsf(
     }
     if (!writer.finalize()) return fail("DSF finalize", kTranscodeIoError);
 
+    LOGI("DSF_SAMPLE_WINDOW declared=%lld decoded=%lld ignoredTrailing=%lld dsdSamples=%llu sourceDurationMs=%lld",
+        static_cast<long long>(declaredSourceSamples),
+        static_cast<long long>(decodedSourceSamples),
+        static_cast<long long>(ignoredTrailingSamples),
+        static_cast<unsigned long long>(writer.logicalSampleCount()),
+        static_cast<long long>(sourceDurationMs));
     session->setProgressPermille(1000);
     LOGI(
         "complete target=dsf sourceRate=%d dsdRate=%d multiplier=%d channels=%d input=%s output=%s",
@@ -1951,6 +1988,9 @@ int computeCanonicalPcmDigest(
         input.decoder->sample_rate != sample_rate_hz) {
         return kTranscodeUnsupportedSource;
     }
+    const int64_t declaredSourceSamples = parameters->codec_id == AV_CODEC_ID_FLAC
+        ? declaredFlacSampleCount(parameters->extradata, parameters->extradata_size) : 0LL;
+    int64_t decodedSourceSamples = 0;
 
     SwrContext* resampler = nullptr;
     AVPacket* packet = av_packet_alloc();
@@ -2045,8 +2085,11 @@ int computeCanonicalPcmDigest(
 
     auto convertFrame = [&]() -> int {
         if (session->cancelled()) return kTranscodeCancelled;
+        const int acceptedSamples = boundedDecodedSampleCount(
+            decodedSourceSamples, frame->nb_samples, declaredSourceSamples);
+        if (acceptedSamples <= 0) return 0;
         const int capacity = static_cast<int>(av_rescale_rnd(
-            swr_get_delay(resampler, input.decoder->sample_rate) + frame->nb_samples,
+            swr_get_delay(resampler, input.decoder->sample_rate) + acceptedSamples,
             sample_rate_hz,
             input.decoder->sample_rate,
             AV_ROUND_UP
@@ -2068,7 +2111,7 @@ int computeCanonicalPcmDigest(
             converted,
             capacity,
             const_cast<const uint8_t**>(frame->extended_data),
-            frame->nb_samples
+            acceptedSamples
         );
         if (convertedFrames < 0) localResult = convertedFrames;
         else localResult = appendCanonical(
@@ -2079,6 +2122,7 @@ int computeCanonicalPcmDigest(
             av_freep(&converted[0]);
             av_freep(&converted);
         }
+        if (localResult >= 0) decodedSourceSamples += acceptedSamples;
         return localResult;
     };
 

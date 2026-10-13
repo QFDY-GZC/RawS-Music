@@ -7,7 +7,7 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.utils.AppLogger
-import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Owns Android AudioPolicy route changes for non-USB-exclusive playback.
@@ -26,7 +26,6 @@ internal class AndroidAudioRouteController(
     private val audioTrackProvider: () -> AudioTrack?,
     private val recreateAudioTrackInline: (forceSco: Boolean, forcedDevice: AudioDeviceInfo?) -> AudioTrack?,
     private val requestNativeOutputRebuild: (reason: String, forcedDeviceId: Int) -> Unit,
-    private val runOnPlaybackExecutor: (block: () -> Unit) -> Unit,
     private val wakePlaybackLoop: () -> Unit,
     private val onAndroidUsbAudioRouteAdded: () -> Unit
 ) {
@@ -45,11 +44,8 @@ internal class AndroidAudioRouteController(
     @Volatile
     private var lastAndroidRouteRepairMs: Long = 0L
 
-    @Volatile
-    private var pendingAndroidRouteRebuildDeviceId: Int = 0
-
-    @Volatile
-    private var pendingAndroidRouteRebuildReason: String? = null
+    private data class RouteRebuild(val deviceId: Int, val reason: String, val readyAtMs: Long)
+    private val pendingRouteRebuild = AtomicReference<RouteRebuild?>(null)
 
     private val audioDeviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
@@ -61,8 +57,8 @@ internal class AndroidAudioRouteController(
             if (isUsbExclusiveMode()) return
             if (!isRouteMutable()) return
 
-            val externalRouteChanged = addedDevices?.any { it.isExternalRouteDevice() } == true
-            val usbAudioRouteChanged = addedDevices?.any { it.isUsbAudioRouteDevice() } == true
+            val externalRouteChanged = addedDevices?.any { it.isSink && it.isExternalRouteDevice() } == true
+            val usbAudioRouteChanged = addedDevices?.any { it.isSink && it.isUsbAudioRouteDevice() } == true
             if (externalRouteChanged) {
                 if (usbAudioRouteChanged) {
                     onAndroidUsbAudioRouteAdded()
@@ -79,14 +75,7 @@ internal class AndroidAudioRouteController(
                 return
             }
 
-            if (nativeAudioEngineProvider() != null) {
-                val ok = retargetNativeOutputDevice("audio_device_added")
-                if (!ok) {
-                    requestNativeOutputRebuild("audio_device_added_native_fallback", 0)
-                }
-            } else {
-                applyPreferredDeviceToAudioTrack("audio_device_added")
-            }
+            // Microphones/virtual device notifications must not clear a live media preference.
         }
 
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
@@ -98,6 +87,13 @@ internal class AndroidAudioRouteController(
             if (isUsbExclusiveMode()) return
             if (!isRouteMutable()) return
             if (android.os.Build.VERSION.SDK_INT < 23) return
+            if (removedDevices?.any { it.isSink && it.isExternalRouteDevice() } != true) return
+
+            val activeTrack = audioTrackProvider()
+            val activeDevice = try { activeTrack?.routedDevice ?: activeTrack?.preferredDevice } catch (_: Exception) { null }
+            if (activeDevice != null && activeDevice.isExternalRouteDevice() &&
+                removedDevices.none { it.id == activeDevice.id } && findOutputDeviceById(activeDevice.id) != null
+            ) return
 
             try {
                 val hasBluetoothRemoval = removedDevices?.any { it.isBluetoothRouteDevice() } == true
@@ -142,6 +138,7 @@ internal class AndroidAudioRouteController(
     }
 
     fun unregisterAudioDeviceCallback() {
+        pendingRouteRebuild.set(null)
         if (!audioDeviceCallbackRegistered) return
         try {
             val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -183,7 +180,7 @@ internal class AndroidAudioRouteController(
     fun repairAndroidOutputRoute(reason: String, forceRebuild: Boolean) {
         if (isUsbExclusiveMode()) return
         if (!isRouteMutable()) return
-        val now = System.currentTimeMillis()
+        val now = android.os.SystemClock.uptimeMillis()
         if (now - lastAndroidRouteRepairMs < ROUTE_REPAIR_THROTTLE_MS) {
             AppLogger.i(TAG, "Android output route repair suppressed: reason=$reason since=${now - lastAndroidRouteRepairMs}ms")
             return
@@ -195,62 +192,31 @@ internal class AndroidAudioRouteController(
                 "state=${stateDescription()} native=${nativeAudioEngineProvider() != null}"
         )
 
-        try {
-            runOnPlaybackExecutor routeRepair@{
-                try {
-                    Thread.sleep(ROUTE_REPAIR_DELAY_MS)
-                    if (isUsbExclusiveMode() || isReleased()) return@routeRepair
-                    if (!isRouteMutable()) return@routeRepair
-                    if (nativeAudioEngineProvider() != null) {
-                        val ok = retargetNativeOutputDevice("${reason}_delayed")
-                        if (!ok) {
-                            AppLogger.w(TAG, "Native output retarget failed during route repair: reason=$reason; arming native rebuild")
-                            requestNativeOutputRebuild("${reason}_delayed_native_fallback", 0)
-                        }
-                        return@routeRepair
-                    }
-
-                    // For MEDIA/AudioTrack playback, Android may leave the track bound to the
-                    // removed USB/wired device. Clear explicit routing first, then rebuild when
-                    // a real removal happened so AudioPolicy recreates the stream on speaker.
-                    applyPreferredDeviceToAudioTrack("${reason}_clear", forceSpeaker = false)
-                    val track = audioTrackProvider()
-                    if (forceRebuild) {
-                        recreateAudioTrackInline(false, null)
-                    } else if (track == null ||
-                        track.state == AudioTrack.STATE_UNINITIALIZED ||
-                        track.playState == AudioTrack.PLAYSTATE_STOPPED
-                    ) {
-                        recreateAudioTrackInline(false, null)
-                    } else if (stateDescription() == FfmpegAudioPlayer.State.PLAYING.name) {
-                        try { track.play() } catch (_: Exception) {}
-                    } else {
-                        try { track.pause() } catch (_: Exception) {}
-                    }
-                } catch (e: Exception) {
-                    AppLogger.w(TAG, "Android output route repair failed: reason=$reason", e)
-                }
-            }
-        } catch (e: RejectedExecutionException) {
-            AppLogger.w(TAG, "Android output route repair skipped: executor rejected reason=$reason", e)
+        // The executor is occupied by the long-lived write loop. Publish a command for that
+        // loop instead of queuing a repair behind it or rebuilding concurrently with write().
+        if (nativeAudioEngineProvider() != null) {
+            requestNativeOutputRebuild(reason, 0)
+        } else {
+            armAndroidAudioTrackRouteRebuild(reason, 0, ROUTE_REPAIR_DELAY_MS)
         }
     }
 
     fun consumePendingAudioTrackRouteRebuild(): AudioTrack? {
-        val reason = pendingAndroidRouteRebuildReason ?: return audioTrackProvider()
-        val deviceId = pendingAndroidRouteRebuildDeviceId
-        pendingAndroidRouteRebuildReason = null
-        pendingAndroidRouteRebuildDeviceId = 0
+        val pending = pendingRouteRebuild.get() ?: return audioTrackProvider()
+        if (android.os.SystemClock.uptimeMillis() < pending.readyAtMs) return audioTrackProvider()
+        if (!pendingRouteRebuild.compareAndSet(pending, null)) return audioTrackProvider()
+        val reason = pending.reason
+        val deviceId = pending.deviceId
         if (isUsbExclusiveMode() || isReleased()) return audioTrackProvider()
         if (!isRouteMutable()) return audioTrackProvider()
-        val forcedDevice = findOutputDeviceById(deviceId) ?: selectBestExternalOutputDevice(null)
-        if (forcedDevice == null) {
+        val forcedDevice = findOutputDeviceById(deviceId)
+        if (deviceId > 0 && forcedDevice == null) {
             AppLogger.w(TAG, "Android AudioTrack route rebuild skipped: external device gone reason=$reason deviceId=$deviceId")
             return audioTrackProvider()
         }
-        AppLogger.w(TAG, "Android AudioTrack route rebuild executing inline: reason=$reason device=${forcedDevice.shortRouteName()}")
+        AppLogger.w(TAG, "Android AudioTrack route rebuild executing inline: reason=$reason device=${forcedDevice?.shortRouteName() ?: "system"}")
         return recreateAudioTrackInline(
-            forcedDevice.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+            forcedDevice?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
             forcedDevice
         ) ?: audioTrackProvider()
     }
@@ -264,6 +230,18 @@ internal class AndroidAudioRouteController(
         } catch (_: Exception) {
             null
         }
+    }
+
+    fun deviceForRecovery(forcedDevice: AudioDeviceInfo?): AudioDeviceInfo? {
+        if (android.os.Build.VERSION.SDK_INT < 23) return null
+        return try {
+            val devices = (context.getSystemService(Context.AUDIO_SERVICE) as AudioManager)
+                .getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            val track = audioTrackProvider()
+            val id = recoveryOutputDeviceId(forcedDevice?.id ?: 0, track?.preferredDevice?.id ?: 0,
+                track?.routedDevice?.id ?: 0, devices.map { it.id }.toSet())
+            devices.firstOrNull { it.id == id }
+        } catch (_: Exception) { null }
     }
 
     fun applyPreferredDeviceToAudioTrack(
@@ -285,14 +263,10 @@ internal class AndroidAudioRouteController(
                     AudioOutputManager.getPreferredDeviceForDirect(context)
                 else -> null
             }
-            if (device != null) {
-                track.preferredDevice = device
-                AppLogger.i(TAG, "AudioTrack preferredDevice set: reason=$reason device=${device.shortRouteName()}")
-            } else {
-                track.preferredDevice = null
-                AppLogger.i(TAG, "AudioTrack preferredDevice cleared: reason=$reason")
-            }
-            true
+            val accepted = track.setPreferredDevice(device)
+            val actual = track.routedDevice
+            AppLogger.i(TAG, "AudioTrack route request: reason=$reason requested=${device?.shortRouteName() ?: "system"} accepted=$accepted actual=${actual?.shortRouteName() ?: "not_routed"}")
+            accepted
         } catch (e: Exception) {
             AppLogger.w(TAG, "AudioTrack preferredDevice update failed: reason=$reason", e)
             false
@@ -343,10 +317,9 @@ internal class AndroidAudioRouteController(
         armAndroidAudioTrackRouteRebuild(reason = "${reason}_external", forcedDeviceId = external.id)
     }
 
-    private fun armAndroidAudioTrackRouteRebuild(reason: String, forcedDeviceId: Int) {
+    private fun armAndroidAudioTrackRouteRebuild(reason: String, forcedDeviceId: Int, delayMs: Long = 0L) {
         if (android.os.Build.VERSION.SDK_INT < 23) return
-        pendingAndroidRouteRebuildDeviceId = forcedDeviceId
-        pendingAndroidRouteRebuildReason = reason
+        pendingRouteRebuild.set(RouteRebuild(forcedDeviceId, reason, android.os.SystemClock.uptimeMillis() + delayMs))
         wakePlaybackLoop()
         AppLogger.w(TAG, "Android AudioTrack route rebuild armed: reason=$reason deviceId=$forcedDeviceId state=${stateDescription()}")
     }

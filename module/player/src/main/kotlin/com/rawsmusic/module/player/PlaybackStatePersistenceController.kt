@@ -5,15 +5,12 @@ import com.rawsmusic.core.common.model.PlayQueue
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.module.data.prefs.AppPreferences
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
 
 /**
  * Coordinates runtime playback snapshots around [PlayerStatePersistence].
  *
  * Serialization format and queue hydration remain owned by PlayerStatePersistence; this class
- * owns the asynchronous save job, synchronization lock, and complete memory-termination flush.
+ * owns the conflated single-writer lane and complete memory-termination flush.
  */
 internal class PlaybackStatePersistenceController(
     private val scope: CoroutineScope,
@@ -28,8 +25,17 @@ internal class PlaybackStatePersistenceController(
     /** False until cold restore or an explicit user play owns the in-memory queue. */
     private val shouldPersistQueue: () -> Boolean = { true },
 ) {
-    private var saveStateJob: Job? = null
-    private val persistenceLock = Any()
+    private data class SaveRequest(val queue: PlayQueue, val priority: List<AudioFile>)
+    private val snapshotWriter = LatestSnapshotWriter<SaveRequest>(scope) { request ->
+        runCatching {
+            persistence.saveSnapshot(
+                songs = request.queue.songs,
+                currentIndex = request.queue.currentIndex,
+                entryIds = request.queue.entryIds,
+                prioritySongs = request.priority,
+            )
+        }.onFailure { error -> AppLogger.w(TAG, "async queue snapshot failed", error) }
+    }
 
     fun saveState() {
         if (!shouldPersistPlayback()) return
@@ -41,40 +47,20 @@ internal class PlaybackStatePersistenceController(
         savePosition()
 
         val queueSnapshot = queue()
-        val songsSnapshot = queueSnapshot.songs.toList()
-        val entryIdsSnapshot = queueSnapshot.entryIds.toList()
-        val currentIndex = queueSnapshot.currentIndex
         val prioritySnapshot = priorityQueue().toList()
         val persistQueue = shouldPersistQueue()
-        saveStateJob?.cancel()
-        saveStateJob = scope.launch(Dispatchers.IO) {
-            runCatching {
-                synchronized(persistenceLock) {
-                    if (persistQueue) {
-                        persistence.saveSnapshot(
-                            songs = songsSnapshot,
-                            currentIndex = currentIndex,
-                            entryIds = entryIdsSnapshot,
-                            prioritySongs = prioritySnapshot,
-                        )
-                    }
-                }
-            }.onFailure { error ->
-                AppLogger.w(TAG, "async queue snapshot failed", error)
-            }
-        }
+        snapshotWriter.submit(if (persistQueue) SaveRequest(queueSnapshot, prioritySnapshot) else null)
     }
 
     fun persistForMemoryTermination(): Boolean {
-        saveStateJob?.cancel()
         if (!shouldPersistPlayback()) {
-            AppPreferences.sync()
+            snapshotWriter.flushFinal { AppPreferences.sync() }
             return true
         }
         return runCatching {
             val queueSnapshot = queue()
             val persistQueue = shouldPersistQueue()
-            synchronized(persistenceLock) {
+            snapshotWriter.flushFinal {
                 currentSong()?.let(persistence::saveSongSnapshot)
                 persistence.saveRuntime(
                     playStateOrdinal = playStateOrdinal(),
@@ -83,9 +69,9 @@ internal class PlaybackStatePersistenceController(
                 persistence.savePosition(positionMs())
                 if (persistQueue) {
                     persistence.saveSnapshot(
-                        songs = queueSnapshot.songs.toList(),
+                        songs = queueSnapshot.songs,
                         currentIndex = queueSnapshot.currentIndex,
-                        entryIds = queueSnapshot.entryIds.toList(),
+                        entryIds = queueSnapshot.entryIds,
                         prioritySongs = priorityQueue().toList(),
                     )
                 }

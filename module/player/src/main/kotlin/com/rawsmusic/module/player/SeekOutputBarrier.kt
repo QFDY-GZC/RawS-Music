@@ -13,7 +13,8 @@ package com.rawsmusic.module.player
 internal class SeekOutputBarrier {
     data class ReadToken(
         val activeSerialAtStart: Long,
-        val committedSerialAtStart: Long
+        val committedSerialAtStart: Long,
+        val generationAtStart: Long
     )
 
     enum class ReadDecision {
@@ -21,6 +22,8 @@ internal class SeekOutputBarrier {
         Discard,
         AcceptAndRelease
     }
+
+    private var generation: Long = 0L
 
     @Volatile
     private var activeSerial: Long = 0L
@@ -34,6 +37,7 @@ internal class SeekOutputBarrier {
     @Synchronized
     fun arm(serial: Long, positionMs: Long) {
         if (serial <= 0L) return
+        generation++
         activeSerial = serial
         committedSerial = 0L
         targetMs = positionMs.coerceAtLeast(0L)
@@ -56,18 +60,22 @@ internal class SeekOutputBarrier {
 
     @Synchronized
     fun clear() {
+        generation++
         activeSerial = 0L
         committedSerial = 0L
         targetMs = -1L
     }
 
+    @Synchronized
     fun beginRead(): ReadToken = ReadToken(
         activeSerialAtStart = activeSerial,
-        committedSerialAtStart = committedSerial
+        committedSerialAtStart = committedSerial,
+        generationAtStart = generation
     )
 
     @Synchronized
     fun finishRead(token: ReadToken): ReadDecision {
+        if (token.generationAtStart != generation) return ReadDecision.Discard
         val current = activeSerial
         if (current == 0L) return ReadDecision.Accept
 
@@ -85,6 +93,19 @@ internal class SeekOutputBarrier {
         return ReadDecision.AcceptAndRelease
     }
 
+
+    @Synchronized
+    fun canContinueWrite(token: ReadToken): Boolean =
+        token.generationAtStart == generation &&
+            (activeSerial == 0L ||
+                (token.activeSerialAtStart == activeSerial &&
+                    token.committedSerialAtStart == activeSerial))
+
+    // Arming a seek waits for an already admitted JNI call. A check followed
+    // by a separate call leaves a gap in which stale bytes can enter a new epoch.
+    @Synchronized
+    fun writeIfCurrent(token: ReadToken, write: () -> Int): Int? =
+        if (canContinueWrite(token)) write() else null
 
     fun describe(): String =
         "active=$activeSerial committed=$committedSerial targetMs=$targetMs"

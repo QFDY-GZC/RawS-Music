@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="player_error_usb_thread_busy">前の USB 再生スレッドがまだ終了していないため、USB デバイス保護のため同時起動を停止しました。</string>
+    <string name="player_error_online_native_mismatch">オンライン再生の native インターフェースが一致しません：%1$s</string>
+    <string name="player_error_playback_failed_detail">再生に失敗しました：%1$s</string>
+    <string name="player_error_strict_bitperfect_track">厳密な Bit-perfect：このトラック形式は USB へそのまま出力できません。</string>
+    <string name="player_error_strict_bitperfect_device">厳密な Bit-perfect：USB デバイスはこのトラックの正確な形式に対応していません。</string>
+    <string name="player_error_audio_file_missing">音声ファイルが見つかりません：%1$s</string>
+    <string name="player_error_audio_file_lost">音声ファイルを利用できなくなりました。</string>
+    <string name="player_error_file_read">ファイルの読み込みエラーです。ストレージが取り外されたか、ファイルが破損している可能性があります。</string>
+    <string name="player_error_playback_exception">再生エラー：%1$s</string>
+    <string name="player_error_decoder_thread">デコーダースレッドエラー：%1$s</string>
+    <string name="player_error_online_decode_failed">オンライン再生のデコードに失敗しました。</string>
+    <string name="usb_notice_no_exclusive_dac">USB 排他モードに対応する DAC が検出されません。先にデバイスを接続してください。</string>
+    <string name="usb_notice_hardware_volume_enabled">ハードウェア音量を有効にしました</string>
+    <string name="usb_notice_hardware_volume_pending">次回の USB 初期化後にハードウェア音量を確認します</string>
+    <string name="usb_notice_hardware_volume_disabled">ハードウェア音量を無効にしました</string>
+    <string name="player_notice_gapless_failed">連続再生に失敗したため停止しました</string>
+</resources>

@@ -50,6 +50,10 @@ data class RetainedSceneItemTransform(
      * Read this provider from draw/layer phase so a gesture tick never recomposes the page.
      */
     val alphaProvider: () -> Float = { 1f },
+    /** Rectangle-mapped collection motion can exceed the generic depth range. */
+    val rectangleMapped: Boolean = false,
+    val translationXProvider: () -> Float = { 0f },
+    val translationYProvider: () -> Float = { 0f },
 )
 
 /** Null means no outer HOME/category PivotTransition is active. */

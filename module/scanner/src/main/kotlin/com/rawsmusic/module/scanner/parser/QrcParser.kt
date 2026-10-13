@@ -12,7 +12,6 @@ object QrcParser {
     private val offsetRegex = Regex("""\[offset:(-?\d+)]""", RegexOption.IGNORE_CASE)
     private val metaRegex = Regex("""\[(ti|ar|al|by|offset):.*]""", RegexOption.IGNORE_CASE)
     private val qrcLineRegex = Regex("""\[(\d+),(\d+)\]""")
-    private val qrcWordRegex = Regex("""\((\d+),(\d+)\)([^(]*)""")
 
     fun isQrc(content: String): Boolean {
         val trimmed = content.trimStart()
@@ -53,18 +52,9 @@ object QrcParser {
             val afterLineTag = lineMatch.range.last + 1
             val contentPart = if (afterLineTag < trimmed.length) trimmed.substring(afterLineTag) else ""
 
-            val wordMatches = qrcWordRegex.findAll(contentPart).toList()
-            val words = mutableListOf<LyricWord>()
-            val textBuilder = StringBuilder()
-
-            for (wm in wordMatches) {
-                val wordBegin = wm.groupValues[1].toLongOrNull() ?: 0L
-                val wordDuration = wm.groupValues[2].toLongOrNull() ?: 0L
-                val wordText = wm.groupValues[3]
-                if (wordText.isNotEmpty()) {
-                    words.add(LyricWord(begin = wordBegin, end = wordBegin + wordDuration, text = wordText))
-                    textBuilder.append(wordText)
-                }
+            val words = parseQrcTimedWords(contentPart)
+            val textBuilder = StringBuilder().apply {
+                words.forEach { append(it.text) }
             }
 
             val lineText = if (textBuilder.isEmpty()) contentPart.trim() else textBuilder.toString().trim()
@@ -84,4 +74,67 @@ object QrcParser {
         Log.d(TAG, "QRC: ${result.size} lines, offset=$offset")
         return LyricTextNormalizer.normalize(LyricData(lines = result, offset = offset))
     }
+}
+
+private val QRC_WORD_TAG_REGEX = Regex("""\((\d+),(\d+)\)""")
+
+/**
+ * QQ QRC stores a word's `(start,duration)` tag *after* the text it times:
+ * `word(start,duration)next(start,duration)`.
+ *
+ * Older RawSMusic code consumed the text after each tag, shifting every timing slot one word to
+ * the right. A long duration therefore became attached to the following visible word, making its
+ * glow appear early and its karaoke sweep look already completed when that word was actually sung.
+ *
+ * Keep a compatibility lane for non-standard prefix-tag files that start directly with a tag.
+ */
+internal fun parseQrcTimedWords(contentPart: String): List<LyricWord> {
+    val matches = QRC_WORD_TAG_REGEX.findAll(contentPart).toList()
+    if (matches.isEmpty()) return emptyList()
+
+    val prefixTagged = matches.first().range.first == 0
+    val words = ArrayList<LyricWord>(matches.size)
+
+    if (prefixTagged) {
+        matches.forEachIndexed { index, match ->
+            val begin = match.groupValues[1].toLongOrNull() ?: return@forEachIndexed
+            val duration = match.groupValues[2].toLongOrNull()?.coerceAtLeast(1L) ?: return@forEachIndexed
+            val textStart = match.range.last + 1
+            val textEnd = matches.getOrNull(index + 1)?.range?.first ?: contentPart.length
+            val wordText = contentPart.substring(textStart, textEnd)
+            if (wordText.isNotEmpty()) {
+                words += LyricWord(
+                    begin = begin,
+                    end = begin + duration,
+                    text = wordText,
+                )
+            }
+        }
+        return words
+    }
+
+    var textStart = 0
+    matches.forEach { match ->
+        val begin = match.groupValues[1].toLongOrNull()
+        val duration = match.groupValues[2].toLongOrNull()?.coerceAtLeast(1L)
+        val wordText = contentPart.substring(textStart, match.range.first)
+        if (begin != null && duration != null && wordText.isNotEmpty()) {
+            words += LyricWord(
+                begin = begin,
+                end = begin + duration,
+                text = wordText,
+            )
+        }
+        textStart = match.range.last + 1
+    }
+
+    // Preserve an untimed suffix (punctuation / provider decoration) with the final timed word.
+    if (textStart < contentPart.length && words.isNotEmpty()) {
+        val suffix = contentPart.substring(textStart)
+        if (suffix.isNotEmpty()) {
+            val last = words.last()
+            words[words.lastIndex] = last.copy(text = last.text + suffix)
+        }
+    }
+    return words
 }

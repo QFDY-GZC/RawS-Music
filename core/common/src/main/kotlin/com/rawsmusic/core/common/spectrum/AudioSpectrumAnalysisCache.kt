@@ -7,6 +7,8 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.isDsdSourceFile
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
@@ -20,8 +22,8 @@ import kotlin.math.min
 
 /** Persistent offline spectrum analysis. It never shares the realtime visualizer cache. */
 object AudioSpectrumAnalysisCache {
-    private const val CACHE_VERSION = 4
-    private const val PAYLOAD_VERSION = 2
+    private const val CACHE_VERSION = 7
+    private const val PAYLOAD_VERSION = 5
     private const val MAGIC = 0x52534143 // RSAC
     private const val DIR = "audio_spectrum_v1"
     private const val MAX_PAYLOAD = 64 * 1024 * 1024
@@ -44,7 +46,7 @@ object AudioSpectrumAnalysisCache {
         }
     }
 
-    private fun analyze(
+    private suspend fun analyze(
         song: AudioFile,
         onProgress: (AudioSpectrumAnalysisProgress) -> Unit
     ): AudioSpectrumAnalysis {
@@ -63,7 +65,7 @@ object AudioSpectrumAnalysisCache {
             path = song.path,
             targetSampleRate = analysisTargetRate,
             bitsPerSample = 32,
-            channels = 2
+            channels = if (song.channelCount == 1) 1 else 2
         )
         check(decoder != 0L) { "Unable to open audio decoder" }
 
@@ -103,11 +105,15 @@ object AudioSpectrumAnalysisCache {
             val readBuffer = ByteArray(256 * 1024)
             var carry = ByteArray(0)
             var decodedSamples = 0L
-            val targetSamples = if (durationMs > 0L) durationMs * sampleRate / 1000L else 0L
+            // Only CUE segments have a deliberate end boundary. A library duration is
+            // an estimate: reading normal files to EOF reveals truncated/extra tails.
+            val targetSamples = if (song.cueEndMs > cueStartMs) durationMs * sampleRate / 1000L else 0L
+            val estimatedSamples = if (durationMs > 0L) durationMs * sampleRate / 1000L else 0L
             var lastProgressAt = 0L
             var lastProgressFraction = -1f
 
             while (true) {
+                currentCoroutineContext().ensureActive()
                 val read = FFmpegBridge.decodeChunk(decoder, readBuffer, 0, readBuffer.size)
                 if (read == -1) break
                 check(read >= 0) { "Audio decoder failed: $read" }
@@ -119,7 +125,8 @@ object AudioSpectrumAnalysisCache {
                 val aligned = merged.size - merged.size % frameBytes
                 if (aligned > 0) {
                     val remaining = if (targetSamples > 0L) targetSamples - decodedSamples else Long.MAX_VALUE
-                    val allowedBytes = min(aligned.toLong(), remaining * frameBytes).toInt()
+                    val allowedBytes = if (targetSamples > 0L)
+                        min(aligned.toLong(), remaining.coerceAtLeast(0L) * frameBytes).toInt() else aligned
                     val processBytes = allowedBytes - allowedBytes % frameBytes
                     if (processBytes > 0) {
                         val levels = AudioSpectrumNative.processS32Le(
@@ -129,8 +136,8 @@ object AudioSpectrumAnalysisCache {
                             processBytes
                         )
                         decodedSamples += processBytes / frameBytes
-                        val fraction = if (targetSamples > 0L) {
-                            (decodedSamples.toFloat() / targetSamples).coerceIn(0f, 1f)
+                        val fraction = if (estimatedSamples > 0L) {
+                            (decodedSamples.toFloat() / estimatedSamples).coerceIn(0f, 0.99f)
                         } else {
                             0f
                         }
@@ -159,15 +166,17 @@ object AudioSpectrumAnalysisCache {
             val payload = AudioSpectrumNative.finish(nativeHandle)
                 ?: error("Spectrum analyzer returned no result")
             onProgress(AudioSpectrumAnalysisProgress(1f, -120f, -120f))
-            return parsePayload(payload)
+            val result = parsePayload(payload)
+            return if (durationMs <= 0L) result.copy(durationMs =
+                (result.decodedFrameCount * 1000.0 / result.sampleRate).toLong().coerceAtLeast(1L)) else result
         } finally {
             AudioSpectrumNative.release(nativeHandle)
             FFmpegBridge.closeDecoder(decoder)
         }
     }
 
-    private fun parsePayload(payload: ByteArray): AudioSpectrumAnalysis {
-        require(payload.size >= 64) { "Spectrum payload is truncated" }
+    internal fun parsePayload(payload: ByteArray): AudioSpectrumAnalysis {
+        require(payload.size >= 180) { "Spectrum payload is truncated" }
         val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
         require(buffer.int == 0x52534131 && buffer.int == PAYLOAD_VERSION) { "Unknown spectrum payload" }
         val sampleRate = buffer.int
@@ -188,6 +197,46 @@ object AudioSpectrumAnalysisCache {
         val rightPeakDb = buffer.float
         val leftRmsDb = buffer.float
         val rightRmsDb = buffer.float
+        val decodedFrameCount = buffer.long
+        val nearRailFrameCount = buffer.long
+        val sustainedRailFrameCount = buffer.long
+        val sustainedRailRunCount = buffer.long
+        val nonzeroSampleCount = buffer.long
+        val aligned16SampleCount = buffer.long
+        val aligned24SampleCount = buffer.long
+        val qualityFlags = buffer.int
+        val integratedLufs = buffer.float
+        val loudnessRangeLu = buffer.float
+        val truePeakDb = buffer.float
+        val leftDcOffset = buffer.float
+        val rightDcOffset = buffer.float
+        val stereoCorrelation = buffer.float
+        val midRmsDb = buffer.float
+        val sideRmsDb = buffer.float
+        val silentFrameCount = buffer.long
+        val longestSilentFrameCount = buffer.long
+        val hardRailFrameCount = buffer.long
+        require(decodedFrameCount >= nearRailFrameCount && nearRailFrameCount >= sustainedRailFrameCount &&
+            sustainedRailFrameCount >= sustainedRailRunCount && sustainedRailRunCount >= 0L)
+        require(decodedFrameCount <= Long.MAX_VALUE / 2 && nonzeroSampleCount >= 0L &&
+            aligned16SampleCount in 0L..nonzeroSampleCount &&
+            aligned24SampleCount in aligned16SampleCount..nonzeroSampleCount &&
+            nonzeroSampleCount <= decodedFrameCount * channels.coerceIn(1, 2))
+        require(channels in 1..2 && qualityFlags and 15.inv() == 0)
+        require(silentFrameCount in 0L..decodedFrameCount &&
+            longestSilentFrameCount in 0L..silentFrameCount && hardRailFrameCount in 0L..decodedFrameCount)
+        require(!stereoCorrelation.isFinite() || stereoCorrelation in -1f..1f)
+        require(qualityFlags and AudioSpectrumAnalysis.SIGNAL_MEASURED == 0 ||
+            (leftDcOffset.isFinite() && leftDcOffset in -1f..1f &&
+                (channels == 1 || (rightDcOffset.isFinite() && rightDcOffset in -1f..1f))))
+        require(qualityFlags and AudioSpectrumAnalysis.LOUDNESS_MEASURED == 0 ||
+            (integratedLufs.isFinite() && integratedLufs in -100f..20f))
+        require(qualityFlags and AudioSpectrumAnalysis.LOUDNESS_RANGE_MEASURED == 0 ||
+            (loudnessRangeLu.isFinite() && loudnessRangeLu in 0f..100f))
+        require(qualityFlags and AudioSpectrumAnalysis.TRUE_PEAK_MEASURED == 0 ||
+            // A nonzero S32 sample can be as quiet as -186.6 dBFS; the FFT's
+            // -120 dB display floor must not reject valid raw measurements.
+            (truePeakDb.isFinite() && truePeakDb in -200f..30f))
         val required = averageBins * 4L + waterfallFrames * 8L + waterfallFrames * waterfallBins * 2L
         require(required <= buffer.remaining().toLong()) { "Spectrum payload is truncated" }
         val average = FloatArray(averageBins) { buffer.float }
@@ -214,7 +263,19 @@ object AudioSpectrumAnalysisCache {
             leftLevelsDb = leftLevels,
             rightLevelsDb = rightLevels,
             leftWaterfall = leftWaterfall,
-            rightWaterfall = rightWaterfall
+            rightWaterfall = rightWaterfall,
+            decodedFrameCount = decodedFrameCount,
+            nearRailFrameCount = nearRailFrameCount,
+            sustainedRailFrameCount = sustainedRailFrameCount,
+            sustainedRailRunCount = sustainedRailRunCount,
+            nonzeroSampleCount = nonzeroSampleCount,
+            aligned16SampleCount = aligned16SampleCount,
+            aligned24SampleCount = aligned24SampleCount,
+            qualityFlags = qualityFlags, integratedLufs = integratedLufs, loudnessRangeLu = loudnessRangeLu,
+            truePeakDb = truePeakDb, leftDcOffset = leftDcOffset, rightDcOffset = rightDcOffset,
+            stereoCorrelation = stereoCorrelation, midRmsDb = midRmsDb, sideRmsDb = sideRmsDb,
+            silentFrameCount = silentFrameCount, longestSilentFrameCount = longestSilentFrameCount,
+            hardRailFrameCount = hardRailFrameCount
         )
     }
 
@@ -226,6 +287,8 @@ object AudioSpectrumAnalysisCache {
         append(song.duration).append('|')
         append(song.cueOffsetMs).append('|')
         append(song.cueEndMs).append('|')
+        append(song.channelCount).append('|')
+        append(song.bitsPerSample).append('|')
         append(CACHE_VERSION)
     }
 
@@ -268,8 +331,8 @@ object AudioSpectrumAnalysisCache {
         }
     }
 
-    private fun encodePayload(analysis: AudioSpectrumAnalysis): ByteArray {
-        val size = 64 + analysis.averageSpectrumDb.size * 4 +
+    internal fun encodePayload(analysis: AudioSpectrumAnalysis): ByteArray {
+        val size = 180 + analysis.averageSpectrumDb.size * 4 +
             analysis.waterfallFrames * 8 +
             analysis.leftWaterfall.size + analysis.rightWaterfall.size
         val buffer = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN)
@@ -288,6 +351,25 @@ object AudioSpectrumAnalysisCache {
         buffer.putFloat(analysis.rightPeakDb)
         buffer.putFloat(analysis.leftRmsDb)
         buffer.putFloat(analysis.rightRmsDb)
+        buffer.putLong(analysis.decodedFrameCount)
+        buffer.putLong(analysis.nearRailFrameCount)
+        buffer.putLong(analysis.sustainedRailFrameCount)
+        buffer.putLong(analysis.sustainedRailRunCount)
+        buffer.putLong(analysis.nonzeroSampleCount)
+        buffer.putLong(analysis.aligned16SampleCount)
+        buffer.putLong(analysis.aligned24SampleCount)
+        buffer.putInt(analysis.qualityFlags)
+        buffer.putFloat(analysis.integratedLufs)
+        buffer.putFloat(analysis.loudnessRangeLu)
+        buffer.putFloat(analysis.truePeakDb)
+        buffer.putFloat(analysis.leftDcOffset)
+        buffer.putFloat(analysis.rightDcOffset)
+        buffer.putFloat(analysis.stereoCorrelation)
+        buffer.putFloat(analysis.midRmsDb)
+        buffer.putFloat(analysis.sideRmsDb)
+        buffer.putLong(analysis.silentFrameCount)
+        buffer.putLong(analysis.longestSilentFrameCount)
+        buffer.putLong(analysis.hardRailFrameCount)
         analysis.averageSpectrumDb.forEach(buffer::putFloat)
         analysis.leftLevelsDb.forEach(buffer::putFloat)
         analysis.rightLevelsDb.forEach(buffer::putFloat)

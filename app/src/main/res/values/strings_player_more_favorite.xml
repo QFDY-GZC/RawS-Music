@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_player_more_favorite_visible">Show favorite in More popup</string>
+    <string name="settings_player_more_favorite_visible_summary">Show a favorite button beside the title in the player More popup to add the current song to a playlist.</string>
+</resources>

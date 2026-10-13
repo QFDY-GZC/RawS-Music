@@ -342,7 +342,7 @@ object RawSLyricsParser {
         if (rawData.isEmpty()) return LyricData()
 
         val mergedLines = mergeRawLines(rawData)
-        val finalLines = mergeCloseTimestampTranslations(mergedLines)
+        val finalLines = mergeCloseTimestampTranslations(mergeSeparatedTranslationBlock(mergedLines))
         fillEndTimes(finalLines)
 
         return LyricData(lines = finalLines, offset = offset)
@@ -376,7 +376,6 @@ object RawSLyricsParser {
     // ==================== QRC Parsing ====================
 
     private val qrcLineRegex = Regex("""\[(\d+),(\d+)\]""")
-    private val qrcWordRegex = Regex("""\((\d+),(\d+)\)([^(]*)""")
 
     private fun parseQrc(content: String): LyricData {
         val decoded = LyricTextNormalizer.decodeEntities(content)
@@ -408,18 +407,9 @@ object RawSLyricsParser {
             val afterLineTag = lineMatch.range.last + 1
             val contentPart = if (afterLineTag < trimmed.length) trimmed.substring(afterLineTag) else ""
 
-            val wordMatches = qrcWordRegex.findAll(contentPart).toList()
-            val words = mutableListOf<LyricWord>()
-            val textBuilder = StringBuilder()
-
-            for (wm in wordMatches) {
-                val wordBegin = wm.groupValues[1].toLongOrNull() ?: 0L
-                val wordDuration = wm.groupValues[2].toLongOrNull() ?: 0L
-                val wordText = wm.groupValues[3]
-                if (wordText.isNotEmpty()) {
-                    words.add(LyricWord(text = wordText, begin = wordBegin, end = wordBegin + wordDuration))
-                    textBuilder.append(wordText)
-                }
+            val words = parseQrcTimedWords(contentPart)
+            val textBuilder = StringBuilder().apply {
+                words.forEach { append(it.text) }
             }
 
             val lineText = if (textBuilder.isEmpty()) contentPart.trim() else textBuilder.toString().trim()
@@ -476,6 +466,7 @@ object RawSLyricsParser {
 
                 for (child in pElement.children) {
                     val localName = child.name.substringAfterLast(':')
+                    if (localName == "#text") appendTtmlSeparator(child.text, currentWords)
                     if (localName == "span") {
                         val role = child.getAttribute("ttm:role")
                             ?: child.getAttribute("role")
@@ -582,9 +573,17 @@ object RawSLyricsParser {
                         ))
                     }
                 } else {
-                    val spacedWords = LyricParserBase.applyWordSpacing(currentWords)
+                    // TTML has explicit separators in its mixed XML content. Never infer
+                    // Latin spaces or remove Japanese spaces from this authoritative text.
+                    val spacedWords = currentWords.toList()
                     val fullText = spacedWords.joinToString("") { it.text }.trim()
-                    val spacedBgWords = if (bgWords.isNotEmpty()) LyricParserBase.applyWordSpacing(bgWords) else emptyList()
+                    // A single span covering its entire <p> supplies only line timing. Keeping it
+                    // as a LyricWord would make the renderer invent a per-character karaoke sweep.
+                    // Ruby syllables carry finer timing inside that span and must stay timed.
+                    val hasOnlyLineTiming = spacedWords.size == 1 &&
+                        spacedWords[0].begin == begin && spacedWords[0].end == end &&
+                        spacedWords[0].ruby.isEmpty()
+                    val spacedBgWords = bgWords.toList()
 
                     ttmlLines.add(LyricLine(
                         timeStamp = begin,
@@ -592,7 +591,7 @@ object RawSLyricsParser {
                         endTime = end,
                         romanization = romanizationText ?: "",
                         translation = translationText ?: "",
-                        words = spacedWords,
+                        words = if (hasOnlyLineTiming) emptyList() else spacedWords,
                         agent = agent,
                         agentName = agent?.let(agentNames::get),
                         pronunciationWords = pronunciationWords,
@@ -646,6 +645,7 @@ object RawSLyricsParser {
         if (hasChildSpans) {
             for (child in element.children) {
                 val localName = child.name.substringAfterLast(':')
+                if (localName == "#text") appendTtmlSeparator(child.text, words)
                 if (localName == "span") {
                     val role = child.getAttribute("ttm:role")
                         ?: child.getAttribute("role")
@@ -657,16 +657,25 @@ object RawSLyricsParser {
                 }
             }
         } else {
-            val txt = collectTextContent(element).trim()
-            if (txt.isNotEmpty()) {
+            val txt = collectTextContent(element).replace(Regex("[\\r\\n]+[\\t ]*"), "")
+            if (txt.isNotBlank()) {
                 words.add(LyricWord(text = txt, begin = spanBegin, end = spanEnd))
             }
         }
     }
 
+    private fun appendTtmlSeparator(text: String, words: MutableList<LyricWord>) {
+        // Newline indentation formats XML, while an inline space separates sung words.
+        if (words.isEmpty() || text.isEmpty() || text.any { it == '\n' || it == '\r' }) return
+        if (text.all { it.isWhitespace() }) {
+            val previous = words.last()
+            words[words.lastIndex] = previous.copy(text = previous.text + text)
+        }
+    }
+
     private fun collectTextContent(element: SimpleXmlParser.XmlElement): String {
         val sb = StringBuilder()
-        if (element.text.isNotEmpty()) {
+        if (element.text.isNotEmpty() && element.children.none { it.name == "#text" }) {
             sb.append(element.text)
         }
         for (child in element.children) {
@@ -678,7 +687,7 @@ object RawSLyricsParser {
     /** 收集主文本内容，跳过翻译、罗马音、背景歌词等特殊 role 的 span */
     private fun collectMainTextContent(element: SimpleXmlParser.XmlElement): String {
         val sb = StringBuilder()
-        if (element.text.isNotEmpty()) {
+        if (element.text.isNotEmpty() && element.children.none { it.name == "#text" }) {
             sb.append(element.text)
         }
         for (child in element.children) {
@@ -1147,6 +1156,23 @@ object RawSLyricsParser {
         return mergedLines
     }
 
+    /** Some embedded enhanced LRC tags store all timed originals before a matching plain LRC translation block. */
+    private fun mergeSeparatedTranslationBlock(lines: List<LyricLine>): List<LyricLine> {
+        if (lines.size < 4 || lines.size % 2 != 0) return lines
+        val blockSize = lines.size / 2
+        val originals = lines.subList(0, blockSize)
+        val translations = lines.subList(blockSize, lines.size)
+        if (originals.any { it.words.isEmpty() || it.translation.isNotEmpty() } ||
+            translations.any { it.words.isNotEmpty() } ||
+            originals.zip(translations).any { (original, translated) ->
+                original.timeStamp != translated.timeStamp || original.text == translated.text
+            }
+        ) return lines
+        return originals.zip(translations) { original, translated ->
+            original.copy(translation = translated.text)
+        }
+    }
+
     private fun mergeCloseTimestampTranslations(lines: List<LyricLine>): MutableList<LyricLine> {
         if (lines.size < 3) return lines.toMutableList()
         val result = mutableListOf<LyricLine>()
@@ -1178,11 +1204,11 @@ object RawSLyricsParser {
     private fun fillEndTimes(lines: MutableList<LyricLine>) {
         for (k in 0 until lines.size - 1) {
             if (lines[k].endTime <= 0L) {
-                lines[k] = lines[k].copy(endTime = lines[k + 1].timeStamp)
+                lines[k] = lines[k].copy(endTime = lines[k + 1].timeStamp, endTimeIsEstimated = true)
             }
         }
         if (lines.isNotEmpty() && lines.last().endTime <= 0L) {
-            lines[lines.lastIndex] = lines.last().copy(endTime = lines.last().timeStamp + 5000L)
+            lines[lines.lastIndex] = lines.last().copy(endTime = lines.last().timeStamp + 5000L, endTimeIsEstimated = true)
         }
     }
 
@@ -1190,13 +1216,13 @@ object RawSLyricsParser {
         for (k in 0 until lines.size - 1) {
             val nextBegin = lines[k + 1].timeStamp
             if (lines[k].endTime < nextBegin) {
-                lines[k] = lines[k].copy(endTime = nextBegin)
+                lines[k] = lines[k].copy(endTime = nextBegin, endTimeIsEstimated = true)
             }
         }
         if (lines.isNotEmpty()) {
             val last = lines.last()
             if (last.endTime <= last.timeStamp + 1000L) {
-                lines[lines.lastIndex] = last.copy(endTime = last.timeStamp + 5000L)
+                lines[lines.lastIndex] = last.copy(endTime = last.timeStamp + 5000L, endTimeIsEstimated = true)
             }
         }
     }
@@ -1301,7 +1327,8 @@ object RawSLyricsParser {
                         val rawText = if (nextTagIndex == -1) xml.substring(i) else xml.substring(i, nextTagIndex)
 
                         if (rawText.isNotEmpty() && stack.isNotEmpty()) {
-                            stack.last().textBuilder.append(rawText.trim())
+                            stack.last().textBuilder.append(rawText)
+                            stack.last().children.add(XmlElement("#text", emptyList(), emptyList(), rawText))
                         }
                         i = if (nextTagIndex == -1) xml.length else nextTagIndex
                     }

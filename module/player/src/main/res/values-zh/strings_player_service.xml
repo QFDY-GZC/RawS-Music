@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="player_action_playback_mode">播放模式</string>
+    <string name="player_notification_ready">准备播放</string>
+    <string name="player_action_previous">上一曲</string>
+    <string name="player_action_pause">暂停</string>
+    <string name="player_action_play">播放</string>
+    <string name="player_action_next">下一曲</string>
+    <string name="player_mode_shuffle">随机播放</string>
+    <string name="player_mode_repeat_one">单曲循环</string>
+    <string name="player_mode_repeat_all">列表循环</string>
+    <string name="player_mode_sequential">顺序播放</string>
+    <string name="player_action_desktop_lyric">桌面歌词</string>
+</resources>

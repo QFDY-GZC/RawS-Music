@@ -17,6 +17,7 @@ import com.rawsmusic.module.player.dsp.NativeDSPEngine
 import com.rawsmusic.module.player.dsp.ParametricEQController
 import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.common.ui.AppNoticeIcon
+import com.rawsmusic.locale.localizedErrorMessage
 import com.rawsmusic.module.player.dsp.SpeakerOutputElasticityController
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -120,6 +121,10 @@ class AudioEffectsActivity : BaseSettingsActivity() {
             null
         }
 
+        val reverbController = try {
+            playerController?.ensureReverbConnected()
+            playerController?.reverbController
+        } catch (_: Exception) { null }
         setContent {
             LiquidGlassAudioEffectsScreen(
                 onNavigateToPEQ = { navigateToSettings(PEQActivity::class.java) },
@@ -138,14 +143,19 @@ class AudioEffectsActivity : BaseSettingsActivity() {
                 speakerOutputElasticityController = speakerOutputElasticityController,
                 surround360Controller = surround360Controller,
                 panoramic360Controller = panoramic360Controller,
+                reverbController = reverbController,
                 onExportPeqToFile = { json ->
                     pendingPeqExportJson = json
-                    peqExportLauncher.launch("PEQ_preset_${System.currentTimeMillis()}.peq.json")
+                    withSystemFileAccess {
+                        peqExportLauncher.launch("PEQ_preset_${System.currentTimeMillis()}.peq.json")
+                    }
                 },
                 onImportPeqFromFile = {
-                    peqImportLauncher.launch(
-                        arrayOf("application/json", "text/plain", "*/*")
-                    )
+                    withSystemFileAccess {
+                        peqImportLauncher.launch(
+                            arrayOf("application/json", "text/plain", "*/*")
+                        )
+                    }
                 },
                 importedPeqFileContent = importedPeqFileContent,
                 onImportedPeqFileContentConsumed = { importedPeqFileContent = null },
@@ -259,7 +269,10 @@ class AudioEffectsActivity : BaseSettingsActivity() {
         } catch (e: Exception) {
             Log.e("AudioEffectsActivity", "Failed to export PEQ", e)
             AppNoticeBus.error(
-                getString(com.rawsmusic.R.string.ui_preset_save_failed, e.message.orEmpty())
+                getString(
+                    com.rawsmusic.R.string.ui_preset_save_failed,
+                    localizedErrorMessage(e, com.rawsmusic.R.string.ui_unknown_error),
+                )
             )
         }
     }
@@ -272,7 +285,10 @@ class AudioEffectsActivity : BaseSettingsActivity() {
         } catch (e: Exception) {
             Log.e("AudioEffectsActivity", "Failed to import PEQ", e)
             AppNoticeBus.error(
-                getString(com.rawsmusic.R.string.ui_preset_read_failed, e.message.orEmpty())
+                getString(
+                    com.rawsmusic.R.string.ui_preset_read_failed,
+                    localizedErrorMessage(e, com.rawsmusic.R.string.ui_unknown_error),
+                )
             )
             null
         }

@@ -5,6 +5,8 @@ import androidx.compose.animation.core.EaseOut
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.ui.platform.LocalContext
+import com.rawsmusic.core.ui.theme.ThemeManager
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
@@ -71,7 +73,9 @@ fun LiquidBottomTabs(
     modifier: Modifier = Modifier,
     content: @Composable RowScope.() -> Unit,
 ) {
-    val isLightTheme = !isSystemInDarkTheme()
+    // ALBUM_COLOR forces the dark theme; every other background style keeps the system flag.
+    val isLightTheme = !isSystemInDarkTheme() &&
+        !ThemeManager.albumColorForcesDark(LocalContext.current)
     val performanceMode by PersonalizationPreferences.performanceMode.collectAsState()
     val glassSettings by PersonalizationPreferences.globalLiquidGlassSettings.collectAsState()
     val accentColor =

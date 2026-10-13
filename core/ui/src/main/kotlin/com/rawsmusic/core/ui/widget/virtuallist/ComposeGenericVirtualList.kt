@@ -29,6 +29,9 @@ fun ComposeGenericVirtualList(
     persistentHeaderHeight: Dp = 0.dp,
     persistentHeaderVisibilityHeight: Dp = persistentHeaderHeight,
     persistentHeaderSceneItemVisibilityHeight: Dp = persistentHeaderVisibilityHeight,
+    persistentHeaderSceneItemLeft: Dp = 0.dp,
+    persistentHeaderSceneItemTop: Dp = 0.dp,
+    persistentHeaderSceneItemWidth: Dp? = null,
     persistentHeaderSceneItemId: String = "",
     virtualListEdgeEnabled: Boolean = false,
     persistentHeaderContent: @Composable (headerVisible: Boolean, sceneItemVisible: Boolean) -> Unit = { _, _ -> },
@@ -71,6 +74,9 @@ fun ComposeGenericVirtualList(
         persistentHeaderHeight = persistentHeaderHeight,
         persistentHeaderVisibilityHeight = persistentHeaderVisibilityHeight,
         persistentHeaderSceneItemVisibilityHeight = persistentHeaderSceneItemVisibilityHeight,
+        persistentHeaderSceneItemLeft = persistentHeaderSceneItemLeft,
+        persistentHeaderSceneItemTop = persistentHeaderSceneItemTop,
+        persistentHeaderSceneItemWidth = persistentHeaderSceneItemWidth,
         persistentHeaderSceneItemId = persistentHeaderSceneItemId,
         virtualListEdgeEnabled = virtualListEdgeEnabled,
         persistentHeaderContent = persistentHeaderContent,
@@ -134,6 +140,7 @@ internal fun VirtualListVisualItem.toVirtualListAudioFile(): AudioFile {
         albumArtist = "",
         encodingFormat = when (this) {
             is SongVirtualListItem -> song.encodingFormat.ifBlank { "raws_track" }
+            is ArtistAllSongsVirtualListItem -> VIRTUAL_LIST_ARTIST_ALL_SONGS_ENCODING
             is ArtistVirtualListItem,
             is ComposerVirtualListItem -> VIRTUAL_LIST_COLLECTION_OTHER_ENCODING
             is FolderVirtualListItem -> if (showFolderGlyph) {

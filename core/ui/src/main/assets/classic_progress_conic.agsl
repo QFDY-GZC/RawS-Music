@@ -1,0 +1,165 @@
+// Adapted from the supplied SystemUI 17.99.02 COUIIntentSeekBar.
+// Preserve the original sRGB light math; convert its premultiplied result to Canvas working space.
+// Guard: avoid 0/0 when both bloom layers are off.
+
+         // @Vec2(u_resolution, 1.0) = [800, 600]
+         uniform float2 u_resolution;
+ 
+         // @Vec3(u_startColor, 0.01) = [1.0, 1.0, 1.0]
+         uniform float3 u_startColor;
+         // @Vec3(u_endColor, 0.01) = [1.0, 1.0, 1.0]
+         uniform float3 u_endColor;
+ 
+         // Group 1: Progress & Height Parameters
+         // @Vec4(u_progressHeightParams) = [process, rectWidth, height, heightFalloff]
+         uniform float4 u_progressHeightParams;
+ 
+         // Group 2: Basic Parameters
+         // @Vec4(u_basicParams) = [density, alpha, anti, threshold]
+         uniform float4 u_basicParams;
+ 
+         // Group 3: Alpha & Spot Parameters
+         // @Vec4(u_alphaParams) = [alpha1, alpha2, w0, spotRadius]
+         uniform float4 u_alphaParams;
+ 
+         // Group 4: Cone & Falloff Parameters
+         // @Vec4(u_coneParams) = [coneK, second_coneK, axialFalloff, radialFalloff]
+         uniform float4 u_coneParams;
+ 
+         // Group 5: Misc Parameters
+         // @Vec4(u_miscParams) = [lightBlendMode, is_RTL, reserved, reserved]
+         uniform float4 u_miscParams;
+ 
+         const float TO_POINT = 0.003921;  // 1.0 / 255.0
+ 
+         float3 blendPlusLighter(float3 base, float3 blend) {
+             return min(float3(1.0), base + blend);
+         }
+         float4 getBloom(float2 q, float coneK, float alpha1, float2 fragCoord) {
+             // 4. 光轴距离和圆形衰减计算（提前计算共用值）
+             float u_height = u_progressHeightParams.z;
+             float u_heightFalloff = u_progressHeightParams.w;
+             float u_alpha = u_basicParams.y;
+             float w0 = u_alphaParams.z;
+             float u_spotRadius = u_alphaParams.w;
+             float radialFalloff = u_coneParams.w;
+             float axialFalloff = u_coneParams.z;
+             float u_rectWidth = u_progressHeightParams.y;
+             float u_process = u_progressHeightParams.x;
+ 
+             float xp = max(-q.x, 0.0);
+             float feather = u_spotRadius;
+             float w0_px = w0 * feather;
+ 
+             // 5. 光锥宽度（去除不必要的 step + mix 分支）
+             float wCone = coneK * xp + w0_px;
+             float w = mix(w0_px, wCone, step(0.0, xp));  // 简化条件分支
+ 
+             // 6. 边缘遮罩
+             float abs_y = abs(q.y);
+             float d = abs_y - w;
+             float edgeMask = 1.0 - smoothstep(0.0, feather * 2.0, d);
+ 
+             // 7. 径向衰减（合并除法和 exp）
+             float rNorm = abs_y / (w + 1e-4);
+             float radial = exp(-radialFalloff * rNorm * rNorm);
+ 
+             // 轴向衰减（基于像素距离，使用 spotRadius 归一化）
+             float xpNorm = xp / feather;  // 归一化到 0-1 范围
+             float axial = exp(-axialFalloff * xpNorm);
+ 
+             // 8. 高度衰减（预计算公共部分）
+             // float2 lightCenter = float2(u_rectWidth * u_process + feather * 0.5, u_resolution.y * 0.5);   // check it
+             // float circDist = length(fragCoord - lightCenter);
+ 
+             // float circFactor = circDist / (feather * u_height + 1e-4);
+             // float heightAttenuation = exp(-u_heightFalloff * circFactor * circFactor);
+ 
+             float maxHeight = feather * u_height;
+             float heightFactor = clamp(xp / (maxHeight + 1e-4), 0.0, 1.0);
+             float heightAttenuation = 1.0 - pow(heightFactor, u_heightFalloff);
+             float cond = step(maxHeight, xp);
+             float overDistance = (xp - maxHeight) / feather * cond;
+             heightAttenuation *= exp(-overDistance * 3.0);
+ 
+             // 9. 强度计算（合并多次乘法）
+             float intensity = edgeMask * radial * heightAttenuation * axial;
+             intensity *= smoothstep(0.0, 0.03 * feather, xp);
+ 
+             float3 glowColor = mix(u_startColor, u_endColor, heightFactor) * TO_POINT;
+             return half4(glowColor* intensity, intensity * alpha1 * u_alpha);
+         }
+ 
+         float max3(float3 v) {
+             return max(max(v.r, v.g), v.b);
+         }
+ 
+           // 给 BlendMode.PLUS 使用：保留光能量，同时保证 rgb <= alpha
+         float4 premulForAdditiveBlend(float4 c) {
+             c.rgb = clamp(c.rgb, 0.0, 1.0);
+             c.a = clamp(max(c.a, max3(c.rgb)), 0.0, 1.0);
+             return c;
+         }
+
+         float srgbChannelToLinear(float c) {
+             return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+         }
+
+         float4 srgbPremulToWorkingSpace(float4 c) {
+             // Color bytes and the bloom/additive math above belong to sRGB, exactly as in
+             // SystemUI's SDR window. Raw float uniforms have no automatic color tagging.
+             // Convert straight color, then premultiply again: decoding premultiplied RGB
+             // directly would change alpha/edge falloff and the apparent cone width.
+             if (c.a <= 0.0) return float4(0.0);
+             float3 straight = clamp(c.rgb / c.a, 0.0, 1.0);
+             float3 linear = float3(srgbChannelToLinear(straight.r),
+                                   srgbChannelToLinear(straight.g),
+                                   srgbChannelToLinear(straight.b));
+             return float4(fromLinearSrgb(linear) * c.a, c.a);
+         }
+ 
+         half4 main(float2 fragCoord) {
+             // 1. 提前读取所有 uniform，减少重复访问
+             float u_process = u_progressHeightParams.x;
+             float u_rectWidth = u_progressHeightParams.y;
+ 
+             float u_alpha1 = u_alphaParams.x;
+             float u_alpha2 = u_alphaParams.y;
+ 
+             float coneK = u_coneParams.x;
+             float second_coneK = u_coneParams.y;
+ 
+             float u_lightBlendMode = u_miscParams.x;
+             float is_RTL = u_miscParams.y;
+ 
+             // 2. 计算像素坐标和光源位置
+             float2 pixelPos = fragCoord - u_resolution * 0.5;
+             float spotX = (u_process - 0.5) * u_rectWidth;
+             float2 q = pixelPos - float2(spotX, 0.0);
+ 
+             // 3. RTL 处理：合并到一次计算
+             q.x *= 1.0 - 2.0 * is_RTL;  // 替代 mix(q.x, -q.x, is_RTL)
+ 
+ 
+             float4 blend_color = float4(0.0);
+             float4 bloom_color = getBloom(q, coneK, u_alpha1, fragCoord);
+             // vec4 bloom_color2 = bloom_color;
+             float4 bloom_color2 = getBloom(q, second_coneK, u_alpha2, fragCoord);
+ 
+             float4 base = bloom_color;
+             float4 blend = bloom_color2;
+             blend_color.rgb = blendPlusLighter(base.rgb, blend.rgb);
+             blend_color.a = base.a * (1.0 - blend.a) + blend.a;
+ 
+             float percent = abs(blend.a - base.a) / max(blend_color.a, 1e-5);
+             float mix_bg = step(blend.a, base.a) * percent;
+             float mix_fg = step(base.a, blend.a) * percent;
+             blend_color.rgb = mix(blend_color.rgb, base.rgb, mix_bg);
+             blend_color.rgb = mix(blend_color.rgb, blend.rgb, mix_fg);
+ 
+             float4 final_color = mix(blend_color, float4(0.0), step(0.0,q.x));
+ 
+             // premultiplied alpha
+             return srgbPremulToWorkingSpace(premulForAdditiveBlend(final_color));
+         }
+         

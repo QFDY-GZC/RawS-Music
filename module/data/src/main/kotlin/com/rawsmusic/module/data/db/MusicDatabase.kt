@@ -1,6 +1,8 @@
 package com.rawsmusic.module.data.db
 
 import android.content.Context
+import com.rawsmusic.module.data.db.entity.ScanDirectoryEntity
+import com.rawsmusic.module.data.db.dao.ScanDirectoryDao
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -35,12 +37,14 @@ import com.rawsmusic.module.data.db.entity.UserPlaylistSongEntity
         PlaybackHistoryEntity::class,
         DailyListenEntity::class,
         UserPlaylistEntity::class,
-        UserPlaylistSongEntity::class
+        UserPlaylistSongEntity::class,
+        ScanDirectoryEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 abstract class MusicDatabase : RoomDatabase() {
+    abstract fun scanDirectoryDao(): ScanDirectoryDao
 
     abstract fun folderDao(): FolderDao
     abstract fun folderFileDao(): FolderFileDao
@@ -52,6 +56,11 @@ abstract class MusicDatabase : RoomDatabase() {
 
     companion object {
         private const val DB_NAME = "rawsmusic.db"
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(ScanDirectorySchema.CREATE_TABLE)
+            }
+        }
 
         @Volatile
         private var instance: MusicDatabase? = null
@@ -158,7 +167,7 @@ abstract class MusicDatabase : RoomDatabase() {
                     MusicDatabase::class.java,
                     DB_NAME
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                     .also { instance = it }
             }

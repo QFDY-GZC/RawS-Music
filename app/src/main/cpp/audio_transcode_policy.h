@@ -2,6 +2,8 @@
 
 #include <array>
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 
 namespace rawsmusic::transcode {
@@ -58,6 +60,25 @@ inline int defaultPcmSampleRateForDsd(int logicalDsdSampleRateHz) {
 inline int logicalDsdRateFromCodecByteRate(int codecByteRateHz) {
     if (codecByteRateHz <= 0 || codecByteRateHz > std::numeric_limits<int>::max() / 8) return 0;
     return codecByteRateHz * 8;
+}
+
+// FFmpeg exposes the 34-byte FLAC STREAMINFO payload as codec extradata.
+// RFC 9639 section 8.2: the lower 36 bits of bytes 10..17 are samples/channel;
+// zero means unknown. Container duration estimates must not be used as this bound.
+inline int64_t declaredFlacSampleCount(const uint8_t* streamInfo, size_t size) {
+    if (!streamInfo || size != 34) return 0;
+    return (static_cast<int64_t>(streamInfo[13] & 0x0fu) << 32u) |
+        (static_cast<int64_t>(streamInfo[14]) << 24u) |
+        (static_cast<int64_t>(streamInfo[15]) << 16u) |
+        (static_cast<int64_t>(streamInfo[16]) << 8u) |
+        static_cast<int64_t>(streamInfo[17]);
+}
+
+inline int boundedDecodedSampleCount(int64_t alreadyDecoded, int frameSamples, int64_t declaredSamples) {
+    if (frameSamples <= 0) return 0;
+    if (declaredSamples <= 0) return frameSamples;
+    if (alreadyDecoded >= declaredSamples) return 0;
+    return static_cast<int>(std::min<int64_t>(frameSamples, declaredSamples - alreadyDecoded));
 }
 
 inline int normalizeSourceBitDepth(int rawBits) {

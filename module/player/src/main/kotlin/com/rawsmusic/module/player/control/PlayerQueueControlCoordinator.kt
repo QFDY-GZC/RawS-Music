@@ -5,7 +5,6 @@ import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.PlayMode
 import com.rawsmusic.core.common.model.PlayQueue
 import com.rawsmusic.core.common.model.RepeatMode
-import com.rawsmusic.core.common.utils.PlayerSwitchTrace
 import com.rawsmusic.module.player.withPriorityQueue
 import java.util.ArrayDeque
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -188,14 +187,14 @@ internal class PlayerQueueControlCoordinator(
      * actually been consumed; asking the shuffle controller first creates a
      * different preview from the transport target.
      */
-    private fun nextIndex(queue: PlayQueue): Int {
+    private fun nextIndex(queue: PlayQueue, automatic: Boolean = false): Int {
         if (priorityQueue.isNotEmpty()) {
             return (queue.currentIndex + 1).mod(queue.songs.size)
         }
         return when (mode.currentPlayMode()) {
             PlayMode.SEQUENTIAL -> (queue.currentIndex + 1) % queue.songs.size
             PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> mode.nextShuffleIndex(queue)
-            PlayMode.REPEAT_ONE -> queue.currentIndex
+            PlayMode.REPEAT_ONE -> if (automatic) queue.currentIndex else (queue.currentIndex + 1) % queue.songs.size
         }
     }
 
@@ -206,7 +205,7 @@ internal class PlayerQueueControlCoordinator(
         return when (mode.currentPlayMode()) {
             PlayMode.SEQUENTIAL -> (queue.currentIndex + 1) % queue.songs.size
             PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> mode.peekNextShuffleIndex(queue)
-            PlayMode.REPEAT_ONE -> queue.currentIndex
+            PlayMode.REPEAT_ONE -> (queue.currentIndex + 1) % queue.songs.size
         }
     }
 
@@ -254,10 +253,6 @@ internal class PlayerQueueControlCoordinator(
         if (queue.songs.isEmpty()) return null
         val targetIndex = nextIndex(queue)
         val target = queue.songs.getOrNull(targetIndex) ?: return null
-        PlayerSwitchTrace.mark(
-            "queue_project_target",
-            "source=artwork_gesture_next from=${queue.currentIndex} to=$targetIndex id=${target.id}",
-        )
         rememberManualTarget(target, targetIndex)
 
         if (priorityQueue.any { it.queueIdentity() == target.queueIdentity() }) {
@@ -280,10 +275,6 @@ internal class PlayerQueueControlCoordinator(
         if (nextIndex !in queue.songs.indices) return null
 
         val nextSong = queue.songs[nextIndex]
-        PlayerSwitchTrace.mark(
-            "queue_project_target",
-            "source=manual_next from=${queue.currentIndex} to=$nextIndex id=${nextSong.id}",
-        )
         rememberManualTarget(nextSong, nextIndex)
         if (priorityQueue.any { it.queueIdentity() == nextSong.queueIdentity() }) {
             pendingPriorityMutation = PendingPriorityMutation(nextSong.queueIdentity(), clearAll = false)
@@ -297,14 +288,15 @@ internal class PlayerQueueControlCoordinator(
 
     /**
      * Advances after renderer EOF without borrowing manual button/gesture transition semantics.
-     * Queue traversal stays identical to [next], including priority and shuffle behavior.
+     * Priority and shuffle traversal stay identical to [next], but repeat-one applies only to EOF,
+     * never to a manual button/artwork command.
      */
     fun automaticAdvance(): AudioFile? {
         clearManualProjection()
         if (callbacks.isReleased()) return null
         val queue = visibleQueue()
         if (queue.songs.isEmpty()) return null
-        val targetIndex = nextIndex(queue)
+        val targetIndex = nextIndex(queue, automatic = true)
         val target = queue.songs.getOrNull(targetIndex) ?: return null
         if (!callbacks.automaticSwitchFromStart(target, queue.songs, targetIndex)) return null
 
@@ -325,15 +317,10 @@ internal class PlayerQueueControlCoordinator(
         if (queue.songs.isEmpty()) return null
         previousRestartBypassUntilMs = 0L
         val targetIndex = when (mode.currentPlayMode()) {
-            PlayMode.SEQUENTIAL -> if (queue.currentIndex > 0) queue.currentIndex - 1 else queue.songs.lastIndex
+            PlayMode.SEQUENTIAL, PlayMode.REPEAT_ONE -> if (queue.currentIndex > 0) queue.currentIndex - 1 else queue.songs.lastIndex
             PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> mode.previousShuffleIndex(queue)
-            PlayMode.REPEAT_ONE -> queue.currentIndex
         }
         val target = queue.songs.getOrNull(targetIndex) ?: return null
-        PlayerSwitchTrace.mark(
-            "queue_project_target",
-            "source=artwork_gesture_previous from=${queue.currentIndex} to=$targetIndex id=${target.id}",
-        )
         rememberManualTarget(target, targetIndex)
 
         if (priorityQueue.isNotEmpty()) {
@@ -348,7 +335,7 @@ internal class PlayerQueueControlCoordinator(
         return target
     }
 
-    fun previous(restartCurrentAfterThreshold: Boolean): AudioFile? {
+    fun previous(restartCurrentAfterThreshold: Boolean = false): AudioFile? {
         if (callbacks.isReleased()) return null
         val queue = manualNavigationQueue()
         if (queue.songs.isEmpty()) return null
@@ -357,26 +344,17 @@ internal class PlayerQueueControlCoordinator(
             uptimeMillis() <= previousRestartBypassUntilMs
         previousRestartBypassUntilMs = 0L
         if (restartCurrentAfterThreshold && !bypassRestart && callbacks.playerPositionMs() > 3000L) {
-            PlayerSwitchTrace.mark(
-                "queue_previous_restart_current",
-                "index=${queue.currentIndex} position=${callbacks.playerPositionMs()}",
-            )
             callbacks.seekToStart()
             return callbacks.currentSong()
         }
 
         val previousIndex = when (mode.currentPlayMode()) {
-            PlayMode.SEQUENTIAL -> if (queue.currentIndex > 0) queue.currentIndex - 1 else queue.songs.lastIndex
+            PlayMode.SEQUENTIAL, PlayMode.REPEAT_ONE -> if (queue.currentIndex > 0) queue.currentIndex - 1 else queue.songs.lastIndex
             PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> mode.previousShuffleIndex(queue)
-            PlayMode.REPEAT_ONE -> queue.currentIndex
         }
         if (previousIndex !in queue.songs.indices) return null
 
         val previousSong = queue.songs[previousIndex]
-        PlayerSwitchTrace.mark(
-            "queue_project_target",
-            "source=manual_previous from=${queue.currentIndex} to=$previousIndex id=${previousSong.id}",
-        )
         rememberManualTarget(previousSong, previousIndex)
         if (priorityQueue.isNotEmpty()) {
             pendingPriorityMutation = PendingPriorityMutation(previousSong.queueIdentity(), clearAll = true)
@@ -448,9 +426,8 @@ internal class PlayerQueueControlCoordinator(
     fun previewPreviousSong(queue: PlayQueue = visibleQueue()): AudioFile? {
         if (queue.songs.isEmpty()) return null
         val index = when (mode.currentPlayMode()) {
-            PlayMode.SEQUENTIAL -> if (queue.currentIndex > 0) queue.currentIndex - 1 else queue.songs.lastIndex
+            PlayMode.SEQUENTIAL, PlayMode.REPEAT_ONE -> if (queue.currentIndex > 0) queue.currentIndex - 1 else queue.songs.lastIndex
             PlayMode.SHUFFLE_ALL, PlayMode.SHUFFLE_ONCE -> mode.peekPreviousShuffleIndex(queue)
-            PlayMode.REPEAT_ONE -> queue.currentIndex
         }
         return queue.songs.getOrNull(index)
     }
@@ -464,7 +441,7 @@ internal class PlayerQueueControlCoordinator(
         if (offset == 0) return queue.currentSong
         val index = when {
             priorityQueue.isNotEmpty() -> (queue.currentIndex + offset).floorMod(queue.songs.size)
-            mode.currentPlayMode() == PlayMode.SEQUENTIAL ->
+            mode.currentPlayMode() == PlayMode.SEQUENTIAL || mode.currentPlayMode() == PlayMode.REPEAT_ONE ->
                 (queue.currentIndex + offset).floorMod(queue.songs.size)
             mode.currentPlayMode() == PlayMode.SHUFFLE_ALL ||
                 mode.currentPlayMode() == PlayMode.SHUFFLE_ONCE ->

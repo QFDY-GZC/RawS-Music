@@ -17,7 +17,6 @@ internal class MainActivityRuntimeLifecycleCoordinator(
     private val postToWindow: ((() -> Unit) -> Unit),
     private val postToWindowDelayed: ((Long, () -> Unit) -> Unit),
     private val detachUsbStatusNotice: () -> Unit,
-    private val stopRotation: () -> Unit,
     private val setActivityForeground: (Boolean) -> Unit,
     private val stopRealtimeSpectrum: () -> Unit,
     private val resetVisualizerSpectrum: () -> Unit,
@@ -38,7 +37,6 @@ internal class MainActivityRuntimeLifecycleCoordinator(
         mainNavState.resetTransientBackState()
         disablePredictiveBack()
         removePredictiveBackHandoff()
-        stopRotation()
         setActivityForeground(false)
         stopRealtimeSpectrum()
         resetVisualizerSpectrum()

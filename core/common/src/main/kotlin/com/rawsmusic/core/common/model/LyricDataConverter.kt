@@ -1,7 +1,6 @@
 package com.rawsmusic.core.common.model
 
 import android.util.Log
-import io.github.proify.lyricon.lyric.model.LyricWord as LyriconWord
 import io.github.proify.lyricon.lyric.model.RichLyricLine
 import io.github.proify.lyricon.lyric.model.Song
 
@@ -56,18 +55,13 @@ fun LyricData.toLyriconSong(
         // timelines are left untouched. This avoids a 60s line carrying words at 0..3000ms, which
         // would otherwise make the entire karaoke sweep look completed as soon as the line loads.
         val words = normalizeSourceWordTimeline(
-            sourceWords = line.words,
+            sourceWords = attachTimedPronunciation(line.words, line.pronunciationWords),
             absoluteBaseMs = begin,
             absoluteLineEndMs = end
         ).map { word ->
             val wordBegin = shiftedTime(word.begin)
             val wordEnd = shiftedTime(word.end).coerceAtLeast(wordBegin + 1L)
-            LyriconWord(
-                begin = wordBegin,
-                end = wordEnd,
-                duration = (wordEnd - wordBegin).coerceAtLeast(1L),
-                text = word.text
-            )
+            word.copy(begin = wordBegin, end = wordEnd).toDisplayLyricWord()
         }
 
         val backgroundBase = line.backgroundStartTime
@@ -81,12 +75,7 @@ fun LyricData.toLyriconSong(
         ).map { word ->
             val wordBegin = shiftedTime(word.begin)
             val wordEnd = shiftedTime(word.end).coerceAtLeast(wordBegin + 1L)
-            LyriconWord(
-                begin = wordBegin,
-                end = wordEnd,
-                duration = (wordEnd - wordBegin).coerceAtLeast(1L),
-                text = word.text
-            )
+            word.copy(begin = wordBegin, end = wordEnd).toDisplayLyricWord()
         }
 
         val agentId = line.agent?.takeIf { it.isNotBlank() }
@@ -161,7 +150,11 @@ private fun normalizeSourceWordTimeline(
             word.copy(
                 begin = begin,
                 end = begin + rawDuration.coerceAtLeast(1L),
-                duration = rawDuration.coerceAtLeast(1L)
+                duration = rawDuration.coerceAtLeast(1L),
+                ruby = word.ruby.map { syllable ->
+                    syllable.copy(begin = syllable.begin?.let { absoluteBaseMs + it },
+                        end = syllable.end?.let { absoluteBaseMs + it })
+                },
             )
         }
     }

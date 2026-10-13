@@ -1,131 +1,21 @@
 package com.rawsmusic
 
-import android.app.Activity
 import android.content.pm.ActivityInfo
-import android.content.res.Configuration
-import android.os.SystemClock
-import android.view.OrientationEventListener
 import androidx.activity.ComponentActivity
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.widget.PlayerSceneController
 
-/** Owns the portrait Activity's rotation proposal and landscape-player handoff. */
+/** Rotation reflows the retained main window; the standalone player is a manual destination. */
 internal class MainActivityRotationCoordinator(
     private val activity: ComponentActivity,
-    private val currentScene: () -> PlayerSceneController.Scene,
-    private val homeFullCoverActive: () -> Boolean,
-    private val playerModalVisible: () -> Boolean,
-    private val hasCurrentSong: () -> Boolean,
-    private val onPortraitDetected: () -> Unit,
-    private val onLaunchLandscapePlayer: () -> Unit,
 ) {
-    companion object {
-        private const val TAG = "LandscapeEntry"
-        private const val LAUNCH_DEBOUNCE_MS = 1_200L
-    }
-
-    var launchArmed: Boolean = true
-        private set
-
-    var activityLaunchPending: Boolean = false
-        private set
-
-    private var lastLaunchMs = 0L
-    private var orientationListener: OrientationEventListener? = null
-
-    fun setup() {
-        orientationListener = object : OrientationEventListener(activity) {
-            override fun onOrientationChanged(orientation: Int) {
-                if (orientation == ORIENTATION_UNKNOWN || activity.isFinishing || activity.isDestroyed) return
-                if (
-                    currentScene() != PlayerSceneController.Scene.PLAYER &&
-                    orientation.isClearlyLeavingPortraitOrientation() &&
-                    activity.requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                ) {
-                    // PLAYER advertises USER rotation so SystemUI can offer the normal landscape
-                    // proposal. Returning to a portrait MAIN used to immediately write PORTRAIT
-                    // at the animation endpoint, which makes ColorOS relayout the whole decor even
-                    // though the physical/configuration orientation never changed. Keep the USER
-                    // request while the phone is still portrait and only restore the MAIN lock once
-                    // the sensor actually leaves portrait territory.
-                    activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                    return
-                }
-                if (!orientation.isPortraitOrientation()) return
-                if (!launchArmed) {
-                    launchArmed = true
-                    onPortraitDetected()
-                }
-            }
-        }
-    }
-
-    fun onResume() {
-        activityLaunchPending = false
-        orientationListener?.takeIf { it.canDetectOrientation() }?.enable()
-    }
-
-    fun onStop() {
-        orientationListener?.disable()
-    }
-
-    fun onDestroy() {
-        orientationListener?.disable()
-        orientationListener = null
-    }
-
-    fun setHomeFullCoverPolicy(launchArmed: Boolean, clearPendingLaunch: Boolean) {
-        this.launchArmed = launchArmed
-        if (clearPendingLaunch) activityLaunchPending = false
-    }
-
     fun syncPolicy(scene: PlayerSceneController.Scene) {
-        if (scene != PlayerSceneController.Scene.PLAYER) launchArmed = true
-        val allowSystemRotationProposal =
-            !homeFullCoverActive() &&
-                scene == PlayerSceneController.Scene.PLAYER &&
-                launchArmed &&
-                hasCurrentSong()
-        val target = if (allowSystemRotationProposal) {
-            ActivityInfo.SCREEN_ORIENTATION_USER
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        }
-        val canKeepPortraitUserRequest =
-            scene != PlayerSceneController.Scene.PLAYER &&
-                target == ActivityInfo.SCREEN_ORIENTATION_PORTRAIT &&
-                activity.requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_USER &&
-                activity.resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
-        if (canKeepPortraitUserRequest) return
-        if (activity.requestedOrientation != target) {
-            AppLogger.i(
-                TAG,
-                "rotationPolicy scene=$scene armed=$launchArmed target=$target " +
-                    "config=${activity.resources.configuration.orientation}"
-            )
-            activity.requestedOrientation = target
-        }
+        val target = ActivityInfo.SCREEN_ORIENTATION_USER
+        if (activity.requestedOrientation == target) return
+        AppLogger.i(
+            "WindowRotation",
+            "scene=$scene target=$target config=${activity.resources.configuration.orientation}",
+        )
+        activity.requestedOrientation = target
     }
-
-    fun launchFromSystemRotation() {
-        if (
-            homeFullCoverActive() ||
-            currentScene() != PlayerSceneController.Scene.PLAYER ||
-            playerModalVisible() ||
-            !hasCurrentSong() ||
-            activityLaunchPending
-        ) return
-
-        val now = SystemClock.uptimeMillis()
-        if (now - lastLaunchMs < LAUNCH_DEBOUNCE_MS) return
-        launchArmed = false
-        activityLaunchPending = true
-        lastLaunchMs = now
-        AppLogger.i(TAG, "launch from accepted system rotation")
-        onLaunchLandscapePlayer()
-    }
-
-    private fun Int.isPortraitOrientation(): Boolean = this in 0..28 || this in 332..359
-
-    private fun Int.isClearlyLeavingPortraitOrientation(): Boolean = this in 45..315
 }

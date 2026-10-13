@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="transcode_post_source_delete_needs_consent">转换已完成；删除源文件前需要系统授权。</string>
+    <string name="transcode_post_source_deleted">转换已完成，源文件已删除。</string>
+    <string name="transcode_post_source_delete_failed">转换已完成，但源文件删除失败。</string>
+    <string name="transcode_post_library_refresh_requested">转换已完成，并已请求刷新音乐库。</string>
+    <string name="transcode_post_action_notice">转换已完成，但后续媒体库操作未能完成。</string>
+</resources>

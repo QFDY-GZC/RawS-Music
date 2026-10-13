@@ -9,6 +9,7 @@ object FontManager {
     private data class TypefaceKey(
         val path: String,
         val globalWeight: Int,
+        val experimentalWeight: Boolean,
         val globalItalic: Boolean,
         val requestedWeight: Int,
         val requestedItalic: Boolean,
@@ -48,10 +49,12 @@ object FontManager {
     ): Typeface {
         val path = AppPreferences.UI.customFontPath
         val globalWeight = AppPreferences.UI.fontWeight.coerceIn(100, 900)
+        val experimentalWeight = AppPreferences.UI.experimentalFontWeightEnabled
         val globalItalic = AppPreferences.UI.fontItalic
         val key = TypefaceKey(
             path = path,
             globalWeight = globalWeight,
+            experimentalWeight = experimentalWeight,
             globalItalic = globalItalic,
             requestedWeight = requestedWeight.coerceIn(100, 900),
             requestedItalic = requestedItalic,
@@ -63,6 +66,26 @@ object FontManager {
         val finalWeight = (key.requestedWeight + globalWeight - 400).coerceIn(100, 900)
         val finalItalic = globalItalic || requestedItalic
         val resolved = runCatching {
+            val variableWeightRange = if (
+                path.isNotBlank() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+            ) {
+                FontFileInspector.inspect(path).weightRange
+            } else {
+                null
+            }
+            if (variableWeightRange != null) {
+                val axisWeight = if (key.experimentalWeight) {
+                    finalWeight
+                } else {
+                    finalWeight.coerceIn(variableWeightRange.first, variableWeightRange.last)
+                }
+                return@runCatching Typeface.Builder(path)
+                    .setFontVariationSettings("'wght' $axisWeight")
+                    .setWeight(axisWeight)
+                    .setItalic(finalItalic)
+                    .build()
+            }
+
             val base = if (path.isBlank()) Typeface.DEFAULT else Typeface.createFromFile(path)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 Typeface.create(base, finalWeight, finalItalic)

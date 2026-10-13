@@ -48,6 +48,7 @@ import com.rawsmusic.core.ui.widget.writeStoredMiniPlayerArtworkMode
 import com.rawsmusic.core.ui.widget.bottombar.miniPlayerSurfaceShape
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.module.data.prefs.BottomChromeScrollBehavior
+import com.rawsmusic.module.data.prefs.BottomNavigationCompactStyle
 import com.rawsmusic.module.data.prefs.BottomNavigationStyleSettings
 import com.rawsmusic.module.data.prefs.MiniPlayerBubbleMotion
 import com.rawsmusic.module.data.prefs.MiniPlayerBubbleOrigin
@@ -157,6 +158,69 @@ fun BottomNavigationSettingsScreen(onBack: () -> Unit) {
         SmallTitle(text = stringResource(R.string.settings_bottom_navigation_style_section))
         SettingsCard {
             BottomNavigationPreview(selectedScenes, bottomNavigationStyle, miniPlayerStyle)
+            val classicCompactLabel = stringResource(R.string.settings_bottom_navigation_compact_style_classic)
+            val adaptiveCompactLabel = stringResource(R.string.settings_bottom_navigation_compact_style_adaptive)
+            val compactStyleLabel = when (bottomNavigationStyle.compactStyle) {
+                BottomNavigationCompactStyle.CLASSIC -> classicCompactLabel
+                BottomNavigationCompactStyle.ADAPTIVE -> adaptiveCompactLabel
+            }
+            RawWindowDropdownPreference(
+                entry = DropdownEntry(
+                    items = listOf(
+                        DropdownItem(
+                            text = classicCompactLabel,
+                            selected = bottomNavigationStyle.compactStyle == BottomNavigationCompactStyle.CLASSIC,
+                            onClick = {
+                                PersonalizationPreferences.updateBottomNavigationStyle {
+                                    it.copy(compactStyle = BottomNavigationCompactStyle.CLASSIC)
+                                }
+                            },
+                        ),
+                        DropdownItem(
+                            text = adaptiveCompactLabel,
+                            selected = bottomNavigationStyle.compactStyle == BottomNavigationCompactStyle.ADAPTIVE,
+                            onClick = {
+                                PersonalizationPreferences.updateBottomNavigationStyle {
+                                    it.copy(compactStyle = BottomNavigationCompactStyle.ADAPTIVE)
+                                }
+                            },
+                        ),
+                    ),
+                ),
+                title = stringResource(R.string.settings_bottom_navigation_compact_style_title),
+                summary = compactStyleLabel,
+                showValue = true,
+                maxHeight = 220.dp,
+                collapseOnSelection = true,
+            )
+            if (bottomNavigationStyle.compactStyle == BottomNavigationCompactStyle.ADAPTIVE) {
+                SwitchPreference(
+                    title = stringResource(R.string.settings_bottom_navigation_compact_leading_title),
+                    summary = stringResource(R.string.settings_bottom_navigation_compact_leading_summary),
+                    checked = bottomNavigationStyle.compactLeadingButtonEnabled,
+                    onCheckedChange = { checked ->
+                        PersonalizationPreferences.updateBottomNavigationStyle {
+                            it.copy(compactLeadingButtonEnabled = checked)
+                        }
+                    },
+                )
+                SwitchPreference(
+                    title = stringResource(R.string.settings_bottom_navigation_compact_trailing_title),
+                    summary = stringResource(R.string.settings_bottom_navigation_compact_trailing_summary),
+                    checked = bottomNavigationStyle.compactTrailingButtonEnabled,
+                    onCheckedChange = { checked ->
+                        PersonalizationPreferences.updateBottomNavigationStyle {
+                            it.copy(compactTrailingButtonEnabled = checked)
+                        }
+                    },
+                )
+                Text(
+                    text = stringResource(R.string.settings_bottom_navigation_compact_adaptive_summary),
+                    fontSize = 12.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
             PreferenceValueSlider(
                 title = stringResource(R.string.settings_bottom_navigation_height_title),
                 value = bottomNavigationStyle.heightDp,
@@ -1110,6 +1174,9 @@ private fun BottomNavigationPreview(
         compactMiniCorner,
         miniPlayerStyle.cornerCurve,
     )
+    val adaptiveCompact = style.compactStyle == BottomNavigationCompactStyle.ADAPTIVE
+    val showCompactLeading = !adaptiveCompact || style.compactLeadingButtonEnabled
+    val showCompactTrailing = !adaptiveCompact || style.compactTrailingButtonEnabled
 
     Column(
         modifier = Modifier
@@ -1211,27 +1278,31 @@ private fun BottomNavigationPreview(
                     val inlineGap = 8.dp
                     val navigationLeadingMargin = style.leadingMarginDp.dp
                     val navigationTrailingMargin = style.trailingMarginDp.dp
-                    val inlineLeadingReserve = navigationLeadingMargin + compactSize + inlineGap
-                    val inlineTrailingReserve = navigationTrailingMargin + compactSize + inlineGap
+                    val inlineLeadingReserve = navigationLeadingMargin +
+                        (if (showCompactLeading) compactSize + inlineGap else 0.dp)
+                    val inlineTrailingReserve = navigationTrailingMargin +
+                        (if (showCompactTrailing) compactSize + inlineGap else 0.dp)
                     val miniWidth = (maxWidth - inlineLeadingReserve - inlineTrailingReserve)
                         .coerceAtLeast(1.dp)
                     val miniCenterShift = (inlineLeadingReserve - inlineTrailingReserve) / 2f
                     val selectedScene = scenes.firstOrNull() ?: NavScene.HOME
 
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.CenterStart)
-                            .padding(start = navigationLeadingMargin)
-                            .size(compactSize)
-                            .clip(compactNavigationShape)
-                            .background(scheme.surfaceContainer),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        BottomNavigationEntryIcon(
-                            scene = selectedScene,
-                            tint = scheme.primary,
-                            modifier = Modifier.size(24.dp),
-                        )
+                    if (showCompactLeading) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .padding(start = navigationLeadingMargin)
+                                .size(compactSize)
+                                .clip(compactNavigationShape)
+                                .background(scheme.surfaceContainer),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            BottomNavigationEntryIcon(
+                                scene = selectedScene,
+                                tint = scheme.primary,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
                     }
 
                     Box(
@@ -1280,20 +1351,22 @@ private fun BottomNavigationPreview(
                         }
                     }
 
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .padding(end = navigationTrailingMargin)
-                            .size(compactSize)
-                            .clip(compactNavigationShape)
-                            .background(scheme.surfaceContainer),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        BottomNavigationEntryIcon(
-                            scene = NavScene.SEARCH,
-                            tint = contentColor.copy(alpha = 0.72f),
-                            modifier = Modifier.size(24.dp),
-                        )
+                    if (showCompactTrailing) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .padding(end = navigationTrailingMargin)
+                                .size(compactSize)
+                                .clip(compactNavigationShape)
+                                .background(scheme.surfaceContainer),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            BottomNavigationEntryIcon(
+                                scene = NavScene.SEARCH,
+                                tint = contentColor.copy(alpha = 0.72f),
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
                     }
                 }
             }

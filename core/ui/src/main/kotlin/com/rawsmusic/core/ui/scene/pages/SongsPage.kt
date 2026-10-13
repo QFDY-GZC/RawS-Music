@@ -111,14 +111,9 @@ import com.rawsmusic.core.ui.widget.text.LongTextMotionState
 import com.rawsmusic.core.ui.widget.text.SharedMarqueeText
 import com.rawsmusic.core.ui.widget.player.OriginalArtworkViewerDialog
 import com.rawsmusic.core.ui.widget.player.shareSelectedAudio
-import dev.chrisbanes.haze.HazeInputScale
 import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
-import dev.chrisbanes.haze.blur.HazeColorEffect
-import dev.chrisbanes.haze.blur.HazeProgressive
-import dev.chrisbanes.haze.blur.blurEffect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
@@ -586,6 +581,7 @@ fun SongsPage(
         }
 
         RawAlphabetIndex(
+            sceneId = NavScene.SONGS.name,
             data = alphabetIndexData,
             scrollActiveProvider = { virtualListState.isListScrollInProgress },
             modifier = Modifier
@@ -833,7 +829,9 @@ internal fun SongsTopMenuBar(
             ) {
                 Icon(
                     imageVector = MiuixIcons.Regular.Back,
-                    contentDescription = if (selectionMode) "取消选择" else "返回",
+                    contentDescription = stringResource(
+                        if (selectionMode) R.string.common_cancel_selection else R.string.common_back
+                    ),
                     tint = foreground
                 )
             }
@@ -1138,36 +1136,17 @@ internal fun TopGradientGlassTail(
     // subtree at the first/last motion frame. An alpha-zero Haze child is skipped by the renderer,
     // while the fallback keeps the top chrome opaque and deterministic during motion.
     Box(modifier = modifier) {
-        Box(
+        ProgressiveTopBlur(
+            hazeState = hazeState,
+            tintColor = scheme.background,
+            tintAlpha = when {
+                transparentDuringMotion || usesReferenceStaticForeground() -> 0f
+                isLight -> 0.24f
+                else -> 0.20f
+            },
             modifier = Modifier
                 .matchParentSize()
                 .graphicsLayer { alpha = if (blurActive) 1f else 0f }
-                .hazeEffect(state = hazeState) {
-                    inputScale = HazeInputScale.Fixed(0.67f)
-                    clipToAreasBounds = false
-                    expandLayerBounds = true
-                    drawContentBehind = true
-                    forceInvalidateOnPreDraw = false
-                    blurEffect {
-                        backgroundColor = Color.Transparent
-                        val tintAlpha = when {
-                            transparentDuringMotion || usesReferenceStaticForeground() -> 0f
-                            isLight -> 0.24f
-                            else -> 0.20f
-                        }
-                        colorEffects = if (tintAlpha > 0f) {
-                            listOf(HazeColorEffect.tint(scheme.background.copy(alpha = tintAlpha)))
-                        } else {
-                            emptyList()
-                        }
-                        blurRadius = 72.dp
-                        noiseFactor = 0f
-                        progressive = HazeProgressive.verticalGradient(
-                            startIntensity = 1f,
-                            endIntensity = 0f
-                        )
-                    }
-                }
         )
         Box(
             modifier = Modifier

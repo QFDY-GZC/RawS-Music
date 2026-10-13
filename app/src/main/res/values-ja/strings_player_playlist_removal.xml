@@ -1,0 +1,7 @@
+<resources>
+    <string name="ui_playlist_remove_title">プレイリストから曲を削除</string>
+    <string name="ui_playlist_remove_selected_summary">削除するプレイリストを選択 · %1$d 件選択中</string>
+    <string name="ui_playlist_remove_selected">削除（%1$d）</string>
+    <string name="ui_playlist_remove_success">%1$d 件のプレイリストから曲を削除しました</string>
+    <string name="ui_playlist_remove_failed">一部の削除に失敗しました。選択したプレイリストを確認して再試行してください。</string>
+</resources>

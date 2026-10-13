@@ -93,7 +93,7 @@ fun LiquidGlassAudioSettingsScreen(
     var bitDepthIndex by remember(outputMode) {
         mutableStateOf(bitDepths.indexOf(AudioOutputManager.getTargetBitDepth()).coerceAtLeast(0))
     }
-    var normalization by remember { mutableStateOf(AppPreferences.Player.volumeNormalizationEnabled) }
+    var replayGainMode by remember { mutableStateOf(AppPreferences.Player.effectiveReplayGainMode()) }
     var gapless by remember { mutableStateOf(AppPreferences.Player.gaplessPlaybackEnabled) }
     var playbackSpeed by remember { mutableStateOf(AppPreferences.Player.playbackSpeed) }
     var playbackSpeedChangesPitch by remember {
@@ -106,6 +106,17 @@ fun LiquidGlassAudioSettingsScreen(
     }
     var infoDialogId by remember { mutableStateOf(0) }
     var ditherMode by remember { mutableStateOf(AppPreferences.Player.pcmDitherMode) }
+
+    val replayGainOptions = listOf(
+        0 to (stringResource(R.string.settings_audio_replaygain_off) to stringResource(R.string.settings_audio_replaygain_off_desc)),
+        1 to (stringResource(R.string.settings_audio_replaygain_track) to stringResource(R.string.settings_audio_replaygain_track_desc)),
+        2 to (stringResource(R.string.settings_audio_replaygain_album) to stringResource(R.string.settings_audio_replaygain_album_desc)),
+    )
+    val selectedReplayGainDescription = replayGainOptions
+        .firstOrNull { it.first == replayGainMode }
+        ?.second
+        ?.second
+        ?: stringResource(R.string.settings_audio_replaygain_off_desc)
 
     val ditherOptions = listOf(
         PcmDitherMode.OFF.id to (stringResource(R.string.settings_audio_dither_none) to stringResource(R.string.settings_audio_dither_none_desc)),
@@ -324,10 +335,18 @@ fun LiquidGlassAudioSettingsScreen(
         SettingsCard {
             SectionHeader(stringResource(R.string.settings_audio_playback_options))
             Spacer(Modifier.height(4.dp))
-            InfoSwitchRow(stringResource(R.string.settings_audio_volume_normalization), stringResource(R.string.settings_audio_volume_normalization_desc), normalization, { infoDialogId = 1 }) { checked ->
-                normalization = checked
-                AppPreferences.Player.volumeNormalizationEnabled = checked
-            }
+            ReplayGainModePreference(
+                title = stringResource(R.string.settings_audio_volume_normalization),
+                description = selectedReplayGainDescription,
+                options = replayGainOptions,
+                selectedId = replayGainMode,
+                onSelected = { mode ->
+                    replayGainMode = mode
+                    AppPreferences.Player.setUnifiedReplayGainMode(mode)
+                    runtimeController?.refreshReplayGainSettings()
+                        ?: PlayerController.getInstanceOrNull()?.refreshReplayGainSettings()
+                },
+            )
             SettingsActionRow(
                 title = stringResource(R.string.settings_audio_dvc),
                 description = stringResource(R.string.settings_audio_dvc_desc),
@@ -462,7 +481,7 @@ fun LiquidGlassAudioSettingsScreen(
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 for (mode in listOf(0, 1, 2)) {
-                    val label = AudioOutputManager.getScoModeLabel(mode)
+                    val label = AudioOutputManager.getScoModeLabel(context, mode)
                     val isSelected = scoMode == mode
                     TextButton(
                         onClick = {
@@ -483,7 +502,7 @@ fun LiquidGlassAudioSettingsScreen(
             }
 
             Text(
-                AudioOutputManager.getScoModeDescription(scoMode),
+                AudioOutputManager.getScoModeDescription(context, scoMode),
                 fontSize = 12.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
@@ -553,6 +572,38 @@ private fun DitherSettingsPreference(
         enabled = options.isNotEmpty(),
         showValue = options.any { it.first == selectedId },
         maxHeight = 560.dp,
+        collapseOnSelection = true,
+    )
+}
+
+@Composable
+private fun ReplayGainModePreference(
+    title: String,
+    description: String,
+    options: List<Pair<Int, Pair<String, String>>>,
+    selectedId: Int,
+    onSelected: (Int) -> Unit,
+) {
+    val dropdownEntry = remember(options, selectedId) {
+        DropdownEntry(
+            items = options.map { (id, option) ->
+                DropdownItem(
+                    text = option.first,
+                    summary = option.second,
+                    selected = selectedId == id,
+                    onClick = { onSelected(id) },
+                )
+            },
+        )
+    }
+
+    RawWindowDropdownPreference(
+        entry = dropdownEntry,
+        title = title,
+        summary = description,
+        enabled = options.isNotEmpty(),
+        showValue = true,
+        maxHeight = 420.dp,
         collapseOnSelection = true,
     )
 }

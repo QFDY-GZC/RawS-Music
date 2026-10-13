@@ -127,10 +127,8 @@ object LyricoIntegration {
     /**
      * Build an explicit hand-off to an installed lyric timing editor.
      *
-     * LunaBeat exposes a public timing activity. Halcyon does not expose its
-     * editor as a public deep link, so launch Halcyon itself instead of
-     * sending the audio to its viewer. The latter makes Android treat
-     * Halcyon as an ordinary audio player and never reaches the app shell.
+     * Use a public timing activity when the target provides one. Otherwise launch the target
+     * app directly: sending audio to its viewer would open playback instead of the editor shell.
      */
     fun buildExternalTimingIntent(
         context: Context,
@@ -138,7 +136,7 @@ object LyricoIntegration {
         target: LyricTimingEditorTarget
     ): Intent? {
         if (target == LyricTimingEditorTarget.HALCYON) {
-            return buildHalcyonLaunchIntent(context)
+            return buildExternalPlayerLaunchIntent(context)
         }
 
         val resolvedAudio = resolveAudioUri(context, song)
@@ -148,7 +146,7 @@ object LyricoIntegration {
         }
 
         return when (target) {
-            LyricTimingEditorTarget.LUNABEAT -> buildLunaBeatTimingIntent(
+            LyricTimingEditorTarget.LUNABEAT -> buildPublicTimingEditorIntent(
                 context = context,
                 song = song,
                 resolvedAudio = resolvedAudio
@@ -157,7 +155,7 @@ object LyricoIntegration {
         }
     }
 
-    private fun buildHalcyonLaunchIntent(context: Context): Intent? {
+    private fun buildExternalPlayerLaunchIntent(context: Context): Intent? {
         val packageName = "com.ella.music"
         if (!isPackageInstalled(context, packageName)) {
             Log.d(LOG_TAG, "timing_package_skip target=HALCYON package=$packageName")
@@ -188,7 +186,7 @@ object LyricoIntegration {
         return intent
     }
 
-    private fun buildLunaBeatTimingIntent(
+    private fun buildPublicTimingEditorIntent(
         context: Context,
         song: AudioFile,
         resolvedAudio: ResolvedAudioUri

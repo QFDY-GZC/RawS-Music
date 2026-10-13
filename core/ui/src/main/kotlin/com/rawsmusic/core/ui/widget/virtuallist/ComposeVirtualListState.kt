@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.widget.virtuallist
 
 import android.content.Context
+import android.view.animation.AnimationUtils
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
@@ -20,7 +21,6 @@ import kotlin.math.sqrt
 private const val PREFS_NAME = "power_list_prefs"
 private const val KEY_LIST_ZOOM_LEVEL = "list_zoom_level"
 private const val KEY_COLUMN_COUNT = "column_count"
-private const val ELASTIC_REBOUND_DURATION_MS = REFERENCE_ZOOM_REBOUND_MIN_MS
 private const val MIN_COLUMNS = 1
 private const val MAX_COLUMNS = 4
 
@@ -84,6 +84,9 @@ class ComposeVirtualListState internal constructor(
     var virtualListEdgeOvershootPx by mutableFloatStateOf(0f)
         private set
     private var virtualListEdgeRawPullPx by mutableFloatStateOf(0f)
+    var virtualListHeaderEdgeOvershootPx by mutableFloatStateOf(0f)
+        private set
+    private var virtualListHeaderEdgeRawPullPx by mutableFloatStateOf(0f)
     private var virtualListEdgeActive by mutableStateOf(false)
 
     internal val isVirtualListEdgeActive: Boolean
@@ -147,6 +150,18 @@ class ComposeVirtualListState internal constructor(
     var scrollToIndexRequestSerial by mutableIntStateOf(0)
         private set
 
+    internal var scrollToPixelRequest: Float? = null
+        private set
+    internal var settledScrollRangePx by mutableIntStateOf(0)
+        private set
+
+    internal fun requestScrollToPixel(pixel: Float) {
+        if (!pixel.isFinite() || isTransitioning) return
+        scrollToPixelRequest = pixel.coerceIn(0f, settledScrollRangePx.toFloat())
+        scrollToIndexRequestIndex = -1
+        scrollToIndexRequestSerial++
+    }
+
     internal var viewportResetSerial by mutableIntStateOf(0)
         private set
 
@@ -203,6 +218,7 @@ class ComposeVirtualListState internal constructor(
         lastSettledGeometrySignature = geometrySignature
         lastSettledViewportHeightPx = viewportHeightPx
         lastSettledMaxScrollY = maxScrollY
+        settledScrollRangePx = maxScrollY
     }
 
     /**
@@ -232,6 +248,7 @@ class ComposeVirtualListState internal constructor(
     }
 
     fun requestScrollToIndex(index: Int) {
+        scrollToPixelRequest = null
         if (index < 0) return
         scrollToIndexRequestIndex = index
         scrollToIndexRequestSerial += 1
@@ -246,6 +263,10 @@ class ComposeVirtualListState internal constructor(
      * any retained settled bucket is rebuilt from scroll=0 before the detail can be shown again.
      */
     internal fun resetViewportToTopForFreshEntry() {
+        // A detail state's edge gesture coroutine is owned by the page composition and can be
+        // cancelled when navigation retires that page. Never revive the next detail entry with a
+        // stale 44dp list edge / 50dp header edge transaction still armed.
+        clearVirtualListEdge()
         viewportScrollOwner.updateExact(0f)
         viewportScrollOwner.updateRenderRemainder(0)
         currentVisibleCenterIndex = 0
@@ -257,6 +278,7 @@ class ComposeVirtualListState internal constructor(
 
     internal fun consumeScrollToIndexRequest(serial: Int) {
         if (scrollToIndexRequestSerial == serial) {
+            scrollToPixelRequest = null
             scrollToIndexRequestIndex = -1
         }
     }
@@ -266,6 +288,7 @@ class ComposeVirtualListState internal constructor(
      * reads this path so a fling no longer publishes its exact position as broad snapshot state.
      */
     internal val viewportScrollOwner = VirtualListScrollPositionOwner()
+    internal val revealRequestOwner = VirtualListRevealRequestOwner()
 
     internal var viewportScrollY: Float
         get() = viewportScrollOwner.currentPx
@@ -603,10 +626,7 @@ class ComposeVirtualListState internal constructor(
             boundaryElasticScale = 1f
             return
         }
-        val reboundDurationMs = maxOf(
-            ELASTIC_REBOUND_DURATION_MS,
-            (abs(start) / 2f * 1000f).toInt(),
-        )
+        val reboundDurationMs = virtualListBoundaryReboundDurationMs(start, startScale)
         animate(
             initialValue = 0f,
             targetValue = 1f,
@@ -635,44 +655,103 @@ class ComposeVirtualListState internal constructor(
     internal fun consumeVirtualListEdgeDelta(
         deltaPx: Float,
         maxOvershootPx: Float,
+        headerMaxStretchPx: Float,
     ): Float {
         if (abs(deltaPx) < 0.001f || maxOvershootPx <= 1f) return 0f
 
-        val oldRaw = virtualListEdgeRawPullPx
-        val extending = oldRaw == 0f || oldRaw * deltaPx > 0f
-        if (extending) {
-            val rawCap = virtualListRawPullCapPx(maxOvershootPx)
-            virtualListEdgeRawPullPx = (oldRaw + deltaPx).coerceIn(-rawCap, rawCap)
-            virtualListEdgeOvershootPx = virtualListVisualOvershootPx(
-                rawPullPx = virtualListEdgeRawPullPx,
-                maxOvershootPx = maxOvershootPx,
-            )
-            virtualListEdgeActive = true
-            viewportScrollOwner.invalidateRender()
-            return deltaPx
+        consumeVirtualListHeaderEdgeDelta(
+            deltaPx = deltaPx,
+            maxStretchPx = headerMaxStretchPx,
+        )
+
+        val oldVisual = virtualListEdgeOvershootPx
+
+        // The reverse branch applies inward motion 1:1 and skips logarithmic correction when edge offset and pointer
+        // delta have opposite signs. Drain only the currently visible edge displacement; any
+        // remainder belongs to normal logical scrolling immediately after the edge reaches zero.
+        if (oldVisual != 0f && oldVisual * deltaPx < 0f) {
+            val deltaToZero = -oldVisual
+            val consumed = if (abs(deltaPx) <= abs(deltaToZero)) deltaPx else deltaToZero
+            val newVisual = oldVisual + consumed
+            if (abs(newVisual) < 0.001f) {
+                clearVirtualListEdge()
+            } else {
+                virtualListEdgeRawPullPx += consumed
+                virtualListEdgeOvershootPx = newVisual
+                virtualListEdgeActive = true
+                viewportScrollOwner.invalidateRender()
+            }
+            return consumed
         }
 
-        val deltaToZero = -oldRaw
-        val consumed = if (abs(deltaPx) <= abs(deltaToZero)) deltaPx else deltaToZero
-        val newRaw = oldRaw + consumed
-        if (abs(newRaw) < 0.001f) {
-            clearVirtualListEdge()
+        // Outward motion uses two layout passes:
+        // 1) apply the full MOVE, producing tentativeEdge;
+        // 2) subtract min(|MOVE|, tentativeEdge-logTarget).
+        // For a monotonic pull this lands exactly on quarter*ln(1+raw/quarter); retaining the
+        // correction form also preserves accumulated displacement across a direction change.
+        val newGesture = !virtualListEdgeActive || abs(oldVisual) < 0.001f
+        // The first layout pass clamps the signed edge to ±P, so a single huge pointer
+        // delta must not feed its unrestricted magnitude into the logarithmic correction.
+        val tentativeEdge = (oldVisual + deltaPx).coerceIn(-maxOvershootPx, maxOvershootPx)
+        val accumulatedRaw = if (newGesture) {
+            // When edge state changes, reset accumulated pull to the already-clamped
+            // layout edge, not the original MOVE delta.
+            tentativeEdge
         } else {
-            virtualListEdgeRawPullPx = newRaw
-            virtualListEdgeOvershootPx = virtualListVisualOvershootPx(
-                rawPullPx = newRaw,
-                maxOvershootPx = maxOvershootPx,
-            )
-            virtualListEdgeActive = true
-            viewportScrollOwner.invalidateRender()
+            virtualListEdgeRawPullPx + deltaPx
         }
-        return consumed
+        val correctedEdge = virtualListCorrectExtendedEdgePx(
+            candidateEdgePx = tentativeEdge,
+            inputDeltaPx = deltaPx,
+            rawAccumulatorPx = accumulatedRaw,
+            maxOvershootPx = maxOvershootPx,
+        )
+        virtualListEdgeRawPullPx = accumulatedRaw
+        virtualListEdgeOvershootPx = correctedEdge
+        virtualListEdgeActive = true
+        viewportScrollOwner.invalidateRender()
+        return deltaPx
+    }
+
+    /**
+     * True while the velocity runner is driving scroll deltas. Edge contact
+     * during a fling is then applied linearly by [applyVirtualListFlingEdgeDelta] instead of the
+     * drag-only logarithmic correction in [consumeVirtualListEdgeDelta].
+     */
+    internal var virtualListFlingOwnsEdge: Boolean = false
+
+    /**
+     * Fling edge contact applies the remaining displacement directly and clamps the signed edge
+     * to ±P. Touch-drag correction does not run here, so there is no logarithmic damping.
+     */
+    internal fun applyVirtualListFlingEdgeDelta(
+        deltaPx: Float,
+        maxOvershootPx: Float,
+        headerMaxStretchPx: Float,
+    ) {
+        if (abs(deltaPx) < 0.001f || maxOvershootPx <= 1f) return
+        val nextEdge = (virtualListEdgeOvershootPx + deltaPx).coerceIn(-maxOvershootPx, maxOvershootPx)
+        virtualListEdgeOvershootPx = nextEdge
+        virtualListEdgeRawPullPx = nextEdge
+        if (headerMaxStretchPx > 1f) {
+            val nextHeader = (virtualListHeaderEdgeOvershootPx + deltaPx)
+                .coerceIn(-headerMaxStretchPx, headerMaxStretchPx)
+            virtualListHeaderEdgeOvershootPx = nextHeader
+            virtualListHeaderEdgeRawPullPx = nextHeader
+        }
+        virtualListEdgeActive = true
+        viewportScrollOwner.invalidateRender()
     }
 
     internal fun clearVirtualListEdge() {
-        val changed = virtualListEdgeRawPullPx != 0f || virtualListEdgeOvershootPx != 0f
+        val changed = virtualListEdgeRawPullPx != 0f ||
+            virtualListEdgeOvershootPx != 0f ||
+            virtualListHeaderEdgeRawPullPx != 0f ||
+            virtualListHeaderEdgeOvershootPx != 0f
         virtualListEdgeRawPullPx = 0f
         virtualListEdgeOvershootPx = 0f
+        virtualListHeaderEdgeRawPullPx = 0f
+        virtualListHeaderEdgeOvershootPx = 0f
         virtualListEdgeActive = false
         if (changed) viewportScrollOwner.invalidateRender()
     }
@@ -680,23 +759,84 @@ class ComposeVirtualListState internal constructor(
     internal suspend fun animateVirtualListEdgeBack() {
         val startRaw = virtualListEdgeRawPullPx
         val startOvershoot = virtualListEdgeOvershootPx
-        if (abs(startOvershoot) < 0.5f) {
+        val startHeaderRaw = virtualListHeaderEdgeRawPullPx
+        val startHeaderOvershoot = virtualListHeaderEdgeOvershootPx
+        if (abs(startOvershoot) < 0.5f && abs(startHeaderOvershoot) < 0.5f) {
             clearVirtualListEdge()
             return
         }
-        animate(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = tween(
-                durationMillis = virtualListEdgeReboundDurationMs(startOvershoot),
-                easing = VirtualListEdgeReboundEasing,
-            ),
-        ) { fraction, _ ->
-            virtualListEdgeRawPullPx = lerp(startRaw, 0f, fraction)
-            virtualListEdgeOvershootPx = lerp(startOvershoot, 0f, fraction)
+        // Sample the animation clock once per frame, solve the cubic with distance-dependent
+        // tolerance, and apply the resulting displacement to the layout engine.
+        val startTimeMs = AnimationUtils.currentAnimationTimeMillis()
+        while (true) {
+            withFrameNanos { }
+            val elapsedMs = AnimationUtils.currentAnimationTimeMillis() - startTimeMs
+            val eased = if (abs(startOvershoot) < 0.5f) {
+                1f
+            } else {
+                virtualListEdgeReboundProgress(elapsedMs, startOvershoot)
+            }
+            val headerEased = if (abs(startHeaderOvershoot) < 0.5f) {
+                1f
+            } else {
+                virtualListEdgeReboundProgress(elapsedMs, startHeaderOvershoot)
+            }
+            val remaining = (1f - eased).coerceIn(0f, 1f)
+            val headerRemaining = (1f - headerEased).coerceIn(0f, 1f)
+            val nextOvershoot = startOvershoot * remaining
+            val nextHeaderOvershoot = startHeaderOvershoot * headerRemaining
+            if (
+                (eased >= 1f || abs(nextOvershoot) <= 0.5f) &&
+                (headerEased >= 1f || abs(nextHeaderOvershoot) <= 0.5f)
+            ) {
+                break
+            }
+            virtualListEdgeRawPullPx = startRaw * remaining
+            virtualListEdgeOvershootPx = nextOvershoot
+            virtualListHeaderEdgeRawPullPx = startHeaderRaw * headerRemaining
+            virtualListHeaderEdgeOvershootPx = nextHeaderOvershoot
             viewportScrollOwner.invalidateRender()
         }
         clearVirtualListEdge()
+    }
+
+    private fun consumeVirtualListHeaderEdgeDelta(
+        deltaPx: Float,
+        maxStretchPx: Float,
+    ) {
+        if (maxStretchPx <= 1f) return
+        val oldVisual = virtualListHeaderEdgeOvershootPx
+
+        // The header artwork uses the same reverse branch: inward movement drains
+        // the currently visible edge 1:1 and does not pass through the logarithmic correction.
+        if (oldVisual != 0f && oldVisual * deltaPx < 0f) {
+            val deltaToZero = -oldVisual
+            val consumed = if (abs(deltaPx) <= abs(deltaToZero)) deltaPx else deltaToZero
+            val newVisual = oldVisual + consumed
+            if (abs(newVisual) < 0.001f) {
+                virtualListHeaderEdgeRawPullPx = 0f
+                virtualListHeaderEdgeOvershootPx = 0f
+            } else {
+                virtualListHeaderEdgeRawPullPx += consumed
+                virtualListHeaderEdgeOvershootPx = newVisual
+            }
+            return
+        }
+
+        val newGesture = abs(oldVisual) < 0.001f
+        val tentativeEdge = (oldVisual + deltaPx).coerceIn(-maxStretchPx, maxStretchPx)
+        val accumulatedRaw = if (newGesture) {
+            tentativeEdge
+        } else {
+            virtualListHeaderEdgeRawPullPx + deltaPx
+        }
+        virtualListHeaderEdgeRawPullPx = accumulatedRaw
+        virtualListHeaderEdgeOvershootPx = virtualListCorrectExtendedEdgePx(
+            candidateEdgePx = tentativeEdge,
+            inputDeltaPx = deltaPx,
+            rawAccumulatorPx = accumulatedRaw,
+            maxOvershootPx = maxStretchPx,
+        )
     }
 
     private fun nextMode(isZoomIn: Boolean): ComposeVirtualListDisplayMode? =

@@ -1,10 +1,25 @@
 package com.rawsmusic.transcode
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AudioTranscodeModelsTest {
+    @Test
+    fun canonicalOutputExtension_followsSelectedTargetInsteadOfStaleWavPackSuffix() {
+        val request = AudioTranscodeRequest(
+            inputPath = "/music/source.wv",
+            outputPath = "/music/Converted/source.wv",
+            format = AudioTranscodeFormat.WAV,
+        )
+
+        val normalized = request.withCanonicalOutputExtension()
+
+        assertEquals(AudioTranscodeFormat.WAV, normalized.format)
+        assertEquals("/music/Converted/source.wav", normalized.outputPath.replace('\\', '/'))
+    }
+
     @Test
     fun expandedOutputFormats_keepStableCapabilityIdsAndContainerExtensions() {
         assertTrue(AudioTranscodeFormat.OGG_FLAC.capabilityId == "ogg_flac")

@@ -1,7 +1,25 @@
 package com.rawsmusic.core.ui.widget.text
 
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlin.math.max
 import kotlin.math.min
+
+internal fun resolveNativeTextLaneHeight(
+    fontDensity: Density,
+    fontSizeSp: Float,
+    minimumHeight: Dp,
+    lineHeightMultiplier: Float = 1.25f,
+    verticalSlack: Dp = 2.dp,
+): Dp {
+    if (!fontSizeSp.isFinite() || fontSizeSp <= 0f) return minimumHeight
+    val fontHeight = with(fontDensity) {
+        (fontSizeSp.sp.toPx() * lineHeightMultiplier.coerceAtLeast(1f)).toDp()
+    }
+    return maxOf(minimumHeight, fontHeight + verticalSlack)
+}
 
 /**
  * Resolves a baseline for native Canvas text without allowing the actual glyph ink to be clipped

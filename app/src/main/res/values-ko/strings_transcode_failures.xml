@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="transcode_failure_invalid_request">변환 요청이 올바르지 않습니다.</string>
+    <string name="transcode_failure_unsupported_source">이 원본 오디오 형식 또는 매개변수는 지원되지 않습니다.</string>
+    <string name="transcode_failure_unsupported_target">선택한 출력 형식 또는 매개변수는 지원되지 않습니다.</string>
+    <string name="transcode_failure_output_exists">출력 파일이 이미 존재합니다.</string>
+    <string name="transcode_failure_insufficient_space">변환에 필요한 저장 공간이 부족합니다.</string>
+    <string name="transcode_failure_encode_failed">오디오 인코딩에 실패했습니다.</string>
+    <string name="transcode_failure_metadata_migration">요청한 방식으로 메타데이터를 보존할 수 없습니다.</string>
+    <string name="transcode_failure_verification">변환된 파일이 검증을 통과하지 못했습니다.</string>
+    <string name="transcode_failure_commit">변환 결과를 최종 위치에 저장하지 못했습니다.</string>
+    <string name="transcode_failure_process_interrupted">변환이 완료되기 전에 중단되었습니다.</string>
+    <string name="transcode_failure_internal">내부 오류로 변환에 실패했습니다.</string>
+    <string name="transcode_failure_with_native_code">%1$s (native=%2$d)</string>
+</resources>

@@ -43,17 +43,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import com.rawsmusic.helper.rememberSystemFileAccessGate
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.annotation.StringRes
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.rawsmusic.R
@@ -92,7 +95,7 @@ class RewardActivity : ComponentActivity() {
 private data class RewardImageSpec(
     val assetName: String,
     val saveFileName: String,
-    val contentDescription: String,
+    @StringRes val contentDescriptionRes: Int,
     val aspectRatio: Float
 )
 
@@ -106,13 +109,13 @@ private val REWARD_IMAGE_SPECS = listOf(
     RewardImageSpec(
         assetName = "reward_wechat.b64",
         saveFileName = "RawSMusic_WeChat_Reward.webp",
-        contentDescription = "微信赞赏码",
+        contentDescriptionRes = R.string.reward_wechat_qr_description,
         aspectRatio = 1f
     ),
     RewardImageSpec(
         assetName = "reward_alipay.b64",
         saveFileName = "RawSMusic_Alipay_Reward.webp",
-        contentDescription = "支付宝赞赏码",
+        contentDescriptionRes = R.string.reward_alipay_qr_description,
         aspectRatio = 2f / 3f
     )
 )
@@ -120,6 +123,7 @@ private val REWARD_IMAGE_SPECS = listOf(
 @Composable
 private fun RewardAuthorScreen() {
     val context = LocalContext.current
+    val withSystemFileAccess = rememberSystemFileAccessGate()
     val images = remember(context) {
         REWARD_IMAGE_SPECS.mapNotNull { context.loadRewardImage(it) }
     }
@@ -134,7 +138,9 @@ private fun RewardAuthorScreen() {
             val saved = context.writeRewardImage(uri, image.originalBytes)
             Toast.makeText(
                 context,
-                if (saved) "图片已保存" else "保存失败，请重试",
+                context.getString(
+                    if (saved) R.string.reward_image_saved else R.string.reward_image_save_failed
+                ),
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -156,7 +162,7 @@ private fun RewardAuthorScreen() {
         images.forEachIndexed { index, image ->
             Image(
                 bitmap = image.bitmap,
-                contentDescription = image.spec.contentDescription,
+                contentDescription = stringResource(image.spec.contentDescriptionRes),
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -175,9 +181,7 @@ private fun RewardAuthorScreen() {
 
         Spacer(Modifier.height(28.dp))
         Text(
-            text = "您的支持，是我最大的动力。\n" +
-                "感谢每一份心意，也感谢你愿意陪 RawS Music 一起变得更好。\n" +
-                "长按任一赞赏码可放大预览并保存。",
+            text = stringResource(R.string.reward_support_message),
             color = Color(0xFF8A8A8A),
             fontSize = 12.sp,
             lineHeight = 19.sp,
@@ -193,7 +197,9 @@ private fun RewardAuthorScreen() {
             onDismiss = { previewImage = null },
             onSave = {
                 pendingSave = image
-                saveLauncher.launch(image.spec.saveFileName)
+                withSystemFileAccess {
+                    saveLauncher.launch(image.spec.saveFileName)
+                }
             }
         )
     }
@@ -221,7 +227,7 @@ private fun RewardImagePreview(
         ) {
             Image(
                 bitmap = image.bitmap,
-                contentDescription = image.spec.contentDescription,
+                contentDescription = stringResource(image.spec.contentDescriptionRes),
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxSize()
@@ -257,13 +263,13 @@ private fun RewardImagePreview(
                     onClick = onDismiss,
                     colors = ButtonDefaults.textButtonColors(contentColor = Color.Black)
                 ) {
-                    Text("关闭")
+                    Text(stringResource(R.string.common_close))
                 }
                 TextButton(
                     onClick = onSave,
                     colors = ButtonDefaults.textButtonColors(contentColor = Color.Black)
                 ) {
-                    Text("保存图片")
+                    Text(stringResource(R.string.reward_save_image))
                 }
             }
         }

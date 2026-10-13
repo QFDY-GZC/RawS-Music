@@ -5,6 +5,26 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PortraitDialGeometryTest {
+    @Test fun scrolledHomeUsesMappedCornersNotClippedContainerTop() {
+        // 400x680: local card is [98,210.8 .. 302,414.8]. Container origin is -300,
+        // while boundsInRoot reports the clipped top 0 in the scroll viewport.
+        val bounds = resolvePortraitDialCardBoundsInRoot(0f, 0f, 400f, 680f) { x, y ->
+            x to (y - 300f)
+        }
+        assertEquals(-89.2f, bounds.topPx, .001f)
+        assertEquals(204f, bounds.heightPx, .001f)
+    }
+
+    @Test fun mappedReturnBoundsIncludeAncestorScaleOnSizeAsWellAsOrigin() {
+        val bounds = resolvePortraitDialCardBoundsInRoot(0f, 0f, 400f, 680f) { x, y ->
+            (20f + x * .84f) to (-300f + y * .84f)
+        }
+        assertEquals(102.32f, bounds.leftPx, .001f)
+        assertEquals(-122.928f, bounds.topPx, .001f)
+        assertEquals(171.36f, bounds.widthPx, .001f)
+        assertEquals(171.36f, bounds.heightPx, .001f)
+    }
+
     @Test
     fun nineLanesShareOneVerticalAxisAndRemainOrdered() {
         val transforms = (-PORTRAIT_DIAL_VISIBLE_RADIUS..PORTRAIT_DIAL_VISIBLE_RADIUS).map { lane ->

@@ -5,7 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
-import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
@@ -32,15 +31,22 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import com.rawsmusic.lyrico.runtime.LyricoHttpTransport
+import java.util.Collections
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
-/** Eight-lane foreground metadata matcher for local songs. */
+/** Memory-budgeted foreground metadata matcher for local songs. */
 class LibraryMetadataMatchService : Service() {
     private val serviceJob = SupervisorJob()
     private val scope = CoroutineScope(serviceJob + Dispatchers.IO)
-    private val workerDispatcher = Executors.newFixedThreadPool(WORKER_COUNT) { runnable ->
+    private val workerCount = LibraryMetadataMatchResources.workerCount(Runtime.getRuntime().maxMemory())
+    private val workerDispatcher = Executors.newFixedThreadPool(workerCount) { runnable ->
         Thread(runnable, "raws-metadata-match").apply { isDaemon = true }
     }.asCoroutineDispatcher()
     private var activeJob: Job? = null
@@ -60,7 +66,7 @@ class LibraryMetadataMatchService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
-        if (activeJob?.isActive == true) {
+        if (activeJob?.isCompleted == false) {
             AppLogger.w(TAG, "A metadata matching job is already running")
             LibraryMetadataMatchContract.deleteRequest(this, request.id)
             return START_NOT_STICKY
@@ -92,6 +98,8 @@ class LibraryMetadataMatchService : Service() {
         val skipped = AtomicInteger(0)
         val failed = AtomicInteger(0)
         val sources = engine.preferredSources()
+        val changedAudioPaths = Collections.synchronizedSet(LinkedHashSet<String>())
+        var completed = false
 
         if (sources.isEmpty()) {
             finishNotification("没有启用的歌词音源", success = false)
@@ -109,14 +117,16 @@ class LibraryMetadataMatchService : Service() {
         try {
             val nextSongIndex = AtomicInteger(0)
             supervisorScope {
-                List(minOf(WORKER_COUNT, request.songs.size)) {
+                List(minOf(workerCount, request.songs.size)) {
                     async(workerDispatcher) {
                         while (true) {
+                            currentCoroutineContext().ensureActive()
                             val songIndex = nextSongIndex.getAndIncrement()
                             if (songIndex >= request.songs.size) break
                             val song = request.songs[songIndex]
-                            val outcome = runCatching { processSong(song, request.mode, sources) }
-                                .getOrElse { error ->
+                            val outcome = try { processSong(song, request.mode, sources, changedAudioPaths) }
+                                catch (cancelled: CancellationException) { throw cancelled }
+                                catch (error: Exception) {
                                     AppLogger.e(TAG, "Metadata matching failed: ${song.path}", error)
                                     MatchOutcome.FAILED
                                 }
@@ -127,6 +137,14 @@ class LibraryMetadataMatchService : Service() {
                                 MatchOutcome.FAILED -> failed.incrementAndGet()
                             }
                             val done = processed.incrementAndGet()
+                            if (done == 1 || done % 100 == 0 || done == request.songs.size) {
+                                val memory = Runtime.getRuntime()
+                                AppLogger.i(TAG, "resources processed=$done total=${request.songs.size} workers=$workerCount " +
+                                    "javaUsedKB=${(memory.totalMemory() - memory.freeMemory()) / 1024} " +
+                                    "heapLimitKB=${memory.maxMemory() / 1024} " +
+                                    "nativeUsedKB=${android.os.Debug.getNativeHeapAllocatedSize() / 1024} " +
+                                    "connections=${LyricoHttpTransport.client.connectionPool.connectionCount()}")
+                            }
                             val successCount = matched.get() + unchanged.get()
                             val failureCount = skipped.get() + failed.get()
                             val progress = LibraryMetadataMatchProgressBus.running(
@@ -146,10 +164,18 @@ class LibraryMetadataMatchService : Service() {
                     }
                 }.awaitAll()
             }
+            try { scanMatchedAudioFiles(this, changedAudioPaths) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { AppLogger.e(TAG, "Final media scan failed", error) }
 
             val successCount = matched.get() + unchanged.get()
             val failureCount = skipped.get() + failed.get()
-            val summary = "总计 ${processed.get()} 首 · 成功 $successCount · 失败 $failureCount"
+            val summary = getString(
+                R.string.metadata_match_result,
+                processed.get(),
+                successCount,
+                failureCount,
+            )
             finishNotification(summary, success = failureCount == 0)
             LibraryMetadataMatchProgressBus.completed(
                 jobId = request.id,
@@ -157,17 +183,24 @@ class LibraryMetadataMatchService : Service() {
                 succeeded = successCount,
                 failed = failureCount,
             )
+            completed = true
         } finally {
-            withContext(Dispatchers.IO) {
-                runCatching { MusicRepository.refreshAllSuspend() }
-                    .onFailure { AppLogger.e(TAG, "Final library refresh failed", it) }
-                engine.clearTransientCache()
-                cleanupTransientFiles()
+            try {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    if (completed && request.mode != LibraryMetadataMatchMode.LYRICS_ONLY) runCatching { MusicRepository.refreshAllSuspend() }
+                        .onFailure { AppLogger.e(TAG, "Final library refresh failed", it) }
+                    engine.clearTransientCache()
+                    cleanupTransientFiles()
+                }
+                if (changedAudioPaths.isNotEmpty()) BitmapProvider.notifyLibraryArtworkChanged("metadata_match_complete")
+            } finally {
+                if (completed) LibraryMetadataMatchContract.deleteRequest(this, request.id)
+                else LibraryMetadataMatchProgressBus.interrupted(request.id)
+                withContext(NonCancellable + Dispatchers.Main.immediate) {
+                    activeJob = null
+                    stopSelf()
+                }
             }
-            BitmapProvider.notifyLibraryArtworkChanged("metadata_match_complete")
-            LibraryMetadataMatchContract.deleteRequest(this, request.id)
-            activeJob = null
-            stopSelf(startId)
         }
     }
 
@@ -175,25 +208,17 @@ class LibraryMetadataMatchService : Service() {
         song: AudioFile,
         mode: LibraryMetadataMatchMode,
         sources: List<LyricoPreferredSource>,
+        changedAudioPaths: MutableSet<String>,
     ): MatchOutcome {
         if (song.path.isBlank() || (!song.path.startsWith("content://") && !File(song.path).isFile)) {
             return MatchOutcome.FAILED
         }
 
-        val hasLyrics = runCatching { !LyricReader.readLyrics(song).isEmpty }.getOrDefault(false)
-        val hasCover = hasArtwork(song)
-        val needLyrics = when (mode) {
-            LibraryMetadataMatchMode.LYRICS_ONLY -> true
-            LibraryMetadataMatchMode.FILL_MISSING -> !hasLyrics
-            LibraryMetadataMatchMode.MATCH_CURRENT,
-            LibraryMetadataMatchMode.REMATCH_ALL -> true
-        }
-        val needCover = when (mode) {
-            LibraryMetadataMatchMode.LYRICS_ONLY -> false
-            LibraryMetadataMatchMode.FILL_MISSING -> !hasCover
-            LibraryMetadataMatchMode.MATCH_CURRENT,
-            LibraryMetadataMatchMode.REMATCH_ALL -> true
-        }
+        val needs = LibraryMetadataMatchResources.needs(mode,
+            hasLyrics = { runCatching { !LyricReader.readLyrics(song).isEmpty }.getOrDefault(false) },
+            hasCover = { hasArtwork(song) })
+        val needLyrics = needs.lyrics
+        val needCover = needs.cover
         if (!needLyrics && !needCover) return MatchOutcome.UNCHANGED
 
         var lyric: LyricData? = null
@@ -202,6 +227,7 @@ class LibraryMetadataMatchService : Service() {
             .ifBlank { song.displayName }
 
         sources.forEach { source ->
+            currentCoroutineContext().ensureActive()
             if ((!needLyrics || lyric != null) && (!needCover || cover != null)) return@forEach
             val hasSongSearch = "searchSongs" in source.capabilities
             if (!hasSongSearch) {
@@ -260,8 +286,8 @@ class LibraryMetadataMatchService : Service() {
         // Preserve source priority independently per component: a high-priority cover may be
         // paired with lyrics from the next source. Both lookups complete before REMATCH_ALL writes.
         if (needCover && cover != null) {
-            runCatching { engine.writeEmbeddedCover(song, requireNotNull(cover).url) }
-                .onSuccess { writes++ }
+            runCatching { engine.writeEmbeddedCover(song, requireNotNull(cover).url, notifyMediaStore = false) }
+                .onSuccess { writes++; changedAudioPaths.add(song.path) }
                 .onFailure {
                     writeFailed = true
                     AppLogger.e(TAG, "Cover write failed: ${song.path}", it)
@@ -276,11 +302,6 @@ class LibraryMetadataMatchService : Service() {
                 }
         }
 
-        if (writes > 0) {
-            runCatching {
-                MediaScannerConnection.scanFile(this, arrayOf(song.path), null, null)
-            }
-        }
         return when {
             writes > 0 && !writeFailed -> MatchOutcome.MATCHED
             mode == LibraryMetadataMatchMode.MATCH_CURRENT && writes > 0 -> MatchOutcome.MATCHED
@@ -377,7 +398,6 @@ class LibraryMetadataMatchService : Service() {
         const val TAG = "MetadataMatchService"
         const val CHANNEL_ID = "library_metadata_match"
         const val NOTIFICATION_ID = 0x524D
-        const val WORKER_COUNT = 8
         const val MAX_CANDIDATES_PER_SOURCE = 4
         const val NOTIFICATION_UPDATE_INTERVAL_MS = 250L
     }

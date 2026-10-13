@@ -10,9 +10,8 @@ import androidx.compose.ui.geometry.Rect
 import com.rawsmusic.core.common.utils.AppLogger
 
 /**
- * retained-view implementation 1026 `header artwork scene` resolves the normal rounded-screen-corners
- * configuration to a 16dp header artwork radius. The less-rounded skin uses 8dp and the
- * non-rounded option uses 0px; Raw's reference collection skin follows the normal rounded setup.
+ * Shared collection headers use a 16dp corner radius so retained artwork and destination
+ * artwork have the same rounded outline throughout the transition.
  */
 internal const val COLLECTION_HEADER_RADIUS_DP = 16f
 
@@ -36,6 +35,15 @@ data class SharedTransitionSpec(
      * fallback for non-animated callers/tests.
      */
     val progressProvider: (() -> Float)? = null,
+    /**
+     * Pivot of the detail/header provider LayoutRes in host-window pixels. Header child motion
+     * uses the exact same pivot to invert the parent GenericPivot affine, including directional
+     * HeaderToItem gestures whose horizontal pivot sits outside the viewport.
+     */
+    val detailPivotX: Float = Float.NaN,
+    val detailPivotY: Float = Float.NaN,
+    /** Separate layout displacement; never fed into cover-size interpolation. */
+    val originOverscrollXProvider: (() -> Float)? = null,
     val transitionKey: String = "",
     val allowRememberedTarget: Boolean = false,
     // Physical shared artwork owner. When non-blank the real source/target holder with this
@@ -75,6 +83,10 @@ data class SharedCoverSnapshot(
     val boundsInWindow: Rect,
     val coverKey: String,
     val radiusDp: Float,
+    /** Source holder child LayoutRes in window coordinates for shared Item->Header text motion. */
+    val titleBoundsInWindow: Rect? = null,
+    val subtitleBoundsInWindow: Rect? = null,
+    val metaBoundsInWindow: Rect? = null,
     /** Adapter/provider index captured from the concrete list holder, when available. */
     val itemIndex: Int = -1,
     /** Full list-item LayoutRes in viewport-local coordinates, used for retained-view implementation return centering. */
@@ -92,14 +104,18 @@ data class SharedCoverSnapshot(
     val promotedBitmap: Bitmap? = null,
     /** Whether this concrete holder is currently eligible to start a shared transition. */
     val sharedEligible: Boolean = true,
+    val layoutColumns: Int = 1,
 )
 
 @Stable
 class SharedCoverRegistry {
     private data class LiveEntry(
         val owner: Any,
-        val snapshot: SharedCoverSnapshot
-    )
+        val snapshot: SharedCoverSnapshot,
+        val resolve: ((SharedCoverSnapshot) -> SharedCoverSnapshot)? = null,
+    ) {
+        fun currentSnapshot(): SharedCoverSnapshot = resolve?.invoke(snapshot) ?: snapshot
+    }
 
     private data class CollectionSession(
         val elementId: String,
@@ -114,6 +130,10 @@ class SharedCoverRegistry {
     private val synchronousSceneHeaderOwner = Any()
     private var requestedSource: SharedCoverSnapshot? = null
     private var collectionSession: CollectionSession? = null
+    // A detail page can itself own an ItemToHeader child (artist detail -> all songs). Keep the
+    // earlier concrete list/header transaction parked until that child returns, otherwise the
+    // next HeaderToItem has no original holder to migrate back to the artists list.
+    private val nestedCollectionParents = mutableListOf<CollectionSession>()
     private var preparedTransitionKey: String by mutableStateOf("")
     private var ephemeralPrepared = false
     private var preparedPair: Pair<SharedCoverSnapshot, SharedCoverSnapshot>? by mutableStateOf(null)
@@ -123,6 +143,7 @@ class SharedCoverRegistry {
     // concrete promoted View; this latch is the Compose equivalent of that drawable-owner boundary.
     private var overlayReadyTransitionKey: String by mutableStateOf("")
     private var physicalPromotedElementId: String by mutableStateOf("")
+    private var physicalPromotedSceneId: String = ""
     private var physicalEndpointListenerOwner: Any? = null
     private var physicalEndpointListener: ((SharedCoverSnapshot) -> Unit)? = null
     private var collectionReturnTargetPreparerOwner: Any? = null
@@ -135,6 +156,16 @@ class SharedCoverRegistry {
     private var physicalPromotionLiveness: ((String) -> Boolean)? = null
     private var physicalPromotionStarterOwner: Any? = null
     private var physicalPromotionStarter: ((SharedCoverSnapshot, SharedCoverSnapshot, String) -> Boolean)? = null
+    private var physicalPromotionStasherOwner: Any? = null
+    private var physicalPromotionStasher: ((String) -> Boolean)? = null
+    private var physicalPromotionActivatorOwner: Any? = null
+    private var physicalPromotionActivator: ((String, SharedCoverSnapshot, String) -> Boolean)? = null
+    private var physicalPromotionStashClearerOwner: Any? = null
+    private var physicalPromotionStashClearer: (() -> Int)? = null
+    private var physicalRoleEndpointResolverOwner: Any? = null
+    private var physicalRoleEndpointResolver: ((String, String, Boolean) -> SharedCoverSnapshot?)? = null
+    private val physicallyStashedElements = linkedSetOf<String>()
+    private var physicalPromotionActivatedFromStash = false
 
     internal data class CollectionSessionSnapshot(
         val elementId: String,
@@ -254,6 +285,10 @@ class SharedCoverRegistry {
         // valid pixel owner even if the collection geometry/session remains useful for a fallback
         // return. Drop only physical ownership; keep the remembered endpoints intact.
         physicalPromotedElementId = ""
+        physicalPromotedSceneId = ""
+        physicallyStashedElements.clear()
+        nestedCollectionParents.clear()
+        physicalPromotionActivatedFromStash = false
     }
 
     internal fun attachPhysicalPromotionStarter(
@@ -270,6 +305,62 @@ class SharedCoverRegistry {
         physicalPromotionStarter = null
     }
 
+    internal fun attachPhysicalPromotionStasher(owner: Any, stasher: (String) -> Boolean) {
+        physicalPromotionStasherOwner = owner
+        physicalPromotionStasher = stasher
+    }
+
+    internal fun detachPhysicalPromotionStasher(owner: Any) {
+        if (physicalPromotionStasherOwner !== owner) return
+        physicalPromotionStasherOwner = null
+        physicalPromotionStasher = null
+    }
+
+    internal fun attachPhysicalPromotionActivator(
+        owner: Any,
+        activator: (String, SharedCoverSnapshot, String) -> Boolean,
+    ) {
+        physicalPromotionActivatorOwner = owner
+        physicalPromotionActivator = activator
+    }
+
+    internal fun detachPhysicalPromotionActivator(owner: Any) {
+        if (physicalPromotionActivatorOwner !== owner) return
+        physicalPromotionActivatorOwner = null
+        physicalPromotionActivator = null
+    }
+
+    internal fun attachPhysicalPromotionStashClearer(owner: Any, clearer: () -> Int) {
+        physicalPromotionStashClearerOwner = owner
+        physicalPromotionStashClearer = clearer
+    }
+
+    internal fun detachPhysicalPromotionStashClearer(owner: Any) {
+        if (physicalPromotionStashClearerOwner !== owner) return
+        physicalPromotionStashClearerOwner = null
+        physicalPromotionStashClearer = null
+    }
+
+    internal fun attachPhysicalRoleEndpointResolver(
+        owner: Any,
+        resolver: (String, String, Boolean) -> SharedCoverSnapshot?,
+    ) {
+        physicalRoleEndpointResolverOwner = owner
+        physicalRoleEndpointResolver = resolver
+    }
+
+    internal fun detachPhysicalRoleEndpointResolver(owner: Any) {
+        if (physicalRoleEndpointResolverOwner !== owner) return
+        physicalRoleEndpointResolverOwner = null
+        physicalRoleEndpointResolver = null
+    }
+
+    internal fun resolvePhysicalRoleEndpoint(
+        sceneId: String,
+        elementId: String,
+        retainedRole: Boolean,
+    ): SharedCoverSnapshot? = physicalRoleEndpointResolver?.invoke(sceneId, elementId, retainedRole)
+
     fun unregister(sceneId: String, elementId: String, owner: Any) {
         val key = key(sceneId, elementId)
         if (live[key]?.owner === owner) live.remove(key)
@@ -280,9 +371,10 @@ class SharedCoverRegistry {
         elementId: String,
         owner: Any,
         snapshot: SharedCoverSnapshot,
+        resolve: ((SharedCoverSnapshot) -> SharedCoverSnapshot)? = null,
     ) {
         if (sceneId.isBlank() || elementId.isBlank()) return
-        physicalLayout[key(sceneId, elementId)] = LiveEntry(owner = owner, snapshot = snapshot)
+        physicalLayout[key(sceneId, elementId)] = LiveEntry(owner, snapshot, resolve)
         if (isPhysicalPromotedElement(elementId)) {
             physicalEndpointListener?.invoke(snapshot)
         }
@@ -293,25 +385,35 @@ class SharedCoverRegistry {
         elementId: String,
         widthPx: Int,
         sceneItemHeightPx: Int = widthPx,
+        viewportLeftPx: Int = 0,
+        viewportTopPx: Int = 0,
+        windowLeftPx: Int = viewportLeftPx,
+        windowTopPx: Int = viewportTopPx,
     ) {
         if (sceneId.isBlank() || elementId.isBlank()) return
         if (widthPx <= 0 || sceneItemHeightPx <= 0) return
-        val bounds = Rect(
-            left = 0f,
-            top = 0f,
-            right = widthPx.toFloat(),
-            bottom = sceneItemHeightPx.toFloat(),
+        val viewportBounds = Rect(
+            left = viewportLeftPx.toFloat(),
+            top = viewportTopPx.toFloat(),
+            right = (viewportLeftPx + widthPx).toFloat(),
+            bottom = (viewportTopPx + sceneItemHeightPx).toFloat(),
+        )
+        val windowBounds = Rect(
+            left = windowLeftPx.toFloat(),
+            top = windowTopPx.toFloat(),
+            right = (windowLeftPx + widthPx).toFloat(),
+            bottom = (windowTopPx + sceneItemHeightPx).toFloat(),
         )
         physicalLayout[key(sceneId, elementId)] = LiveEntry(
             owner = synchronousSceneHeaderOwner,
             snapshot = SharedCoverSnapshot(
                 sceneId = sceneId,
                 elementId = elementId,
-                boundsInWindow = bounds,
+                boundsInWindow = windowBounds,
                 coverKey = "",
                 radiusDp = COLLECTION_HEADER_RADIUS_DP,
                 sharedEligible = true,
-                physicalViewportBounds = bounds,
+                physicalViewportBounds = viewportBounds,
             ),
         )
     }
@@ -367,9 +469,49 @@ class SharedCoverRegistry {
     fun freezeSnapshot(snapshot: SharedCoverSnapshot) {
         ephemeralPrepared = false
         if (snapshot.sceneId.isBlank() || snapshot.elementId.isBlank()) return
-        // retained-view implementation aborts an unfinished ItemToHeader by returning the same concrete View to its
-        // source holder before another transaction starts. Do not globally purge shared ownership.
-        cancelPhysicalPromotion()
+        // A hierarchy can start ItemToHeader for child C while folder B's migrated holder still
+        // owns the settled B header. Keep that older concrete header in the retained
+        // provider and migrates C independently. Preserve that same-scene identity instead of
+        // treating it like an abandoned collection transition and restoring it to an obsolete row.
+        val activeElement = physicalPromotedElementId
+        val parentSession = collectionSession?.takeIf { session ->
+            activeElement == session.elementId &&
+                snapshot.sceneId == session.detailSceneId &&
+                snapshot.elementId != session.elementId
+        }
+        val replacingSameSceneHeader = activeElement.isNotBlank() &&
+            activeElement != snapshot.elementId &&
+            physicalPromotedSceneId == snapshot.sceneId
+        if (parentSession != null) {
+            if (stashPhysicalPromotion(activeElement)) {
+                nestedCollectionParents += parentSession
+                AppLogger.i(
+                    "SceneHandoff",
+                    "SHARED_NESTED_STASH parent=${parentSession.elementId} child=${snapshot.elementId}",
+                )
+            } else {
+                AppLogger.w(
+                    "SceneHandoff",
+                    "SHARED_NESTED_STASH_MISS parent=${parentSession.elementId} child=${snapshot.elementId}",
+                )
+                cancelPhysicalPromotion()
+            }
+        } else if (replacingSameSceneHeader) {
+            if (!stashPhysicalPromotion(activeElement)) {
+                cancelPhysicalPromotion()
+            }
+        } else {
+            // Ordinary collection/detail remains single-owner: a new transaction first retires the
+            // unfinished concrete actor exactly as before.
+            cancelPhysicalPromotion()
+            if (nestedCollectionParents.isNotEmpty()) {
+                // This is a different route, not another child of the parked detail. A stale
+                // ancestor may not survive as an invisible physical holder in the new scene.
+                physicalPromotionStashClearer?.invoke()
+                physicallyStashedElements.clear()
+                nestedCollectionParents.clear()
+            }
+        }
         preparedTransitionKey = ""
         preparedPair = null
         overlayReadyTransitionKey = ""
@@ -381,11 +523,9 @@ class SharedCoverRegistry {
                 "slot=${snapshot.physicalSlotId} eligible=${snapshot.sharedEligible} " +
                 "item=${snapshot.itemIndex}",
         )
-        // retained-view implementation's ItemToHeader transition does not detach/move the concrete retained item view at click
-        // time. B() first prepares NEXT provider/LayoutRes via endpoint preparation, and only then holder migration
-        // migrates the View. Keep only the exact source holder identity here; physical ownership is
-        // armed later by [promotePreparedPhysicalSource] after the target header is stable.
-        physicalPromotedElementId = ""
+        // ItemToHeader does not detach the newly clicked source yet. Same-scene hierarchy may have
+        // just parked an older header above, while ordinary collection navigation has already
+        // retired its previous actor. The new child is promoted only after NEXT LayoutRes exists.
     }
 
     internal fun promotePreparedPhysicalSource(transitionKey: String): Boolean {
@@ -423,6 +563,8 @@ class SharedCoverRegistry {
         val promoted = physicalPromotionStarter?.invoke(source, pair.second, transitionKey) == true
         if (promoted) {
             physicalPromotedElementId = source.elementId
+            physicalPromotedSceneId = source.sceneId
+            physicalPromotionActivatedFromStash = false
         }
         AppLogger.i(
             "SceneHandoff",
@@ -434,6 +576,35 @@ class SharedCoverRegistry {
         return promoted
     }
 
+    internal fun stashPhysicalPromotion(elementId: String): Boolean {
+        if (elementId.isBlank() || physicalPromotedElementId != elementId) return false
+        val stashed = physicalPromotionStasher?.invoke(elementId) == true
+        if (!stashed) return false
+        physicallyStashedElements += elementId
+        physicalPromotedElementId = ""
+        physicalPromotedSceneId = ""
+        physicalPromotionActivatedFromStash = false
+        return true
+    }
+
+    internal fun activateStashedPhysicalPromotion(elementId: String): Boolean {
+        if (elementId.isBlank()) return false
+        if (isPhysicalPromotedElement(elementId)) return true
+        if (elementId !in physicallyStashedElements || physicalPromotedElementId.isNotBlank()) return false
+        val transitionKey = preparedTransitionKey
+        val source = getPreparedPair(transitionKey)?.first ?: return false
+        val activated = physicalPromotionActivator?.invoke(elementId, source, transitionKey) == true
+        if (!activated) return false
+        physicallyStashedElements.remove(elementId)
+        physicalPromotedElementId = elementId
+        physicalPromotedSceneId = source.sceneId
+        physicalPromotionActivatedFromStash = true
+        return true
+    }
+
+    internal fun isPhysicalStashedElement(elementId: String): Boolean =
+        elementId.isNotBlank() && elementId in physicallyStashedElements
+
     private fun isPhysicalPromotionLive(elementId: String): Boolean =
         physicalPromotionLiveness?.invoke(elementId) ?: true
 
@@ -444,6 +615,13 @@ class SharedCoverRegistry {
 
     fun isPhysicalPromotionActive(): Boolean =
         physicalPromotedElementId.isNotBlank() && isPhysicalPromotionLive(physicalPromotedElementId)
+
+    internal fun canStartPhysicalSharedClick(sceneId: String): Boolean =
+        !isPhysicalPromotionActive() ||
+            (sceneId.isNotBlank() && sceneId == physicalPromotedSceneId) ||
+            (sceneId.isNotBlank() &&
+                collectionSession?.listSceneId == physicalPromotedSceneId &&
+                collectionSession?.detailSceneId == sceneId)
 
     internal fun frozenSourceSnapshot(sceneId: String, elementId: String): SharedCoverSnapshot? =
         requestedSource?.takeIf { it.sceneId == sceneId && it.elementId == elementId }
@@ -491,16 +669,60 @@ class SharedCoverRegistry {
     }
 
     internal fun liveSnapshot(sceneId: String, elementId: String): SharedCoverSnapshot? =
-        physicalLayout[key(sceneId, elementId)]?.snapshot ?: live[key(sceneId, elementId)]?.snapshot
+        physicalLayout[key(sceneId, elementId)]?.currentSnapshot() ?: live[key(sceneId, elementId)]?.snapshot
 
     internal fun completePhysicalReturn(elementId: String) {
-        if (physicalPromotedElementId == elementId) physicalPromotedElementId = ""
+        if (physicalPromotedElementId == elementId) {
+            physicalPromotedElementId = ""
+            physicalPromotedSceneId = ""
+        }
+        physicallyStashedElements.remove(elementId)
+        physicalPromotionActivatedFromStash = false
         val session = collectionSession
         if (session != null && session.elementId == elementId) collectionSession = null
         preparedTransitionKey = ""
         preparedPair = null
         overlayReadyTransitionKey = ""
         requestedSource = null
+        if (session != null && session.elementId == elementId) {
+            restoreNestedCollectionParent(session)
+        }
+    }
+
+    private fun restoreNestedCollectionParent(returnedChild: CollectionSession) {
+        val parent = nestedCollectionParents.lastOrNull() ?: return
+        if (parent.detailSceneId != returnedChild.listSceneId ||
+            parent.elementId !in physicallyStashedElements
+        ) return
+        nestedCollectionParents.removeAt(nestedCollectionParents.lastIndex)
+        val header = liveSnapshot(parent.detailSceneId, parent.elementId)
+            ?: parent.headerEndpoint
+        val activated = physicalPromotionActivator?.invoke(
+            parent.elementId,
+            header,
+            "nested-return:${returnedChild.detailSceneId}->${parent.detailSceneId}",
+        ) == true
+        if (activated) {
+            physicallyStashedElements.remove(parent.elementId)
+            physicalPromotedElementId = parent.elementId
+            physicalPromotedSceneId = parent.listSceneId
+            physicalPromotionActivatedFromStash = false
+        } else {
+            // The session still gives a valid remembered geometry fallback, but an unowned
+            // parked View must never leak across later navigation.
+            physicalPromotionStashClearer?.invoke()
+            physicallyStashedElements.clear()
+            nestedCollectionParents.clear()
+            AppLogger.w(
+                "SceneHandoff",
+                "SHARED_NESTED_RESTORE_MISS parent=${parent.elementId} child=${returnedChild.elementId}",
+            )
+        }
+        collectionSession = parent.copy(headerEndpoint = header)
+        AppLogger.i(
+            "SceneHandoff",
+            "SHARED_NESTED_RESTORE parent=${parent.elementId} child=${returnedChild.elementId} physical=$activated",
+        )
     }
 
     /**
@@ -521,6 +743,49 @@ class SharedCoverRegistry {
         return true
     }
 
+    /** A scene-only child return retires just that child, never its parked parent holder. */
+    internal fun retireNestedChildForSceneOnlyReturn(fromSceneId: String, toSceneId: String): Boolean {
+        val child = collectionSession ?: return false
+        val parent = nestedCollectionParents.lastOrNull() ?: return false
+        if (child.detailSceneId != fromSceneId || child.listSceneId != toSceneId ||
+            parent.detailSceneId != toSceneId
+        ) return false
+        val active = physicalPromotedElementId
+        if (active.isNotBlank()) {
+            if (active != child.elementId) return false
+            val retired = physicalPromotionCanceller?.invoke(active) == true || !isPhysicalPromotionLive(active)
+            if (!retired) return false
+            physicalPromotedElementId = ""
+            physicalPromotedSceneId = ""
+            physicalPromotionActivatedFromStash = false
+        }
+        preparedTransitionKey = ""
+        preparedPair = null
+        overlayReadyTransitionKey = ""
+        requestedSource = null
+        AppLogger.i("SceneHandoff", "SHARED_NESTED_CHILD_SCENE_ONLY child=${child.elementId}")
+        return true
+    }
+
+    /** Run only after a committed child->parent route; cancelled gestures retain the child. */
+    internal fun restoreNestedParentAfterCommittedBack(fromSceneId: String, toSceneId: String): Boolean {
+        val child = collectionSession ?: return false
+        val parent = nestedCollectionParents.lastOrNull() ?: return false
+        if (child.detailSceneId != fromSceneId || child.listSceneId != toSceneId ||
+            parent.detailSceneId != toSceneId
+        ) return false
+        val active = physicalPromotedElementId
+        if (active == child.elementId && !finishPhysicalReturn(child.elementId)) {
+            if (physicalPromotionCanceller?.invoke(active) != true && isPhysicalPromotionLive(active)) {
+                return false
+            }
+            completePhysicalReturn(child.elementId)
+        } else if (active.isBlank()) {
+            completePhysicalReturn(child.elementId)
+        }
+        return collectionSession?.elementId == parent.elementId
+    }
+
     /**
      * Hard terminal barrier used when a non-detail scene becomes authoritative (or a shared
      * transition owner is found orphaned). Prefer the normal HeaderToItem destination restore;
@@ -531,15 +796,19 @@ class SharedCoverRegistry {
     internal fun retireAnyPhysicalSharedOwnership(): Boolean {
         val elementId = physicalPromotedElementId
         if (elementId.isBlank()) {
-            // No concrete owner remains. Clear stale transaction-only state so an abandoned
-            // prepared pair cannot resurrect an overlay on the next navigation.
+            // No active actor may still leave parked hierarchy ancestors in the persistent host.
+            // Retire those too when the scene engine reaches its hard ownership barrier.
+            val hadStashed = physicallyStashedElements.isNotEmpty()
+            if (hadStashed) physicalPromotionStashClearer?.invoke()
+            physicallyStashedElements.clear()
+            nestedCollectionParents.clear()
             collectionSession = null
             preparedTransitionKey = ""
             preparedPair = null
             overlayReadyTransitionKey = ""
             requestedSource = null
             ephemeralPrepared = false
-            return false
+            return hadStashed
         }
 
         var retired = physicalReturnFinalizer?.invoke(elementId) == true
@@ -554,6 +823,13 @@ class SharedCoverRegistry {
         if (!retired) return false
 
         physicalPromotedElementId = ""
+        physicalPromotedSceneId = ""
+        physicalPromotionActivatedFromStash = false
+        if (physicallyStashedElements.isNotEmpty()) {
+            physicalPromotionStashClearer?.invoke()
+            physicallyStashedElements.clear()
+        }
+        nestedCollectionParents.clear()
         collectionSession = null
         preparedTransitionKey = ""
         preparedPair = null
@@ -569,13 +845,52 @@ class SharedCoverRegistry {
         if (elementId.isBlank()) return true
         val cancelled = physicalPromotionCanceller?.invoke(elementId) == true
         if (!cancelled) return false
+        if (physicalPromotionActivatedFromStash) {
+            physicallyStashedElements += elementId
+        }
         physicalPromotedElementId = ""
+        physicalPromotedSceneId = ""
+        physicalPromotionActivatedFromStash = false
         preparedTransitionKey = ""
         preparedPair = null
         overlayReadyTransitionKey = ""
         requestedSource = null
         collectionSession = null
         return true
+    }
+
+    /**
+     * Hard geometry-generation barrier for app-window resize / density changes.
+     *
+     * Every stored Rect in this registry belongs to the previous window coordinate space.  A
+     * normal transition clear intentionally preserves collection/session geometry for reverse
+     * navigation, but doing that across a window resize can make the next shared actor fly through
+     * a stale endpoint.  Retire the concrete actor when possible, then drop every cached endpoint;
+     * attached holders/headers republish fresh geometry during the ensuing layout pass.
+     */
+    internal fun invalidateWindowGeometry() {
+        val activeElementId = physicalPromotedElementId
+        if (activeElementId.isNotBlank()) {
+            val finalized = physicalReturnFinalizer?.invoke(activeElementId) == true
+            if (!finalized) physicalPromotionCanceller?.invoke(activeElementId)
+        }
+        if (physicallyStashedElements.isNotEmpty()) {
+            physicalPromotionStashClearer?.invoke()
+        }
+
+        live.clear()
+        physicalLayout.clear()
+        requestedSource = null
+        collectionSession = null
+        nestedCollectionParents.clear()
+        preparedTransitionKey = ""
+        preparedPair = null
+        overlayReadyTransitionKey = ""
+        physicalPromotedElementId = ""
+        physicalPromotedSceneId = ""
+        physicallyStashedElements.clear()
+        physicalPromotionActivatedFromStash = false
+        ephemeralPrepared = false
     }
 
     fun clearFrozen() {
@@ -701,10 +1016,18 @@ class SharedCoverRegistry {
     // A physical endpoint is authoritative even when ineligible. Falling back after filtering
     // it would resurrect the offscreen header from a stale Compose measurement.
     private fun eligibleReturnSource(sceneId: String, elementId: String): SharedCoverSnapshot? =
-        (physicalLayout[key(sceneId, elementId)]?.snapshot
+        (physicalLayout[key(sceneId, elementId)]?.currentSnapshot()
             ?: live[key(sceneId, elementId)]?.snapshot)?.takeIf { it.sharedEligible }
 
+    private fun hasPreparedReturn(fromSceneId: String, toSceneId: String): Boolean =
+        preparedPair?.let { (from, to) ->
+            from.sceneId == fromSceneId && to.sceneId == toSceneId && from.sharedEligible
+        } == true
+
     fun captureLiveCollectionReturnSource(fromSceneId: String, toSceneId: String): Boolean {
+        // The prepared actor owns its source until settle/cancel. Later layout publication
+        // must not reclassify the same gesture when the finger is released.
+        if (hasPreparedReturn(fromSceneId, toSceneId)) return true
         val session = collectionSession ?: return false
         if (session.detailSceneId != fromSceneId || session.listSceneId != toSceneId) return false
         val alreadyFrozen = requestedSource?.takeIf {
@@ -730,6 +1053,7 @@ class SharedCoverRegistry {
         fromSceneId: String,
         toSceneId: String,
     ): Boolean {
+        if (hasPreparedReturn(fromSceneId, toSceneId)) return true
         val session = collectionSession ?: return false
         if (session.detailSceneId != fromSceneId || session.listSceneId != toSceneId) return false
         val frozen = requestedSource?.takeIf {

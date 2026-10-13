@@ -1,0 +1,3 @@
+<resources>
+    <string name="transcode_sacd_iso_note">单曲立体声 DSD64 SACD 镜像。内嵌完整源元数据快照，包含封面、歌词与自定义标签，并支持严格校验。RawSMusic 可读取完整快照；其他 SACD 播放器可能仅显示标准 TOC 文字。转换需要额外临时音频与元数据空间。</string>
+</resources>

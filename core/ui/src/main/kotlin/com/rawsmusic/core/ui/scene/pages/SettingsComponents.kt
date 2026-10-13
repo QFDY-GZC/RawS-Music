@@ -1,18 +1,22 @@
 package com.rawsmusic.core.ui.scene.pages
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -20,21 +24,21 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.ui.R
+import com.rawsmusic.core.ui.scene.LocalRawWindowLayoutProfile
 import com.rawsmusic.core.ui.theme.ColorThemeMode
 import com.rawsmusic.core.ui.theme.RawMonet
 import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
 import com.rawsmusic.core.ui.theme.getCurrentColorThemeMode
+import com.rawsmusic.core.ui.theme.rawGlobalFontFamily
 import com.rawsmusic.module.data.prefs.AppPreferences
-import java.io.File
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
@@ -112,57 +116,45 @@ private fun Color.blendForSettings(target: Color, fraction: Float): Color {
 fun appFontFamily(): FontFamily {
     val path = AppPreferences.UI.customFontPath
     val runtimeVersion = RawThemeRuntimeState.version
-    return remember(path, runtimeVersion) {
-        if (path.isBlank()) {
-            FontFamily.Default
-        } else {
-            runCatching { FontFamily(Font(File(path), FontWeight.Normal)) }
-                .getOrDefault(FontFamily.Default)
+    val globalWeight = AppPreferences.UI.fontWeight.coerceIn(100, 900)
+    return remember(path, runtimeVersion, globalWeight) {
+        runCatching {
+            rawGlobalFontFamily(
+                path = path,
+                globalWeight = globalWeight,
+                allowOutOfRange = AppPreferences.UI.experimentalFontWeightEnabled,
+            )
         }
+            .getOrDefault(FontFamily.Default)
     }
 }
 
+/**
+ * Settings page with the ColorOS Settings top chrome (see SettingsCouiTopChrome.kt).
+ *
+ * The AppBar is transparent and the content scrolls beneath it; a gradient-blur overlay fades in
+ * over the first 30dp of scroll. [collapsingLargeTitle] enables the Settings homepage header: a 40sp
+ * title in a 116dp collapsing area that collapses into the 52dp toolbar and snaps on release.
+ */
 @Composable
 fun SettingsPage(
     title: String,
     onBack: (() -> Unit)? = null,
+    contentMaxWidth: Dp? = null,
+    collapsingLargeTitle: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val colors = themeColors()
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(colors.background)
-    ) {
-        SmallTopAppBar(
-            title = title,
-            color = colors.background,
-            titleColor = colors.onSurface,
-            navigationIcon = {
-                if (onBack != null) {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = MiuixIcons.Regular.Back,
-                            contentDescription = stringResource(R.string.settings_back),
-                            tint = colors.onSurface
-                        )
-                    }
-                }
-            }
-        )
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .rawStableNavigationBarsPadding()
-                .padding(horizontal = 12.dp),
-            content = {
-                Spacer(Modifier.height(8.dp))
-                content()
-                Spacer(Modifier.height(180.dp))
-            }
-        )
-    }
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
+    CouiSettingsScaffold(
+        title = title,
+        onBack = onBack,
+        background = colors.background,
+        titleColor = colors.onSurface,
+        contentMaxWidth = contentMaxWidth ?: windowLayoutProfile.settingsContentMaxWidth,
+        collapsingLargeTitle = collapsingLargeTitle,
+        content = content,
+    )
 }
 
 @Composable

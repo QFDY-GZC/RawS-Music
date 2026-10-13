@@ -35,6 +35,20 @@ internal class CrossfadeTransitionController(
     private var bytesMixed: Long = 0L
     private var autoPlan: AutoTransitionStartPlan? = null
     private var autoScheduledFramesLeft: Long = 0L
+    private var audibleIncomingFrames: Long = 0L
+    private var dominantIncomingFrames: Long = 0L
+    private var presentationReady = false
+    private val incomingRecovery = CrossfadeBufferRecovery()
+    private var outgoingEofReported = false
+
+    fun reportOutgoingEof() {
+        if (!outgoingEofReported) {
+            outgoingEofReported = true
+            AppLogger.i(tag, "AutoCrossfade: outgoing EOF; finish the planned gain envelope with silence")
+        }
+    }
+
+    fun mayPresentIncoming(): Boolean = !isAutomaticActive() || presentationReady
     @Volatile
     private var activeTargetPath: String? = null
     private var nextReadBuffer = ByteArray(0)
@@ -52,6 +66,8 @@ internal class CrossfadeTransitionController(
         get() = activeTargetPath
 
     fun reset(reason: String) {
+        incomingRecovery.reset()
+        outgoingEofReported = false
         if (active || bytesMixed != 0L || totalFrames != 0L) {
             AppLogger.d(tag, "Crossfade: reset reason=$reason bytesMixed=$bytesMixed totalFrames=$totalFrames")
         }
@@ -60,6 +76,9 @@ internal class CrossfadeTransitionController(
         bytesMixed = 0L
         autoPlan = null
         autoScheduledFramesLeft = 0L
+        audibleIncomingFrames = 0L
+        dominantIncomingFrames = 0L
+        presentationReady = false
         activeTargetPath = null
         manualProcessor.reset(reason)
         automaticProcessor.reset(reason)
@@ -68,6 +87,8 @@ internal class CrossfadeTransitionController(
 
     fun start(targetPath: String, durationMs: Int, sampleRate: Int, bufferSize: Int, remainingMs: Long): Boolean {
         if (durationMs <= 0 || sampleRate <= 0) return false
+        incomingRecovery.reset()
+        outgoingEofReported = false
         totalFrames = (durationMs.toLong() * sampleRate.toLong() / 1000L).coerceAtLeast(1L)
         bytesMixed = 0L
         autoPlan = null
@@ -98,6 +119,8 @@ internal class CrossfadeTransitionController(
         remainingMs: Long,
     ): Boolean {
         if (sampleRate <= 0 || plan.handoverMs <= 0) return false
+        incomingRecovery.reset()
+        outgoingEofReported = false
         val preRollFrames = plan.preRollMs.toLong() * sampleRate.toLong() / 1000L
         val handoverFrames = plan.handoverMs.toLong() * sampleRate.toLong() / 1000L
         // The decoder starts at the semantic boundary. The first PCM blocks resolve the
@@ -106,6 +129,9 @@ internal class CrossfadeTransitionController(
             .coerceAtLeast(1L)
         bytesMixed = 0L
         autoPlan = plan
+        audibleIncomingFrames = 0L
+        dominantIncomingFrames = 0L
+        presentationReady = false
         autoScheduledFramesLeft = totalFrames
         ensureBuffers(bufferSize)
         manualProcessor.reset("automatic_crossfade_start")
@@ -178,7 +204,15 @@ internal class CrossfadeTransitionController(
             -1
         }
         if (nextRead <= 0) {
-            AppLogger.w(tag, "Crossfade: next decoder returned $nextRead path=${next.path}; continuing current buffer without mix")
+            audibleIncomingFrames = 0L
+            dominantIncomingFrames = 0L
+            val outgoingGain = if (autoPlan != null) automaticProcessor.outgoingGain
+                else PcmCrossfadeMixer.gainOut(progress(frameSize))
+            PcmCrossfadeMixer.scaleInPlace(currentBuf, alignedCurrent, outgoingGain,
+                frameSize = frameSize, outputIsFloat = outputIsFloat,
+                bitsPerSample = bitsPerSample, outputIsPacked24 = outputIsPacked24)
+            incomingRecovery.markMissing(next.sampleRate)
+            AppLogger.w(tag, "Crossfade: next decoder returned $nextRead path=${next.path}; hold outgoingGain=$outgoingGain")
             return MixResult(
                 nextRead = nextRead,
                 mixedBytes = 0,
@@ -224,6 +258,7 @@ internal class CrossfadeTransitionController(
 
         val alignedNext = PcmFrameAligner.alignDown(mixNextLen, frameSize)
         val mixLen = minOf(alignedCurrent, alignedNext)
+        incomingRecovery.apply(mixNextBuffer, mixLen, frameSize, outputIsFloat, outputIsPacked24, bitsPerSample)
         val completed: Boolean
         if (autoPlan != null) {
             val plan = autoPlan ?: return MixResult(nextRead, 0, progressBefore, false)
@@ -232,15 +267,11 @@ internal class CrossfadeTransitionController(
             } else {
                 0L
             }
+            val outgoingDb = if (mixLen > 0) PcmLevelMeter.rmsDb(
+                currentBuf, mixLen, outputIsFloat, outputIsPacked24, bitsPerSample,
+            ) else -90f
             if (mixLen > 0) {
-                val outgoingDb = PcmLevelMeter.rmsDb(
-                    currentBuf,
-                    mixLen,
-                    outputIsFloat,
-                    outputIsPacked24,
-                    bitsPerSample,
-                )
-                val retimeMs = automaticRetimePolicy.evaluate(
+                val retimeMs = if (plan.preRollMs > 0) null else automaticRetimePolicy.evaluate(
                     source = plan.source,
                     outgoingDb = outgoingDb,
                     bufferFrames = bufferFrames,
@@ -281,6 +312,25 @@ internal class CrossfadeTransitionController(
             bytesMixed = automaticResult.consumedFrames * frameSize.toLong()
             autoScheduledFramesLeft = (autoScheduledFramesLeft - bufferFrames).coerceAtLeast(0L)
             completed = automaticResult.completed
+            val incomingDb = if (mixLen > 0) PcmLevelMeter.rmsDb(
+                mixNextBuffer, mixLen, outputIsFloat, outputIsPacked24, bitsPerSample) else -90f
+            val outgoingGain = automaticProcessor.outgoingGain
+            val incomingGain = automaticProcessor.incomingGain
+            val effectiveIncomingDb = AutoTransitionUiPolicy.effectiveDb(incomingDb, incomingGain)
+            audibleIncomingFrames = if (effectiveIncomingDb > -48f) audibleIncomingFrames + bufferFrames else 0L
+            dominantIncomingFrames = if (AutoTransitionUiPolicy.incomingDominates(outgoingGain, incomingDb, outgoingDb, incomingGain))
+                dominantIncomingFrames + bufferFrames else 0L
+            val actualFrames = bytesMixed / frameSize.coerceAtLeast(1)
+            if (AutoTransitionUiPolicy.ready(actualFrames, totalFrames,
+                    audibleIncomingFrames, next.sampleRate, completed,
+                    gentleFrames = plan.preRollMs.toLong() * next.sampleRate / 1000L,
+                    outgoingGain = outgoingGain, dominantFrames = dominantIncomingFrames,
+                    incomingGain = incomingGain, outgoingDb = outgoingDb)) {
+                if (!presentationReady) AppLogger.i(tag,
+                    "AutoCrossfade: UI handover frames=$actualFrames/$totalFrames outgoingGain=$outgoingGain " +
+                        "incomingDb=$effectiveIncomingDb dominantFrames=$dominantIncomingFrames completed=$completed")
+                presentationReady = true
+            }
         } else {
             val manualResult = if (mixLen > 0) {
                 manualProcessor.mixInPlace(
@@ -303,6 +353,14 @@ internal class CrossfadeTransitionController(
             }
             bytesMixed = manualResult.processedFrames * frameSize.toLong()
             completed = manualResult.completed
+        }
+        if (mixLen < alignedCurrent) {
+            val outgoingGain = if (autoPlan != null) automaticProcessor.outgoingGain
+                else PcmCrossfadeMixer.gainOut(progress(frameSize))
+            PcmCrossfadeMixer.scaleInPlace(currentBuf, alignedCurrent, outgoingGain,
+                frameSize = frameSize, outputIsFloat = outputIsFloat,
+                bitsPerSample = bitsPerSample, outputIsPacked24 = outputIsPacked24, offset = mixLen)
+            incomingRecovery.markMissing(next.sampleRate)
         }
         return MixResult(
             nextRead = nextRead,

@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_player_more_favorite_visible">更多弹窗显示收藏</string>
+    <string name="settings_player_more_favorite_visible_summary">在播放页更多弹窗的标题信息旁显示收藏按钮，将当前歌曲加入歌单。</string>
+</resources>

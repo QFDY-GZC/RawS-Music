@@ -287,6 +287,7 @@ class FfmpegAudioPlayer(private val context: Context) {
     private var currentPath: String?
         get() = playbackSession.currentTrackPath
         set(value) {
+            automaticTransitionCancellation.onTrackChanged(playbackSession.currentTrackPath, value)
             playbackSession.currentTrackPath = value
         }
     private var resampledPath: String? = null
@@ -296,8 +297,12 @@ class FfmpegAudioPlayer(private val context: Context) {
     private val outputVolumeCoordinator by lazy {
         FfmpegOutputVolumeCoordinator(
             tag = TAG,
-            setStoredVolume = { volume = it },
-            setNativeVolume = { value, reason -> nativeAudioEngineLifecycle.setVolumeCurrent(value, reason) },
+            setStoredVolume = {
+                volume = it
+            },
+            setNativeVolume = { value, reason ->
+                nativeAudioEngineLifecycle.setVolumeCurrent(value, reason)
+            },
             audioTrack = { audioTrack },
             usbExclusiveMode = { usbExclusiveMode },
         )
@@ -329,6 +334,14 @@ class FfmpegAudioPlayer(private val context: Context) {
     private var queuedStartSeekMs = -1L
 
     private var decoderHandle: Long = 0L
+        set(value) {
+            field = value
+            // Keep the old mapping while replacing a decoder; commit only an attached source.
+            if (value != 0L) {
+                com.rawsmusic.core.common.utils.LyricPlaybackTimeline.speed =
+                    PlaybackDecoderBridge.getDecoderPlaybackSpeed(value)
+            }
+        }
     private val decoderPathResolver = DecoderPathResolver(context, TAG)
     private val decoderOpenHelper = FFmpegDecoderOpenHelper(
         tag = TAG,
@@ -344,8 +357,11 @@ class FfmpegAudioPlayer(private val context: Context) {
     @Volatile
     private var decoderThread: Thread? = null
     /** 解码器是否已到达 EOF（未关闭 ring buffer，streaming loop 继续消费剩余数据） */
-    @Volatile
-    private var decoderDone = false
+    private var decoderDone: Boolean
+        get() = decoderStopToken.isDecodeComplete
+        set(value) {
+            if (value) decoderStopToken.markDecodeComplete() else decoderStopToken.resetDecodeCompletion()
+        }
     /** Active decoder thread stop token. Each decoder thread captures its own token. */
     @Volatile
     private var decoderStopToken = DecoderStopToken("initial")
@@ -377,6 +393,7 @@ class FfmpegAudioPlayer(private val context: Context) {
     private val decoderHandleTransferred = java.util.concurrent.atomic.AtomicBoolean(false)
     private val decoderLoopCoordinator by lazy {
         FfmpegDecoderLoopCoordinator(
+            context = context,
             tag = TAG,
             decoderChunkWriter = decoderChunkWriter,
             gaplessAuditRegistry = decoderGaplessAuditRegistry,
@@ -392,7 +409,7 @@ class FfmpegAudioPlayer(private val context: Context) {
             activeDecoderHandle = { decoderHandle },
             activeRingBuffer = { ringBuffer },
             activeStopToken = { decoderStopToken },
-            markDecoderDone = { decoderDone = true },
+            markDecoderDone = { token -> token.markDecodeComplete() },
             setState = ::setState,
             onPlaybackError = ::onPlaybackError,
             decoderHandleTransferred = decoderHandleTransferred,
@@ -437,6 +454,18 @@ class FfmpegAudioPlayer(private val context: Context) {
                     transitionTrace.currentHandoff() ?: transitionTrace.currentPlay(),
                     PlaybackTransitionPhase.DECODER_FAILED,
                     detail = "decode_failed path=${path.substringAfterLast('/')} gen=$generation result=$result",
+                )
+            },
+            canContinuePresentedCrossfade = { outgoingHandle ->
+                val target = crossfadeTransition.targetPath
+                val prepared = gaplessNextDecoder.snapshotFor(playbackSession.generation)
+                CrossfadeOutgoingEofPolicy.keepPresentedIncomingAfterFailure(
+                    automatic = crossfadeTransition.isAutomaticActive(),
+                    outgoingHandle = outgoingHandle,
+                    pendingHandle = prepared?.handle ?: 0L,
+                    exactPendingTarget = prepared != null && prepared.path == target &&
+                        trackStartedPresentation.isArmedFor(prepared.decoderSerial, prepared.ownerGeneration),
+                    incomingPresented = target != null && trackStartedPresentation.isStartedFor(target),
                 )
             },
         )
@@ -492,6 +521,23 @@ class FfmpegAudioPlayer(private val context: Context) {
 
     @Volatile
     private var automaticCrossfadeEnabled: Boolean = false
+    private val automaticTransitionCancellation = AutoTransitionCancellation()
+
+    private fun automaticTransitionAllowedForCurrentTrack(): Boolean =
+        automaticCrossfadeEnabled && !automaticTransitionCancellation.isCancelled(
+            playbackSession.generation, currentPath,
+        )
+
+    fun cancelCurrentAutomaticTransition(): Boolean {
+        if (!_autoTransitionPresentation.value.visible) return false
+        automaticTransitionCancellation.cancel(playbackSession.generation, currentPath)
+        clearAutoTransitionPresentation("user_cancel_current_transition")
+        // The existing seek barrier restores unity gain and resolves decoder ownership before
+        // cancelling a live mix. Never reset a renderer-owned mixer directly from the UI thread.
+        seekTo(_positionMs)
+        AppLogger.i(TAG, "AutoCrossfade: cancelled current track; preference preserved")
+        return true
+    }
     private class PendingCrossfadeSeekHandoff(
         val targetPath: String,
         val generation: Int,
@@ -524,6 +570,7 @@ class FfmpegAudioPlayer(private val context: Context) {
         phase: AutoTransitionPresentation.Phase,
         targetPath: String,
     ) {
+        if (automaticTransitionCancellation.isCancelled(playbackSession.generation, currentPath)) return
         val next = AutoTransitionPresentation(phase = phase, targetPath = targetPath)
         if (_autoTransitionPresentation.value != next) {
             _autoTransitionPresentation.value = next
@@ -806,6 +853,7 @@ class FfmpegAudioPlayer(private val context: Context) {
         }
     }
     private val manualCrossfadeReadinessCoordinator = ManualCrossfadeReadinessCoordinator()
+    private val manualHandoffContinuityCoordinator = ManualHandoffContinuityCoordinator()
     private val nextDecoderPrepareCoordinator = NextDecoderPrepareCoordinator(
         tag = TAG,
         executor = nextDecoderPrepareExecutor,
@@ -1110,7 +1158,6 @@ class FfmpegAudioPlayer(private val context: Context) {
         audioTrackProvider = { audioTrack },
         recreateAudioTrackInline = { forceSco, forcedDevice -> recreateAudioTrackInline(forceSco, forcedDevice) },
         requestNativeOutputRebuild = ::armNativeOutputRouteRebuild,
-        runOnPlaybackExecutor = { block -> playbackWorker.execute("android_audio_route", block) },
         wakePlaybackLoop = { /* consumePendingAndroidAudioTrackRouteRebuild is polled in the write loop */ },
         onAndroidUsbAudioRouteAdded = { onAndroidUsbAudioRouteAdded?.invoke() }
     )
@@ -1314,8 +1361,9 @@ class FfmpegAudioPlayer(private val context: Context) {
         get() = playbackDspProcessor.realtimeStemStrength
         set(value) { playbackDspProcessor.realtimeStemStrength = value }
 
-    fun setAndroidDvc(enabled: Boolean, gain: Float, noDvcHeadroomDb: Float) =
+    fun setAndroidDvc(enabled: Boolean, gain: Float, noDvcHeadroomDb: Float) {
         playbackDspProcessor.setAndroidDvc(enabled, gain, noDvcHeadroomDb)
+    }
 
     var androidBinauralSpatialEnabled: Boolean
         get() = playbackDspProcessor.androidBinauralSpatialEnabled
@@ -1702,7 +1750,8 @@ class FfmpegAudioPlayer(private val context: Context) {
         AppLogger.i(
             TAG,
             "AutoCrossfade recipe: source=${recipe?.source} target=${recipe?.targetPath} " +
-                "trigger=${recipe?.triggerPositionMs} handover=${recipe?.handoverPositionMs}"
+                "trigger=${recipe?.triggerPositionMs} handover=${recipe?.handoverPositionMs} " +
+                "gentle=${recipe?.gentleStartPositionMs} vocalEndKnown=${recipe?.vocalEndKnown}"
         )
     }
 
@@ -1757,7 +1806,12 @@ class FfmpegAudioPlayer(private val context: Context) {
         val automaticRecipe = autoTransitionRuntime.currentRecipe()
         val autoMixBlocked = automaticCrossfadeEnabled && automaticRecipe != null &&
             (isStrictUsbBitPerfectPath() || wavBitsPerSample <= 1 || usbRawDsdDirectActive)
+        val wasAutomatic = this.automaticCrossfadeEnabled
         this.automaticCrossfadeEnabled = automaticCrossfadeEnabled && !autoMixBlocked && automaticRecipe != null
+        if (wasAutomatic != this.automaticCrossfadeEnabled && !crossfadeTransition.active) {
+            nextDecoderPrepareEpoch.incrementAndGet()
+            closeNextDecoder()
+        }
         if (!this.automaticCrossfadeEnabled && !crossfadeTransition.isAutomaticActive()) {
             clearAutoTransitionPresentation("automatic_plan_disabled_or_blocked")
         }
@@ -1778,6 +1832,30 @@ class FfmpegAudioPlayer(private val context: Context) {
                     "path=${appliedPath.substringAfterLast('/')} reason=$reason",
             )
         }
+    }
+
+    suspend fun awaitAudibleManualHandoff(shouldContinue: () -> Boolean): Boolean {
+        val generation = playbackSession.generation
+        if (crossfadeTransition.isAutomaticActive() ||
+            (!crossfadeTransition.active && !gaplessPlanHandoffGate.isCommitting(generation))) {
+            return shouldContinue()
+        }
+        val outcome = manualHandoffContinuityCoordinator.await(
+            timeoutMs = crossfadeDurationMs.toLong().coerceAtLeast(1L) + 1_000L,
+            isCurrent = {
+                shouldContinue() && generation == playbackSession.generation &&
+                    !isReleased.get() && _state == State.PLAYING && isPlaying.get()
+            },
+            mixing = { crossfadeTransition.active },
+            ownershipPending = { gaplessPlanHandoffGate.isCommitting(generation) },
+        )
+        if (outcome.waitedMs > 0L) {
+            AppLogger.i(TAG, "MANUAL_HANDOFF_CONTINUITY waitedMs=${outcome.waitedMs} " +
+                "obsolete=${outcome.requestBecameObsolete} timedOut=${outcome.timedOut}")
+        }
+        // A broken renderer must not leave transport waiting forever. Only the still-current
+        // command may enter the existing recovery/fallback path after a bounded timeout.
+        return shouldContinue() && !outcome.requestBecameObsolete
     }
 
     suspend fun requestManualCrossfadeTo(
@@ -1883,6 +1961,10 @@ class FfmpegAudioPlayer(private val context: Context) {
         // selection. In both cases keep the current renderer audible, publish the target as
         // pending, and let the dedicated decoder executor reach READY. Never open FFmpeg here.
         gaplessRequestCoordinator.armManualCrossfadeRequest(nextPath, generation)
+        if (gaplessNextDecoder.snapshotFor(generation)?.sourceStartMs?.let { it > 0L } == true) {
+            nextDecoderPrepareEpoch.incrementAndGet()
+            closeNextDecoder()
+        }
         val planChanged = nextSongPath != nextPath || nextDecoderPlanGeneration != generation
         if (planChanged) {
             nextSongPath = nextPath
@@ -2203,13 +2285,23 @@ class FfmpegAudioPlayer(private val context: Context) {
                     }
                     AppLogger.e(TAG, "play failed: native linkage error", e)
                     setState(State.ERROR)
-                    listener?.onError("在线播放 native 接口不匹配: ${e.message}")
+                    listener?.onError(
+                        context.getString(
+                            R.string.player_error_online_native_mismatch,
+                            e.message.orEmpty(),
+                        )
+                    )
                 }
             } catch (e: Exception) {
                 if (isStillCurrentPlayback(sourcePath, generation) && !isReleased.get()) {
                     AppLogger.e(TAG, "play failed", e)
                     setState(State.ERROR)
-                    listener?.onError("播放失败: ${e.message}")
+                    listener?.onError(
+                        context.getString(
+                            R.string.player_error_playback_failed_detail,
+                            e.message.orEmpty(),
+                        )
+                    )
                 }
             }
         }
@@ -2915,6 +3007,7 @@ class FfmpegAudioPlayer(private val context: Context) {
     }
 
     fun seekTo(positionMs: Long, usbPrepareAlreadyDone: Boolean = false, keepPaused: Boolean = false) {
+        dspEngine?.resetReverb()
         val targetMs = positionMs.coerceToDuration()
         val stateAtRequest = _state
         val active = stateAtRequest == State.PLAYING || stateAtRequest == State.PAUSED
@@ -3063,6 +3156,12 @@ class FfmpegAudioPlayer(private val context: Context) {
             clearAutoTransitionPresentation("seek_after_crossfade")
         }
 
+        if (automaticTransitionCancellation.isCancelled(generation, currentPath)) {
+            // A preview-only cancellation must also discard the automatically trimmed intro.
+            // Reprepare at zero for the ordinary EOF handoff, after reaching the audio barrier.
+            closeNextDecoder()
+            schedulePlannedNextDecoder("cancel_automatic_transition")
+        }
         val handle = decoderHandle
         val rb = ringBuffer
         if (handle != 0L && rb != null) {
@@ -3314,7 +3413,7 @@ class FfmpegAudioPlayer(private val context: Context) {
     private fun prepareNextDecoder(path: String, generation: Int = playbackSession.generation): Boolean {
         val handoffReason = when {
             isManualCrossfadeTrigger(path, generation) -> PlaybackTransitionReason.MANUAL_CROSSFADE
-            automaticCrossfadeEnabled && autoTransitionRuntime.currentRecipe()?.targetPath == path ->
+            automaticTransitionAllowedForCurrentTrack() && autoTransitionRuntime.currentRecipe()?.targetPath == path ->
                 PlaybackTransitionReason.AUTO_CROSSFADE
             else -> PlaybackTransitionReason.NATURAL_GAPLESS
         }
@@ -3336,7 +3435,39 @@ class FfmpegAudioPlayer(private val context: Context) {
         if (isStrictUsbBitPerfectPath()) {
             AppLogger.d(TAG, "Strict USB bit-perfect: pre-opening next decoder without crossfade path=$path")
         }
-        return gaplessNextDecoder.prepare(path, wavSampleRate, wavBitsPerSample, wavChannels, generation)
+        val epoch = nextDecoderPrepareEpoch.get()
+        fun entryEligible(): Boolean = generation == playbackSession.generation &&
+            epoch == nextDecoderPrepareEpoch.get() && automaticTransitionAllowedForCurrentTrack() &&
+            !manualCrossfadeRequested && autoTransitionRuntime.currentRecipe()?.let {
+                it.targetPath == path && it.incomingEntryAllowed
+            } == true &&
+            !isStrictUsbBitPerfectPath() && wavBitsPerSample > 1 &&
+            AppPreferences.Player.playbackSpeed == 1f
+        // Analyze outside GaplessNextDecoder's monitor: renderer snapshot reads must never wait
+        // for a long intro scan. This probe never owns the live or primed playback decoder.
+        val sourceStartMs = if (entryEligible()) runCatching {
+            IncomingTrackEntryAnalyzer.analyze(decoderPathResolver.resolve(path), ::entryEligible,
+                introLeadMs = AutoTransitionVocalWindow.introLeadMs(autoTransitionRuntime.currentRecipe(), _durationMs))
+        }.getOrElse {
+            AppLogger.w(TAG, "Automatic entry analysis failed; keeping original intro", it)
+            0L
+        } else 0L
+        if (generation != playbackSession.generation || epoch != nextDecoderPrepareEpoch.get()) return false
+        val tailRecipe = autoTransitionRuntime.currentRecipe()
+        val outgoingPath = currentPath
+        if (entryEligible() && !crossfadeTransition.active && tailRecipe?.outgoingTailAllowed == true && outgoingPath != null) {
+            runCatching {
+                val tail = OutgoingTailAnalyzer.analyze(decoderPathResolver.resolve(outgoingPath),
+                    _durationMs, tailRecipe.handoverPositionMs.takeIf { tailRecipe.vocalEndKnown }) {
+                    entryEligible() && currentPath == outgoingPath && !crossfadeTransition.active
+                }
+                if (entryEligible() && currentPath == outgoingPath && !crossfadeTransition.active)
+                    autoTransitionRuntime.installTailPlan(tailRecipe, tail)
+            }.onFailure { AppLogger.w(TAG, "Outgoing tail analysis failed; keeping live fallback", it) }
+        }
+        if (generation != playbackSession.generation || epoch != nextDecoderPrepareEpoch.get()) return false
+        return gaplessNextDecoder.prepare(path, wavSampleRate, wavBitsPerSample, wavChannels, generation,
+            if (entryEligible()) sourceStartMs else 0L)
     }
 
     private fun armTrackStartedPresentation(prepared: GaplessNextDecoder.Prepared) {
@@ -3348,6 +3479,7 @@ class FfmpegAudioPlayer(private val context: Context) {
             generation = prepared.ownerGeneration,
             sampleRate = prepared.sampleRate,
             durationMs = duration,
+            sourceStartMs = prepared.sourceStartMs,
         )
     }
 
@@ -3361,6 +3493,7 @@ class FfmpegAudioPlayer(private val context: Context) {
             decoderSerial = prepared.decoderSerial,
             generation = prepared.ownerGeneration,
             renderedFrames = renderedFrames,
+            allowPresentation = crossfadeTransition.mayPresentIncoming(),
         ) ?: return
         _positionMs = presentation.positionMs
         if (presentation.durationMs > 0L) _durationMs = presentation.durationMs
@@ -3392,6 +3525,7 @@ class FfmpegAudioPlayer(private val context: Context) {
                 TAG,
                 "TRACK_STARTED path=${presentation.path.substringAfterLast('/')} " +
                     "serial=${presentation.decoderSerial} positionMs=${presentation.positionMs} " +
+                    "automatic=${crossfadeTransition.isAutomaticActive()} sourceStartMs=${prepared.sourceStartMs} " +
                     "timeline=${trackStartedPresentation.snapshot()}",
             )
         }
@@ -3452,25 +3586,45 @@ class FfmpegAudioPlayer(private val context: Context) {
         // here could strand a manual request forever for containers with unknown/late
         // duration metadata.
         if (!manualTrigger && _durationMs <= 0) return
-        val autoRecipe = if (automaticCrossfadeEnabled) {
+        val autoRecipe = if (automaticTransitionAllowedForCurrentTrack()) {
             autoTransitionRuntime.currentRecipe()?.takeIf { it.targetPath == path }
         } else null
         if (manualTrigger && crossfadeDurationMs <= 0) return
 
         val prepared = gaplessNextDecoder.snapshotFor(generation)?.takeIf { it.path == path }
         val preparedCompatible = prepared?.let(::canCrossfadePreparedNext) == true
-        if (!manualTrigger && autoRecipe?.source == AutoTransitionPolicy.Source.LYRICS &&
-            AutoTransitionPresentationPolicy.shouldArmLyrics(
-                positionMs = _positionMs,
-                handoverPositionMs = autoRecipe.handoverPositionMs,
-                targetPreparedAndCompatible = preparedCompatible,
-            )
-        ) {
+        val shouldPreviewAutoTransition = !manualTrigger && autoRecipe != null &&
+            when (autoRecipe.source) {
+                AutoTransitionPolicy.Source.LYRICS ->
+                    AutoTransitionPresentationPolicy.shouldArmLyrics(
+                        positionMs = _positionMs,
+                        handoverPositionMs = autoRecipe.handoverPositionMs?.let {
+                            com.rawsmusic.core.common.utils.LyricPlaybackTimeline.toPlaybackTime(it)
+                        },
+                        targetPreparedAndCompatible = preparedCompatible,
+                    )
+                AutoTransitionPolicy.Source.ENVELOPE ->
+                    AutoTransitionPresentationPolicy.shouldArmEnvelope(
+                        remainingMs = remainingMs,
+                        envelopeLookaheadMs =
+                            com.rawsmusic.core.common.utils.LyricPlaybackTimeline.toPlaybackTime(
+                                autoRecipe.envelopeLookaheadMs,
+                            ),
+                        targetPreparedAndCompatible = preparedCompatible,
+                    )
+            }
+        if (shouldPreviewAutoTransition) {
+            // Only renderer-confirmed, compatible prewarmed targets can announce a forthcoming
+            // automatic mix. ARMED must precede ACTIVE on both AudioTrack and native loops;
+            // the audio recipe and actual start time remain entirely renderer-owned.
             publishAutoTransitionPresentation(AutoTransitionPresentation.Phase.ARMED, path)
         }
-        val autoStart = if (!manualTrigger && autoRecipe != null) {
+        val proposedAutoStart = if (!manualTrigger && autoRecipe != null) {
             autoTransitionRuntime.resolveStartPlan(_positionMs, _durationMs)
         } else null
+        val autoStart = if (proposedAutoStart != null && prepared != null) {
+            AutoTransitionWindowBudget.fitIncoming(proposedAutoStart, prepared.durationMs, prepared.sourceStartMs)
+        } else proposedAutoStart
         if (!manualTrigger && autoStart == null) return
 
         if (prepared == null) {
@@ -3608,6 +3762,7 @@ class FfmpegAudioPlayer(private val context: Context) {
     }
 
     private fun commitGaplessTrack(path: String, startPositionMs: Long) {
+        dspEngine?.resetReverb()
         autoTransitionRuntime.resetAfterTrackBoundary()
         val visibleStartPositionMs = trackStartedPresentation.commit(path, startPositionMs)
         playbackTrackCommitter.commit(
@@ -3813,7 +3968,7 @@ class FfmpegAudioPlayer(private val context: Context) {
         channels: Int,
         sampleRate: Int,
         bitsPerSample: Int,
-    ): Int = dspRuntimeCoordinator.process(buffer, read, channels, sampleRate, bitsPerSample)
+    ): Int = processDspWithTrace(buffer, read, channels, sampleRate, bitsPerSample, false)
 
     private fun processDspAfterRealtime(
         buffer: ByteArray,
@@ -3821,7 +3976,14 @@ class FfmpegAudioPlayer(private val context: Context) {
         channels: Int,
         sampleRate: Int,
         bitsPerSample: Int,
-    ): Int = dspRuntimeCoordinator.processAfterRealtime(buffer, read, channels, sampleRate, bitsPerSample)
+    ): Int = processDspWithTrace(buffer, read, channels, sampleRate, bitsPerSample, true)
+
+    private fun processDspWithTrace(buffer: ByteArray, read: Int, channels: Int, sampleRate: Int,
+                                    bitsPerSample: Int, afterRealtime: Boolean): Int {
+        val result = if (afterRealtime) dspRuntimeCoordinator.processAfterRealtime(buffer, read, channels, sampleRate, bitsPerSample)
+            else dspRuntimeCoordinator.process(buffer, read, channels, sampleRate, bitsPerSample)
+        return result
+    }
 
     private fun resetRealtimeSeparationAtTrackBoundary(reason: String): Boolean {
         return dspRuntimeCoordinator.resetRealtimeSeparationAtTrackBoundary(reason)
@@ -4090,7 +4252,14 @@ class FfmpegAudioPlayer(private val context: Context) {
                 AppLogger.w(TAG, "Prefill aborted before play: isPlaying=${isPlaying.get()} released=${isReleased.get()} current=${isStillCurrentPlayback(sourcePath, generation)}")
                 return
             }
-            // 如果循环中没有成功写入任何数据（例如 rb 立即 EOF），仍然启动播放。
+            if (PlaybackStartupPolicy.rejectEmptyStart(
+                    prefillBytesWritten, rb.isEof() || rb.isClosed(), _positionMs, _durationMs)) {
+                isPlaying.set(false)
+                setState(State.ERROR)
+                onPlaybackError("音频未解码出有效 PCM，无法开始播放")
+                return
+            }
+            // A deliberate seek to the end may have no remaining PCM.
             if (!trackStarted) {
                 track.play()
                 trackStarted = true
@@ -4181,10 +4350,17 @@ class FfmpegAudioPlayer(private val context: Context) {
                 if (crossfadeTransition.active && nextCrossfade != null) {
                     // Crossfade 模式：从当前和下一个解码器分别读取，混合
                     val xfReadStart = System.nanoTime()
-                    val currentRead = rb.readWithTimeout(buffer, 0, readLimit, RING_BUFFER_READ_TIMEOUT_MS)
+                    var currentRead = rb.readWithTimeout(buffer, 0, readLimit, RING_BUFFER_READ_TIMEOUT_MS)
                     val xfReadMs = (System.nanoTime() - xfReadStart) / 1_000_000.0
                     if (xfReadMs > 100) {
                         AppLogger.w(TAG, "Crossfade: rb.readWithTimeout took ${"%.1f".format(xfReadMs)}ms, rbAvail=${rb.available()}B decoderDone=$decoderDone")
+                    }
+                    if (currentRead == -1 && !isPlaying.get()) break
+                    if (CrossfadeOutgoingEofPolicy.shouldRenderSilence(currentRead,
+                            crossfadeTransition.isAutomaticActive(), decoderDone, rb.available())) {
+                        buffer.fill(0, 0, readLimit)
+                        currentRead = readLimit
+                        crossfadeTransition.reportOutgoingEof()
                     }
                     if (currentRead == -1) {
                         if (!isPlaying.get()) break
@@ -5044,6 +5220,14 @@ class FfmpegAudioPlayer(private val context: Context) {
                 prefillBytesWritten += written
                 totalBytesWritten += written
             }
+            if (!isStillCurrentPlayback(sourcePath, generation) || isReleased.get()) return true
+            if (PlaybackStartupPolicy.rejectEmptyStart(
+                    prefillBytesWritten, rb.isEof() || rb.isClosed(), _positionMs, _durationMs)) {
+                isPlaying.set(false)
+                setState(State.ERROR)
+                onPlaybackError("音频未解码出有效 PCM，无法开始播放")
+                return true // Handled terminal failure; do not retry another backend with this empty ring.
+            }
             if (!started) {
                 if (!engine.start()) return false
                 started = true
@@ -5121,6 +5305,12 @@ class FfmpegAudioPlayer(private val context: Context) {
                         read = currentRead
                     }
 
+                    if (CrossfadeOutgoingEofPolicy.shouldRenderSilence(read,
+                            crossfadeTransition.isAutomaticActive(), decoderDone, rb.available())) {
+                        buffer.fill(0, 0, readLimit)
+                        read = readLimit
+                        crossfadeTransition.reportOutgoingEof()
+                    }
                     if (read > 0) {
                         val decoderBytesPerSample = AudioOutputFormatPolicy.decoderBytesPerSample(bufferSourceBits)
                         val decoderFrameSize = actualChannels * decoderBytesPerSample
@@ -7393,7 +7583,9 @@ class FfmpegAudioPlayer(private val context: Context) {
                 AppLogger.e(TAG, "Audio file not found: $file", e)
                 if (isStillCurrentPlayback(sourcePath, generation)) {
                     setState(State.ERROR)
-                    onPlaybackError("音频文件不存在: ${file.name}")
+                    onPlaybackError(
+                        context.getString(R.string.player_error_audio_file_missing, file.name)
+                    )
                 }
                 return
             }
@@ -7431,6 +7623,11 @@ class FfmpegAudioPlayer(private val context: Context) {
                     awaitPlaybackResume()
                     continue
                 }
+
+                // Consume route commands between writes, never on a competing callback thread.
+                val previousTrack = audioTrack
+                consumePendingAndroidAudioTrackRouteRebuild()
+                if (audioTrack !== previousTrack) totalBytesWrittenToTrack = 0L
 
                 val read = fis.read(buffer, 0, readLimit)
                 if (read <= 0) {
@@ -7509,18 +7706,23 @@ class FfmpegAudioPlayer(private val context: Context) {
             if (isStillCurrentPlayback(sourcePath, generation) && !isReleased.get()) {
                 AppLogger.e(TAG, "=== play file not found", e)
                 setState(State.ERROR)
-                onPlaybackError("音频文件丢失")
+                onPlaybackError(context.getString(R.string.player_error_audio_file_lost))
             }
         } catch (e: java.io.IOException) {
             if (isStillCurrentPlayback(sourcePath, generation) && !isReleased.get()) {
                 AppLogger.e(TAG, "=== play IO error", e)
                 setState(State.ERROR)
-                onPlaybackError("文件读取错误（SD卡弹出或文件损坏）")
+                onPlaybackError(context.getString(R.string.player_error_file_read))
             }
         } catch (e: Exception) {
             if (isStillCurrentPlayback(sourcePath, generation) && !isReleased.get()) {
                 AppLogger.e(TAG, "=== play EXCEPTION", e)
-                onPlaybackError("播放异常: ${e.message}")
+                onPlaybackError(
+                    context.getString(
+                        R.string.player_error_playback_exception,
+                        e.message.orEmpty(),
+                    )
+                )
             }
         } finally {
             try { fis?.close() } catch (_: Exception) {}

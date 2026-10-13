@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_hdr_headroom_title">HDR highlight headroom</string>
+    <string name="settings_hdr_expected">Requested ratio</string>
+    <string name="settings_hdr_actual">Actual ratio (current display)</string>
+    <string name="settings_hdr_automatic">System automatic</string>
+    <string name="settings_hdr_ratio_unavailable">Unavailable: not provided by the system</string>
+    <string name="settings_hdr_current_window">Current settings window</string>
+    <string name="settings_hdr_window_active">HDR mode</string>
+    <string name="settings_hdr_window_normal">Normal mode (HDR disabled or Settings not selected)</string>
+    <string name="settings_hdr_headroom_help">Custom range: 1.0–8.0×. Applied to selected HDR screens when you release the slider. 1.0× requests no extra highlight headroom without disabling the HDR window. This is not a whole-screen brightness multiplier or a measure of the highlights used by an image. The system and display determine the actual ratio, which may be lower than requested. The reading belongs to the current display, not other screens.</string>
+    <string name="settings_hdr_headroom_old_api">Android 14 can read the actual ratio when provided by the system, but cannot manually adjust window headroom. Android 15+ supports adjustment. This device uses the system automatic value.</string>
+    <string name="settings_hdr_title">HDR display</string>
+    <string name="settings_hdr_summary">Keep HDR window mode for selected screens</string>
+    <string name="settings_hdr_master">Enable HDR window</string>
+    <string name="settings_hdr_scenes">Screens using HDR</string>
+    <string name="settings_hdr_home">Home</string>
+    <string name="settings_hdr_library">Library, categories and details</string>
+    <string name="settings_hdr_player">Player (including immersive and landscape)</string>
+    <string name="settings_hdr_lyrics">Lyrics</string>
+    <string name="settings_hdr_settings">Settings and subpages</string>
+    <string name="settings_hdr_supported">Current display supports HDR, system API %1$d</string>
+    <string name="settings_hdr_unsupported">This display or system does not support this HDR window feature. Android 14+ and an HDR display are required. Saved selections are retained.</string>
+    <string name="settings_hdr_impacts_title">Effects of enabling HDR</string>
+    <string name="settings_hdr_impacts">Selected foreground screens keep HDR window mode, even with SDR artwork. This may increase battery use and heat, and may change brightness or color on some devices. Results depend on the system, display and power settings. SDR content is not automatically converted to HDR; native HDR artwork carries additional highlight information. Requests are retained during transitions. The original window mode is restored when leaving selected screens or moving to the background. Unsupported devices fall back to normal display.</string>
+    <string name="settings_hdr_enabled_notice">HDR enabled: battery use and heat may increase. SDR content is not automatically converted to HDR.</string>
+</resources>

@@ -32,6 +32,7 @@ object CustomMediaBackgroundState {
     private const val KEY_ENABLED = "enabled"
     private const val KEY_SHOW_PLAYER = "show_player"
     private const val KEY_SHOW_SETTINGS = "show_settings"
+    private const val KEY_SHOW_FULL_IMAGE = "show_full_image"
 
     var sourceUri by mutableStateOf("")
         private set
@@ -42,6 +43,8 @@ object CustomMediaBackgroundState {
     var showOnPlayer by mutableStateOf(false)
         private set
     var showOnSettings by mutableStateOf(true)
+        private set
+    var showFullImage by mutableStateOf(false)
         private set
     var revision by mutableIntStateOf(0)
         private set
@@ -56,6 +59,7 @@ object CustomMediaBackgroundState {
         enabled = prefs.getBoolean(KEY_ENABLED, sourceUri.isNotBlank()) && sourceUri.isNotBlank()
         showOnPlayer = prefs.getBoolean(KEY_SHOW_PLAYER, false)
         showOnSettings = prefs.getBoolean(KEY_SHOW_SETTINGS, true)
+        showFullImage = prefs.getBoolean(KEY_SHOW_FULL_IMAGE, false)
         initialized = true
     }
 
@@ -96,6 +100,12 @@ object CustomMediaBackgroundState {
         persist(context)
     }
 
+    fun setShowFullImage(context: Context, value: Boolean) {
+        ensureInitialized(context)
+        showFullImage = value
+        persist(context)
+    }
+
     private fun persist(context: Context) {
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
@@ -104,6 +114,7 @@ object CustomMediaBackgroundState {
             .putBoolean(KEY_ENABLED, enabled)
             .putBoolean(KEY_SHOW_PLAYER, showOnPlayer)
             .putBoolean(KEY_SHOW_SETTINGS, showOnSettings)
+            .putBoolean(KEY_SHOW_FULL_IMAGE, showFullImage)
             .apply()
         revision++
     }
@@ -132,7 +143,8 @@ fun CustomMediaBackground(
         CustomBackgroundKind.IMAGE -> BitmapImage(
             key = uri,
             contentDescription = null,
-            contentScale = ContentScale.Crop,
+            contentScale = if (CustomMediaBackgroundState.showFullImage) ContentScale.Fit else ContentScale.Crop,
+            aspectPolicy = CustomBackgroundImagePolicy.decodeAspect,
             modifier = modifier.fillMaxSize(),
             targetWidth = 1536,
             targetHeight = 1536,

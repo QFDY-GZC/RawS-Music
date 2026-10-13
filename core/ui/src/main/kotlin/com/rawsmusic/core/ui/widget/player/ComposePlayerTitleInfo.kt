@@ -1,7 +1,7 @@
 package com.rawsmusic.core.ui.widget.player
 
-import android.graphics.Rect as AndroidRect
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,11 +30,19 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.Dp
 import com.rawsmusic.core.ui.scene.LocalUiFrameAnimationActive
 import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
 import com.rawsmusic.module.data.prefs.FontManager
 import com.rawsmusic.core.ui.widget.text.LongTextMotionState
+import com.rawsmusic.core.ui.widget.text.createExplicitBadgeLabelPaint
+import com.rawsmusic.core.ui.widget.text.drawExplicitTitleBadge
+import com.rawsmusic.core.ui.widget.text.explicitBadgeGap
+import com.rawsmusic.core.ui.widget.text.explicitBadgeWidth
 import com.rawsmusic.core.ui.widget.text.resolveNativeTextVerticalLayout
+import com.rawsmusic.core.ui.widget.virtuallist.VirtualListMarqueeMotion
+
+private data class PlayerTitleFrame(val title: String, val artist: String, val album: String, val explicit: Boolean)
 
 @Composable
 fun ComposePlayerTitleInfo(
@@ -47,16 +55,26 @@ fun ComposePlayerTitleInfo(
     albumColor: Color = Color(0x99FFFFFF),
     endPaddingDp: Float = 0f,
     textPosition: LyricTextPosition = LyricTextPosition.Left,
+    onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     onLongPressGestureActiveChange: (Boolean) -> Unit = {},
-    motionPaused: Boolean = false,
+    marqueeVisible: Boolean = true,
+    explicitBadge: Boolean = false,
+    trackKey: Any? = listOf(title, artist, album),
+    contentCrossfadeEnabled: Boolean = true,
 ) {
     val currentOnLongClick = rememberUpdatedState(onLongClick)
+    val currentOnClick = rememberUpdatedState(onClick)
     val currentOnLongPressGestureActiveChange =
         rememberUpdatedState(onLongPressGestureActiveChange)
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable { currentOnClick.value?.invoke() }
+                } else Modifier
+            )
             .then(
                 if (onLongClick != null) {
                     Modifier.pointerInput(Unit) {
@@ -85,19 +103,24 @@ fun ComposePlayerTitleInfo(
                 }
             )
     ) {
+        PlayerContentCrossfade(key = trackKey,
+            enabled = contentCrossfadeEnabled,
+            value = PlayerTitleFrame(title, artist, album, explicitBadge), modifier = Modifier.fillMaxWidth()) { info ->
+        Column(Modifier.fillMaxWidth()) {
         MarqueeCanvasText(
-            text = title,
+            text = info.title,
+            explicitBadge = info.explicit,
             color = titleColor,
             fontSizeSp = 20f,
             fontWeight = FontWeight.Bold,
             endPaddingDp = endPaddingDp,
             textPosition = textPosition,
-            motionPaused = motionPaused,
+            marqueeVisible = marqueeVisible,
+            minimumHeight = 28.dp,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(28.dp)
         )
-        val secondary = listOf(artist, album)
+        val secondary = listOf(info.artist, info.album)
             .map(String::trim)
             .filter(String::isNotBlank)
             .distinct()
@@ -108,25 +131,29 @@ fun ComposePlayerTitleInfo(
             fontSizeSp = 13f,
             endPaddingDp = endPaddingDp,
             textPosition = textPosition,
-            motionPaused = motionPaused,
+            marqueeVisible = marqueeVisible,
+            minimumHeight = 19.dp,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(19.dp)
                 .padding(top = 1.dp)
         )
+        }
+        }
     }
 }
 
 @Composable
 private fun MarqueeCanvasText(
     text: String,
+    explicitBadge: Boolean = false,
     color: Color,
     fontSizeSp: Float,
     modifier: Modifier = Modifier,
     fontWeight: FontWeight = FontWeight.Normal,
     endPaddingDp: Float = 0f,
     textPosition: LyricTextPosition = LyricTextPosition.Left,
-    motionPaused: Boolean = false,
+    marqueeVisible: Boolean = true,
+    minimumHeight: Dp = 28.dp,
 ) {
     val density = LocalDensity.current
     val frameAnimationActive = LocalUiFrameAnimationActive.current
@@ -141,21 +168,29 @@ private fun MarqueeCanvasText(
     val textWidth = remember(text, paint.textSize, fontWeight, paint.typeface) {
         paint.measureText(text)
     }
-    val textInkBounds = remember(text, paint.textSize, fontWeight, paint.typeface) {
-        AndroidRect().also { bounds ->
-            if (text.isNotEmpty()) paint.getTextBounds(text, 0, text.length, bounds)
-        }
+    val completeWidth = textWidth + if (explicitBadge) {
+        explicitBadgeGap(paint.textSize) + explicitBadgeWidth(paint.textSize)
+    } else 0f
+    val explicitLabelPaint = remember(explicitBadge, paint.textSize) {
+        if (explicitBadge) createExplicitBadgeLabelPaint(paint.textSize) else null
+    }
+    val fontMetrics = remember(paint) { paint.fontMetrics }
+    val laneHeight = with(density) {
+        playerTitleLineHeightPx(minimumHeight.toPx(), fontMetrics.top, fontMetrics.bottom).toDp()
+    }
+    val marqueeMotion = remember(text, paint.textSize, fontWeight, paint.typeface) {
+        VirtualListMarqueeMotion()
     }
     val speed = with(density) { 42.5.dp.toPx() }
     var measuredWidth by remember { mutableFloatStateOf(0f) }
     val availableWidth = (measuredWidth - endPaddingDp * density.density).coerceAtLeast(0f)
-    val overflowWidth = (textWidth - availableWidth).coerceAtLeast(0f)
-    // Reference ArtworkItemNode keeps its TextNodes inside the same physical holder and disables
-    // hidden-holder marquee work when alpha reaches zero. Player artwork motion also should not run a
-    // second text animation clock under the card transform.
-    val marqueeEnabled = frameAnimationActive && !motionPaused && LongTextMotionState.enabled &&
-        LongTextMotionState.enabledEverywhere && overflowWidth > 0.5f
-    DisposableEffect(marqueeEnabled) {
+    val overflowWidth = (completeWidth - availableWidth).coerceAtLeast(0f)
+    // Visible text keeps its own phase while its physical artwork holder moves or is promoted.
+    // Parked holders do not register for frames. The existing frame driver remains shared.
+    val marqueeEnabled = frameAnimationActive && marqueeVisible && LongTextMotionState.enabled &&
+        LongTextMotionState.enabledEverywhere && overflowWidth > 10f
+    DisposableEffect(marqueeEnabled, marqueeMotion) {
+        if (!marqueeEnabled) marqueeMotion.hide()
         if (marqueeEnabled) LongTextMotionState.acquireMarquee()
         onDispose {
             if (marqueeEnabled) LongTextMotionState.releaseMarquee()
@@ -164,15 +199,19 @@ private fun MarqueeCanvasText(
     // Read the shared marquee clock only from draw phase. Reading marqueeElapsedMs in composition
     // made every visible player title recompose on each frame, exactly while ArtworkPager-style card motion
     // was trying to update its RenderNode.
-    fun currentMarqueeOffset(): Float = LongTextMotionState.marqueeOffset(
-        elapsedMs = if (marqueeEnabled) LongTextMotionState.marqueeElapsedMs else 0L,
-        overflowPx = overflowWidth,
-        speedPxPerSecond = speed,
-        enabled = marqueeEnabled
+    fun currentMarqueeOffset(): Float = marqueeMotion.update(
+        now = LongTextMotionState.marqueeElapsedMs,
+        distance = overflowWidth,
+        pixelsPerSecond = speed,
+        enabled = marqueeEnabled,
+        visible = marqueeEnabled,
+        layoutChanged = false,
+        preserveProgress = true,
     )
 
     Canvas(
         modifier = modifier
+            .height(laneHeight)
             .onSizeChanged { measuredWidth = it.width.toFloat() }
             .then(
                 if (marqueeEnabled) {
@@ -186,7 +225,7 @@ private fun MarqueeCanvasText(
             )
     ) {
         if (availableWidth <= 0f) return@Canvas
-        val fm = paint.fontMetrics
+        val fm = fontMetrics
         val verticalLayout = resolveNativeTextVerticalLayout(
             containerTop = 0f,
             containerBottom = size.height,
@@ -196,14 +235,14 @@ private fun MarqueeCanvasText(
             descent = fm.descent,
             fontTop = fm.top,
             fontBottom = fm.bottom,
-            inkTop = textInkBounds.top.toFloat(),
-            inkBottom = textInkBounds.bottom.toFloat(),
+            inkTop = fm.top,
+            inkBottom = fm.bottom,
         )
         val baseline = verticalLayout.baseline
         val staticStartX = when (textPosition) {
             LyricTextPosition.Left -> 0f
-            LyricTextPosition.Center -> ((availableWidth - textWidth) * 0.5f).coerceAtLeast(0f)
-            LyricTextPosition.Right -> (availableWidth - textWidth).coerceAtLeast(0f)
+            LyricTextPosition.Center -> ((availableWidth - completeWidth) * 0.5f).coerceAtLeast(0f)
+            LyricTextPosition.Right -> (availableWidth - completeWidth).coerceAtLeast(0f)
         }
         val drawX = if (marqueeEnabled) -currentMarqueeOffset() else staticStartX
         clipRect(
@@ -213,6 +252,14 @@ private fun MarqueeCanvasText(
             bottom = verticalLayout.clipBottom,
         ) {
             drawIntoNativeText(text, paint, Offset(drawX, baseline))
+            if (explicitBadge && explicitLabelPaint != null) {
+                drawExplicitTitleBadge(
+                    left = drawX + textWidth + explicitBadgeGap(paint.textSize),
+                    titleBaseline = baseline,
+                    fontSizePx = paint.textSize,
+                    labelPaint = explicitLabelPaint,
+                )
+            }
         }
     }
 }

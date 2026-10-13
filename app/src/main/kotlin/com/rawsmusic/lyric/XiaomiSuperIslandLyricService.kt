@@ -64,37 +64,48 @@ internal class XiaomiSuperIslandLyricService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        running = true
         AppLogger.d(TAG, "Super Island lyric service created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_PUBLISH -> pendingNotification?.let(::publishNotification)
-                ?: AppLogger.w(TAG, "No Super Island lyric notification available to publish")
-            ACTION_STOP -> stopNotificationService()
-            else -> AppLogger.d(TAG, "Ignoring service action=${intent?.action}")
+            ACTION_PUBLISH -> pendingNotification?.let(::publishNotification) ?: finishEmptyStart()
+            ACTION_STOP -> if (foregroundStarted) stopNotificationService() else finishEmptyStart()
+            else -> if (!foregroundStarted) finishEmptyStart()
         }
         return START_NOT_STICKY
     }
 
     private fun publishNotification(notification: Notification) {
-        if (!foregroundStarted) {
-            val startedWithLyric = runCatching {
+        val published = SuperIslandPublication.publish(
+            foregroundStarted = foregroundStarted,
+            startFocus = { runCatching {
                 startForegroundWithType(notification)
                 foregroundStarted = true
+                AppLogger.i(TAG, "FOCUS_POSTED via=startForeground")
                 AppLogger.d(TAG, "Super Island lyric foreground service started with Focus payload")
-            }.isSuccess
-            if (startedWithLyric) return
-
-            runCatching {
+            }.onFailure { AppLogger.w(TAG, "Focus foreground start failed; trying warm payload", it) }.isSuccess },
+            startWarm = { runCatching {
                 startForegroundWithType(buildWarmNotification())
                 foregroundStarted = true
                 AppLogger.d(TAG, "Super Island lyric foreground service started with warm payload")
-            }.onFailure { error -> AppLogger.w(TAG, "Focus foreground start failed", error) }
-        }
-        if (foregroundStarted) {
-            notificationManager?.notify(XiaomiSuperIslandLyricBridge.NOTIFICATION_ID, notification)
-        }
+            }.onFailure { AppLogger.w(TAG, "Warm foreground start failed", it) }.isSuccess },
+            notify = {
+                notificationManager?.notify(XiaomiSuperIslandLyricBridge.NOTIFICATION_ID, notification)
+                AppLogger.i(TAG, "FOCUS_POSTED via=notify")
+            },
+        )
+        if (!published) stopSelf()
+    }
+
+    private fun finishEmptyStart() {
+        // Even a cleared in-flight startForegroundService request must fulfill its FGS contract.
+        if (!foregroundStarted) runCatching {
+            startForegroundWithType(buildWarmNotification())
+            foregroundStarted = true
+        }.onFailure { AppLogger.w(TAG, "Unable to fulfill empty foreground start", it) }
+        stopNotificationService()
     }
 
     private fun startForegroundWithType(notification: Notification) {

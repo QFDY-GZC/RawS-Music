@@ -42,6 +42,7 @@ class RawSMusicApp : Application() {
             previousHandler?.uncaughtException(thread, throwable)
         }
         CoreInit.init(this)
+        com.rawsmusic.module.data.prefs.BackupAndroidRuntime.recoverBeforeStoresInitialize(this)
         DataModule.init(this)
         // VirtualList's retained artwork-style Modifier.Node talks directly to BitmapProvider rather
         // than Coil. Initialize the provider once at process start so cold list/grid holders have

@@ -227,7 +227,8 @@ object FfmpegMetadataReader {
             year = if (tagLib.year > 0) tagLib.year else ffmpeg.year,
             trackNumber = if (tagLib.trackNumber > 0) tagLib.trackNumber else ffmpeg.trackNumber,
             discNumber = if (tagLib.discNumber > 1) tagLib.discNumber else ffmpeg.discNumber,
-            bpm = if (tagLib.bpm > 0) tagLib.bpm else ffmpeg.bpm
+            bpm = if (tagLib.bpm > 0) tagLib.bpm else ffmpeg.bpm,
+            cueSheet = tagLib.cueSheet.ifBlank { ffmpeg.cueSheet }
         )
     }
 

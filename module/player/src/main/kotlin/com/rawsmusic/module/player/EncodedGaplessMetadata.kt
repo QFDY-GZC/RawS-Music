@@ -48,11 +48,20 @@ internal object EncodedGaplessMetadataProbe {
             }
         }.getOrNull() ?: return null
 
+        return when (probeCodec(path, magic)) {
+            EncodedGaplessMetadata.Codec.MP3_LAME -> parseMp3(path)
+            EncodedGaplessMetadata.Codec.AAC_ITUNSMPB ->
+                parseItunSmpb(runCatching { FFmpegBridge.getMediaInfo(path) }.getOrNull())
+            else -> null
+        }
+    }
+
+    internal fun probeCodec(path: String, magic: ByteArray): EncodedGaplessMetadata.Codec? {
         val lower = path.lowercase(Locale.US)
         return when {
-            lower.endsWith(".mp3") || looksLikeMp3(magic) -> parseMp3(path)
             lower.endsWith(".m4a") || lower.endsWith(".mp4") || lower.endsWith(".aac") || looksLikeMp4(magic) ->
-                parseItunSmpb(runCatching { FFmpegBridge.getMediaInfo(path) }.getOrNull())
+                EncodedGaplessMetadata.Codec.AAC_ITUNSMPB
+            lower.endsWith(".mp3") || looksLikeMp3(magic) -> EncodedGaplessMetadata.Codec.MP3_LAME
             else -> null
         }
     }

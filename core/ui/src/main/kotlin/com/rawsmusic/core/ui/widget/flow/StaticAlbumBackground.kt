@@ -125,6 +125,11 @@ internal fun rememberStaticAlbumAccent(
                 StaticAccentCache[key] = next
                 accent = next
             }
+        } else {
+            com.rawsmusic.core.common.utils.AppLogger.i(
+                "ArtworkRestore",
+                "static_palette_miss key=${key.hashCode()} supplied=${sourceArtwork != null}",
+            )
         }
     }
     return accent

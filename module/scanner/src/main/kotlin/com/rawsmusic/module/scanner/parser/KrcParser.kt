@@ -83,7 +83,11 @@ object KrcParser {
             val textBuilder = StringBuilder()
 
             for (wm in wordMatches) {
-                val wordBegin = wm.groupValues[1].toLongOrNull() ?: 0L
+                // KRC word starts are offsets relative to the owning line, unlike QRC whose word
+                // starts are absolute song timestamps. Convert once here so every downstream lyric
+                // surface operates in one absolute media-time coordinate system.
+                val wordOffset = wm.groupValues[1].toLongOrNull() ?: 0L
+                val wordBegin = lineBegin + wordOffset
                 val wordDuration = wm.groupValues[2].toLongOrNull() ?: 0L
                 val wordText = wm.groupValues[4]
                 if (wordText.isNotEmpty()) {

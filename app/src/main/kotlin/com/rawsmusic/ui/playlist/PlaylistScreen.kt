@@ -3,6 +3,7 @@ package com.rawsmusic.ui.playlist
 import android.widget.Toast
 import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.common.ui.AppNoticeIcon
+import com.rawsmusic.helper.rememberSystemFileAccessGate
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.border
@@ -50,7 +51,6 @@ import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -66,6 +66,7 @@ import androidx.compose.ui.zIndex
 import com.rawsmusic.R
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.UserPlaylist
+import com.rawsmusic.core.ui.scene.LocalRawWindowLayoutProfile
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.scene.pages.LibraryListScaffold
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
@@ -90,6 +91,7 @@ fun PlaylistScreen(
     onPlaylistClick: (String, String) -> Unit
 ) {
     val context = LocalContext.current
+    val withSystemFileAccess = rememberSystemFileAccessGate()
     val playlists by playlistStore.playlists.collectAsState()
     val librarySongs by MusicRepository.songs.collectAsState()
     val scope = rememberCoroutineScope()
@@ -99,7 +101,8 @@ fun PlaylistScreen(
     var renameTarget by remember { mutableStateOf<UserPlaylist?>(null) }
     var deleteTarget by remember { mutableStateOf<UserPlaylist?>(null) }
     val listState = virtualListState ?: rememberComposeVirtualListState("playlists")
-    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
+    val playlistColumns = windowLayoutProfile.homeCardColumns
 
     val resolvedSongsByPlaylistId = remember(playlists, librarySongs) {
         playlists.associate { playlist ->
@@ -109,12 +112,15 @@ fun PlaylistScreen(
     val collageSongsByPlaylistId = remember(resolvedSongsByPlaylistId) {
         resolvedSongsByPlaylistId.mapValues { (_, songs) -> buildPlaylistCollageSongs(songs) }
     }
-    val playlistRows = remember(playlists) { playlists.chunked(2) }
+    val playlistRows = remember(playlists, playlistColumns) { playlists.chunked(playlistColumns) }
     val playlistVirtualItems = remember(playlistRows) {
         playlistRows.mapIndexed { rowIndex, row -> playlistRowVirtualItem(rowIndex, row) }
     }
-    val playlistRowHeight = remember(screenWidthDp) {
-        val cardWidth = ((screenWidthDp - 34).coerceAtLeast(160) / 2f).dp
+    val playlistRowHeight = remember(windowLayoutProfile.contentMaxWidth, playlistColumns) {
+        val horizontalPadding = 24.dp
+        val totalGap = 10.dp * (playlistColumns - 1).coerceAtLeast(0)
+        val cardWidth = ((windowLayoutProfile.contentMaxWidth - horizontalPadding - totalGap) /
+            playlistColumns.toFloat()).coerceAtLeast(120.dp)
         cardWidth / 0.86f + 14.dp
     }
     val playlistCustomProvider = remember(
@@ -156,7 +162,7 @@ fun PlaylistScreen(
                             onDelete = { if (!playlist.isFavorites) deleteTarget = playlist },
                         )
                     }
-                    if (row.size == 1) {
+                    repeat((playlistColumns - row.size).coerceAtLeast(0)) {
                         Spacer(Modifier.weight(1f))
                     }
                 }
@@ -193,15 +199,17 @@ fun PlaylistScreen(
         onBack = onBack,
         onCreatePlaylist = { createDialog = true },
         onImportPlaylist = {
-            importLauncher.launch(
-                arrayOf(
-                    "text/plain",
-                    "audio/x-mpegurl",
-                    "audio/mpegurl",
-                    "application/vnd.apple.mpegurl",
-                    "application/octet-stream"
+            withSystemFileAccess {
+                importLauncher.launch(
+                    arrayOf(
+                        "text/plain",
+                        "audio/x-mpegurl",
+                        "audio/mpegurl",
+                        "application/vnd.apple.mpegurl",
+                        "application/octet-stream"
+                    )
                 )
-            )
+            }
         },
         virtualListState = listState,
         contentOverlap = 0.dp
@@ -268,7 +276,20 @@ fun PlaylistScreen(
             text = { Text(stringResource(R.string.playlist_delete_message), fontFamily = appFontFamily()) },
             confirmButton = {
                 TextButton(onClick = {
-                    scope.launch { playlistStore.deletePlaylist(playlist.id) }
+                    scope.launch {
+                        runCatching { playlistStore.deletePlaylist(playlist.id) }
+                            .onSuccess { deleted ->
+                                if (deleted) AppNoticeBus.post(
+                                    context.getString(R.string.notice_playlist_deleted, playlist.name),
+                                    com.rawsmusic.core.common.ui.AppNoticeIcon.PLAYLIST,
+                                    com.rawsmusic.core.common.ui.AppNoticeAnimation.DELETE,
+                                )
+                            }
+                            .onFailure { failure ->
+                                if (failure is kotlinx.coroutines.CancellationException) throw failure
+                                AppNoticeBus.error(context.getString(R.string.notice_playlist_delete_failed))
+                            }
+                    }
                     deleteTarget = null
                 }) { Text(stringResource(R.string.playlist_delete_action), color = Color.Red) }
             },

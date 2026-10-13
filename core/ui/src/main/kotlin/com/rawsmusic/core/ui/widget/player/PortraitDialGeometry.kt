@@ -136,8 +136,29 @@ internal fun resolvePortraitDialCardBoundsInRoot(
     containerTopInRootPx: Float,
     viewportWidthPx: Float,
     viewportHeightPx: Float,
+    localToRoot: ((Float, Float) -> Pair<Float, Float>)? = null,
 ): PortraitDialCardBounds {
     val metrics = resolvePortraitDialMetrics(viewportWidthPx, viewportHeightPx)
+    if (localToRoot != null) {
+        // Map the actual card, not the container's clipped visible bounds. Ancestor scroll and
+        // graphicsLayer transforms must affect both its origin and dimensions in the same space.
+        val left = metrics.centerXPx - metrics.cardSidePx * .5f
+        val top = metrics.centerYPx - metrics.cardSidePx * .5f
+        val right = left + metrics.cardSidePx
+        val bottom = top + metrics.cardSidePx
+        val corners = listOf(
+            localToRoot(left, top), localToRoot(right, top),
+            localToRoot(right, bottom), localToRoot(left, bottom),
+        )
+        val rootLeft = corners.minOf { it.first }
+        val rootTop = corners.minOf { it.second }
+        return PortraitDialCardBounds(
+            leftPx = rootLeft,
+            topPx = rootTop,
+            widthPx = corners.maxOf { it.first } - rootLeft,
+            heightPx = corners.maxOf { it.second } - rootTop,
+        )
+    }
     return PortraitDialCardBounds(
         leftPx = containerLeftInRootPx + metrics.centerXPx - metrics.cardSidePx * 0.5f,
         topPx = containerTopInRootPx + metrics.centerYPx - metrics.cardSidePx * 0.5f,

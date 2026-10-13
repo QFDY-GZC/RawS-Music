@@ -1,0 +1,14 @@
+<resources>
+    <string name="spectrum_heading">频谱分析</string>
+    <string name="spectrum_close_chart">关闭全屏图表</string>
+    <string name="spectrum_back">返回</string>
+    <string name="spectrum_mean_level">平均电平</string>
+    <string name="spectrum_peak_level">峰值电平</string>
+    <string name="spectrum_bandwidth">估计有效带宽</string>
+    <string name="spectrum_duration">时长</string>
+    <string name="spectrum_waterfall_tab">瀑布图</string>
+    <string name="spectrum_fullscreen">全屏</string>
+    <string name="spectrum_stereo">双声道</string>
+    <string name="spectrum_log">对数</string>
+    <string name="spectrum_linear">线性</string>
+</resources>

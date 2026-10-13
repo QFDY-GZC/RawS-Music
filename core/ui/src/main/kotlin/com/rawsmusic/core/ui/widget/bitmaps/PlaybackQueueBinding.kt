@@ -20,6 +20,10 @@ fun resolvePlaybackQueueBindingIndex(
     reportedIndex: Int,
 ): Int {
     if (currentSong != null) {
+        val reported = queueSongs.getOrNull(reportedIndex)
+        if (reported != null && reported.path == currentSong.path &&
+            reported.cueOffsetMs == currentSong.cueOffsetMs &&
+            reported.cueTrackIndex == currentSong.cueTrackIndex) return reportedIndex
         val exactIndex = queueSongs.indexOfFirst { candidate ->
             candidate.path == currentSong.path &&
                 candidate.cueOffsetMs == currentSong.cueOffsetMs &&

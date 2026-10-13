@@ -5,6 +5,38 @@ import org.junit.Test
 
 class VirtualListTransitionHandoffPolicyTest {
     @Test
+    fun saturatedBoundaryDoesNotExtendReboundWithFingerDistance() {
+        assertEquals(350, virtualListBoundaryReboundDurationMs(2f, 1.0895f))
+        assertEquals(350, virtualListBoundaryReboundDurationMs(-2f, 0.9105f))
+        assertEquals(350, virtualListBoundaryReboundDurationMs(0.05f, 1.02f))
+    }
+
+    @Test
+    fun boundaryPinchRetainsNativeTextOwnerAndItsMarqueePhase() {
+        assertEquals(true, retainNativeEndpointDuringPinch(true, false))
+        assertEquals(false, retainNativeEndpointDuringPinch(false, false))
+        assertEquals(false, retainNativeEndpointDuringPinch(true, true))
+    }
+
+    @Test
+    fun terminalGridOutwardPinchKeepsEndpointRendererWithoutATransition() {
+        assertEquals(false, shouldUsePhysicalInternalZoomOwner(true, false, false, true))
+    }
+
+    @Test
+    fun boundaryReboundKeepsEndpointRendererAfterRelease() {
+        assertEquals(false, shouldUsePhysicalInternalZoomOwner(true, false, false, false))
+    }
+
+    @Test
+    fun realZoomOwnsRenderingDuringDragAndReleaseAnimation() {
+        assertEquals(true, shouldUsePhysicalInternalZoomOwner(true, false, true, true))
+        assertEquals(true, shouldUsePhysicalInternalZoomOwner(true, false, true, false))
+        assertEquals(false, shouldUsePhysicalInternalZoomOwner(false, false, true, true))
+        assertEquals(false, shouldUsePhysicalInternalZoomOwner(true, true, true, true))
+    }
+
+    @Test
     fun outerSceneRetainsThePhysicalRecyclingRowsForIdentityContinuity() {
         assertEquals(1, virtualListRetainedRowsEachSide(sceneMotionActive = false))
         assertEquals(1, virtualListRetainedRowsEachSide(sceneMotionActive = true))

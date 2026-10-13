@@ -1,33 +1,23 @@
 package com.rawsmusic.ui.settings
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.R
-import com.rawsmusic.module.data.prefs.AppPreferences
-import com.rawsmusic.module.data.prefs.BackupArchiveManager
-import com.rawsmusic.module.data.prefs.WebDavBackupManager
+import com.rawsmusic.locale.localizedErrorMessage
+import com.rawsmusic.module.data.prefs.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,311 +25,199 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
 fun WebDavBackupScreen(onBack: () -> Unit) {
-    val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val controller = remember { BackupUiController() }
+    val ui by controller.state.collectAsState()
+    var exportSelection by remember { mutableStateOf(BackupSelection()) }
+    var message by remember { mutableStateOf("") }
+    var preview by remember { mutableStateOf<BackupPreview?>(null) }
+    var previewError by remember { mutableStateOf("") }
+    var resolving by remember { mutableStateOf(false) }
+    val configured = AppPreferences.WebDav.url.isNotBlank()
 
-    var isBackingUp by remember { mutableStateOf(false) }
-    var isRestoring by remember { mutableStateOf(false) }
-    var isLocalBusy by remember { mutableStateOf(false) }
-    var statusMessage by remember { mutableStateOf("") }
-    var statusSuccess by remember { mutableStateOf(false) }
-
-    fun showFailure(message: String) {
-        statusSuccess = false
-        statusMessage = message
+    fun label(section: BackupSection): String = context.getString(when (section) {
+        BackupSection.PREFERENCES -> R.string.backup_basic_preferences
+        BackupSection.PLAYLISTS -> R.string.backup_playlist_paths
+        BackupSection.PLAYBACK -> R.string.backup_listening_records
+        BackupSection.DEVICE_REFERENCES -> R.string.backup_device_references
+    })
+    fun failed(error: Throwable) {
+        message = context.localizedErrorMessage(error, R.string.ui_unknown_error)
     }
-
-    fun showSuccess(message: String) {
-        statusSuccess = true
-        statusMessage = message
-    }
-
-    fun formatRestoreReport(report: BackupArchiveManager.RestoreReport): String {
-        val parts = buildList {
-            add(context.getString(R.string.settings_backup_report_settings, report.restoredMmkv + report.restoredSharedPreferences))
-            if (report.playlistSectionRestored) add(context.getString(R.string.settings_backup_report_playlists))
-            if (report.playbackSectionRestored) add(context.getString(R.string.settings_backup_report_playback))
-            if (report.skippedPreferences > 0) {
-                add(context.getString(R.string.settings_backup_report_skipped, report.skippedPreferences))
-            }
-            if (report.externalReferenceCount > 0) {
-                add(context.getString(R.string.settings_backup_report_external, report.externalReferenceCount))
-            }
+    fun back() {
+        when (ui.phase) {
+            BackupPhase.PREVIEW -> controller.cancel()
+            BackupPhase.IDLE -> onBack()
+            else -> Unit // Never leave the page halfway through persistence.
         }
-        return parts.joinToString(context.getString(R.string.settings_backup_report_separator))
     }
+    BackHandler(enabled = ui.busy) { back() }
 
-    val createBackupLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json"),
-    ) { uri: Uri? ->
-        if (uri == null) {
-            isLocalBusy = false
-            return@rememberLauncherForActivityResult
-        }
+    val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
+        if (uri == null) { controller.finish(); return@rememberLauncherForActivityResult }
         scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val bytes = BackupArchiveManager.exportBytes(context)
-                    context.contentResolver.openOutputStream(uri, "wt")?.use { output ->
-                        output.write(bytes)
-                        output.flush()
+            try {
+                withContext(Dispatchers.IO) {
+                    val bytes = BackupArchiveManager.exportSelected(context, exportSelection)
+                    context.contentResolver.openOutputStream(uri, "wt")?.use {
+                        it.write(bytes); it.flush()
                     } ?: error(context.getString(R.string.settings_backup_write_failed))
                 }
-            }
-            isLocalBusy = false
-            result.fold(
-                onSuccess = { showSuccess(context.getString(R.string.settings_backup_export_success)) },
-                onFailure = { showFailure(context.getString(R.string.settings_backup_export_failed, it.message.orEmpty())) },
-            )
+                message = context.getString(R.string.settings_backup_export_success)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { failed(error) }
+            finally { controller.finish() }
         }
     }
-
-    val openBackupLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        isLocalBusy = true
-        statusMessage = ""
+    // Import reads the chosen file immediately; it does not retain a document grant.
+    // Use the system content picker and leave storage roots unfiltered. Providers
+    // can report JSON as text/plain or an unknown type; the archive codec validates it.
+    val open = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri == null) { controller.finish(); return@rememberLauncherForActivityResult }
         scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            try {
+                val archive = withContext(Dispatchers.IO) {
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { BackupBoundedReader.read(it) }
                         ?: error(context.getString(R.string.settings_backup_read_failed))
-                    BackupArchiveManager.restoreBytes(context, bytes)
+                    BackupArchiveCodec.decode(bytes)
                 }
-            }
-            isLocalBusy = false
-            result.fold(
-                onSuccess = { report ->
-                    showSuccess(
-                        context.getString(
-                            R.string.settings_backup_import_success,
-                            formatRestoreReport(report),
-                        )
-                    )
-                },
-                onFailure = { error ->
-                    showFailure(context.getString(R.string.settings_backup_import_failed, error.message.orEmpty()))
-                },
-            )
+                controller.loaded(archive) // No writes before explicit confirmation.
+            } catch (cancelled: CancellationException) { controller.finish(); throw cancelled }
+            catch (error: Exception) { controller.finish(); failed(error) }
         }
     }
 
-    val isConfigured = AppPreferences.WebDav.url.isNotBlank()
-
-    SettingsPage(title = stringResource(R.string.settings_webdav_backup_title), onBack = onBack) {
-        SettingsCard {
-            Text(
-                stringResource(R.string.settings_backup_local_header),
-                fontSize = 18.sp,
-                color = MiuixTheme.colorScheme.onBackground,
-                fontFamily = appFontFamily(),
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                stringResource(R.string.settings_backup_local_desc),
-                fontSize = 14.sp,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                fontFamily = appFontFamily(),
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                TextButton(
-                    onClick = {
-                        if (isLocalBusy) return@TextButton
-                        isLocalBusy = true
-                        statusMessage = ""
-                        createBackupLauncher.launch("rawsmusic_backup.json")
-                    },
-                    enabled = !isLocalBusy,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(
-                        stringResource(R.string.settings_backup_export_action),
-                        color = if (!isLocalBusy) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.outline,
-                        fontSize = 15.sp,
-                        fontFamily = appFontFamily(),
-                    )
-                }
-                TextButton(
-                    onClick = { if (!isLocalBusy) openBackupLauncher.launch(arrayOf("application/json", "text/json", "text/plain")) },
-                    enabled = !isLocalBusy,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(
-                        stringResource(R.string.settings_backup_import_action),
-                        color = if (!isLocalBusy) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.outline,
-                        fontSize = 15.sp,
-                        fontFamily = appFontFamily(),
-                    )
-                }
+    LaunchedEffect(ui.archive, ui.selection) {
+        val archive = ui.archive ?: return@LaunchedEffect
+        preview = null
+        previewError = ""
+        resolving = true
+        try {
+            preview = withContext(Dispatchers.IO) {
+                val resolved = BackupArchiveManager.resolve(context, archive, ui.selection)
+                val access = AndroidBackupPreferenceAccess(context.applicationContext)
+                val existing = resolved.backup.preferences.mapNotNull { entry ->
+                    val rule = BackupPreferenceRegistry.classify(entry.address) ?: return@mapNotNull null
+                    entry.address.takeIf { access.read(it, rule.type) != null }
+                }.toSet()
+                BackupRestorePreview.build(resolved, ui.selection, existing)
             }
-            if (isLocalBusy) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = MiuixTheme.colorScheme.primary,
-                    )
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { previewError = context.localizedErrorMessage(error, R.string.ui_unknown_error) }
+        finally { resolving = false }
+    }
+
+    SettingsPage(title = stringResource(R.string.settings_webdav_backup_title), onBack = { back() }) {
+        SettingsCard {
+            Text(stringResource(R.string.backup_scope_title), color = MiuixTheme.colorScheme.onBackground, fontFamily = appFontFamily(), fontSize = 18.sp)
+            Text(stringResource(R.string.backup_plaintext_notice), color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontFamily = appFontFamily())
+            BackupSection.entries.forEach { section ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(label(section), Modifier.weight(1f).padding(vertical = 12.dp), color = MiuixTheme.colorScheme.onBackground, fontFamily = appFontFamily())
+                    Checkbox(section in exportSelection.sections, enabled = !ui.busy, onCheckedChange = { enabled ->
+                        exportSelection = BackupSelection(if (enabled) exportSelection.sections + section else exportSelection.sections - section)
+                    })
                 }
             }
         }
-
         Spacer(Modifier.height(12.dp))
-
         SettingsCard {
-            Text(
-                stringResource(R.string.settings_webdav_backup_restore_header),
-                fontSize = 18.sp,
-                color = MiuixTheme.colorScheme.onBackground,
-                fontFamily = appFontFamily(),
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                stringResource(R.string.settings_webdav_backup_restore_desc),
-                fontSize = 14.sp,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                fontFamily = appFontFamily(),
-            )
-
-            if (!isConfigured) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    stringResource(R.string.settings_webdav_not_configured),
-                    fontSize = 13.sp,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    fontFamily = appFontFamily(),
-                )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                TextButton(enabled = !ui.busy && exportSelection.sections.isNotEmpty(), onClick = {
+                    if (controller.begin(BackupPhase.EXPORTING)) {
+                        message = ""
+                        try { save.launch("rawsmusic_backup_${System.currentTimeMillis()}.json") }
+                        catch (error: Exception) { controller.finish(); failed(error) }
+                    }
+                }) { BackupActionText(stringResource(R.string.settings_backup_export_action)) }
+                TextButton(enabled = !ui.busy, onClick = {
+                    if (controller.begin(BackupPhase.PICKING)) {
+                        message = ""
+                        try { open.launch("*/*") }
+                        catch (error: Exception) { controller.finish(); failed(error) }
+                    }
+                }) { BackupActionText(stringResource(R.string.settings_backup_import_action)) }
             }
-
-            Spacer(Modifier.height(8.dp))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                TextButton(
-                    onClick = {
-                        if (isBackingUp) return@TextButton
-                        isBackingUp = true
-                        statusMessage = ""
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                TextButton(enabled = configured && !ui.busy && exportSelection.sections.isNotEmpty(), onClick = {
+                    if (controller.begin(BackupPhase.EXPORTING)) {
+                        message = ""
                         scope.launch {
-                            val result = WebDavBackupManager.backup(context)
-                            isBackingUp = false
-                            result.fold(
-                                onSuccess = { showSuccess(context.getString(R.string.settings_webdav_backup_success)) },
-                                onFailure = { showFailure(context.getString(R.string.settings_webdav_backup_failed, it.message.orEmpty())) },
-                            )
+                            try {
+                                WebDavBackupManager.backupSelected(context, exportSelection).getOrThrow()
+                                message = context.getString(R.string.settings_webdav_backup_success)
+                            } catch (cancelled: CancellationException) { throw cancelled }
+                            catch (error: Exception) { failed(error) }
+                            finally { controller.finish() }
                         }
-                    },
-                    enabled = isConfigured && !isBackingUp,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(
-                        if (isBackingUp) stringResource(R.string.settings_webdav_backing_up)
-                        else stringResource(R.string.settings_webdav_backup_action),
-                        color = if (isConfigured && !isBackingUp) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.outline,
-                        fontSize = 15.sp,
-                        fontFamily = appFontFamily(),
-                    )
-                }
-
-                TextButton(
-                    onClick = {
-                        if (isRestoring) return@TextButton
-                        isRestoring = true
-                        statusMessage = ""
+                    }
+                }) { BackupActionText(stringResource(R.string.settings_webdav_backup_action)) }
+                TextButton(enabled = configured && !ui.busy, onClick = {
+                    if (controller.begin(BackupPhase.LOADING)) {
+                        message = ""
                         scope.launch {
-                            val result = WebDavBackupManager.restore(context)
-                            isRestoring = false
-                            result.fold(
-                                onSuccess = { report ->
-                                    showSuccess(
-                                        context.getString(
-                                            R.string.settings_webdav_restore_success,
-                                            formatRestoreReport(report),
-                                        )
-                                    )
-                                },
-                                onFailure = { showFailure(context.getString(R.string.settings_webdav_restore_failed, it.message.orEmpty())) },
-                            )
+                            try { controller.loaded(WebDavBackupManager.loadLatest()) }
+                            catch (cancelled: CancellationException) { controller.finish(); throw cancelled }
+                            catch (error: Exception) { controller.finish(); failed(error) }
                         }
-                    },
-                    enabled = isConfigured && !isRestoring,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(
-                        if (isRestoring) stringResource(R.string.settings_webdav_restoring)
-                        else stringResource(R.string.settings_webdav_restore_action),
-                        color = if (isConfigured && !isRestoring) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.outline,
-                        fontSize = 15.sp,
-                        fontFamily = appFontFamily(),
-                    )
-                }
+                    }
+                }) { BackupActionText(stringResource(R.string.settings_webdav_restore_action)) }
             }
+            if (!configured) Text(stringResource(R.string.settings_webdav_not_configured), color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontFamily = appFontFamily())
+            if (ui.busy && ui.phase != BackupPhase.PREVIEW) CircularProgressIndicator(Modifier.size(24.dp), color = MiuixTheme.colorScheme.primary)
         }
 
-        if (statusMessage.isNotBlank()) {
+        if (ui.phase == BackupPhase.PREVIEW) {
             Spacer(Modifier.height(12.dp))
             SettingsCard {
-                Text(
-                    statusMessage,
-                    fontSize = 14.sp,
-                    color = if (statusSuccess) Color(0xFF2E7D32) else Color(0xFFC62828),
-                    fontFamily = appFontFamily(),
-                )
+                Text(stringResource(R.string.backup_preview_title), color = MiuixTheme.colorScheme.onBackground, fontSize = 18.sp, fontFamily = appFontFamily())
+                Text(stringResource(R.string.backup_replace_notice), color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontFamily = appFontFamily())
+                ui.archive!!.sections.forEach { section ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(label(section), Modifier.weight(1f).padding(vertical = 12.dp), color = MiuixTheme.colorScheme.onBackground, fontFamily = appFontFamily())
+                        Checkbox(section in ui.selection.sections, onCheckedChange = { controller.select(section, it) })
+                    }
+                }
+                if (resolving) CircularProgressIndicator(Modifier.size(24.dp), color = MiuixTheme.colorScheme.primary)
+                preview?.let { p ->
+                    Text(stringResource(R.string.backup_preview_preferences, p.newPreferences, p.overwrittenPreferences), color = MiuixTheme.colorScheme.onBackground, fontFamily = appFontFamily())
+                    p.playlists?.let { Text(stringResource(R.string.backup_preview_playlists, it, p.songs ?: 0), color = MiuixTheme.colorScheme.onBackground, fontFamily = appFontFamily()) }
+                    p.stats?.let { Text(stringResource(R.string.backup_preview_playback, it, p.history ?: 0, p.daily ?: 0), color = MiuixTheme.colorScheme.onBackground, fontFamily = appFontFamily()) }
+                    if (p.clearsPlaylists || p.clearsPlayback) Text(stringResource(R.string.backup_clear_warning), color = MiuixTheme.colorScheme.primary, fontFamily = appFontFamily())
+                    p.skipped.take(30).forEach { Text(it, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontFamily = appFontFamily()) }
+                    if (p.skipped.size > 30) Text(stringResource(R.string.backup_more_skipped, p.skipped.size - 30), color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontFamily = appFontFamily())
+                }
+                if (previewError.isNotBlank()) Text(previewError, color = MiuixTheme.colorScheme.primary, fontFamily = appFontFamily())
+                Row {
+                    TextButton(onClick = { controller.cancel() }) { BackupActionText(stringResource(android.R.string.cancel)) }
+                    TextButton(enabled = !resolving && preview != null && previewError.isBlank() && ui.selection.sections.isNotEmpty(), onClick = {
+                        val request = controller.confirm() ?: return@TextButton
+                        scope.launch {
+                            try {
+                                val report = BackupArchiveManager.restoreSelected(context, request.archive, request.selection)
+                                message = buildList {
+                                    add(context.getString(R.string.backup_restore_done, report.restoredMmkv + report.restoredSharedPreferences))
+                                    addAll(report.skippedReasons)
+                                    addAll(report.warnings)
+                                    if (report.requiresRestart) add(context.getString(R.string.backup_restart_notice))
+                                }.joinToString("\n")
+                            } catch (cancelled: CancellationException) { throw cancelled }
+                            catch (error: Exception) { failed(error) }
+                            finally { controller.finish() }
+                        }
+                    }) { BackupActionText(stringResource(R.string.backup_confirm_restore)) }
+                }
             }
         }
-
-        Spacer(Modifier.height(12.dp))
-
-        SettingsCard {
-            SectionHeader(stringResource(R.string.settings_webdav_config_info))
-            Spacer(Modifier.height(4.dp))
-            ConfigInfoRow(
-                stringResource(R.string.settings_webdav_address),
-                AppPreferences.WebDav.url.ifBlank { stringResource(R.string.settings_not_configured) },
-            )
-            ConfigInfoRow(
-                stringResource(R.string.settings_webdav_username),
-                AppPreferences.WebDav.username.ifBlank { stringResource(R.string.settings_not_configured) },
-            )
-            ConfigInfoRow(
-                stringResource(R.string.settings_webdav_auth_mode),
-                when (AppPreferences.WebDav.authMode) {
-                    1 -> "Basic"
-                    2 -> "Digest"
-                    else -> stringResource(R.string.settings_auto)
-                },
-            )
+        if (message.isNotBlank()) {
+            Spacer(Modifier.height(12.dp))
+            SettingsCard { Text(message, color = MiuixTheme.colorScheme.onBackground, fontFamily = appFontFamily(), fontSize = 14.sp) }
         }
     }
 }
 
 @Composable
-private fun ConfigInfoRow(label: String, value: String) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(
-            label,
-            fontSize = 14.sp,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            fontFamily = appFontFamily(),
-        )
-        Text(
-            value,
-            fontSize = 14.sp,
-            color = MiuixTheme.colorScheme.onBackground,
-            fontFamily = appFontFamily(),
-        )
-    }
+private fun BackupActionText(text: String) {
+    Text(text, color = MiuixTheme.colorScheme.primary, fontFamily = appFontFamily(), fontSize = 15.sp)
 }

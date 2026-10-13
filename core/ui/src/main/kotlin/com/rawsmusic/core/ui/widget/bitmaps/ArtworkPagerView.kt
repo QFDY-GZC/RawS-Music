@@ -16,6 +16,8 @@ import android.view.ViewOutlineProvider
 import android.widget.FrameLayout
 import com.rawsmusic.module.data.prefs.PlayerHiResBadgeCorner
 import com.rawsmusic.module.data.prefs.PlayerHiResBadgeSettings
+import com.rawsmusic.module.data.prefs.PlayerHiResBadgeSourceInfo
+import com.rawsmusic.module.data.prefs.resolvePlayerHiResBadgeDisplaySize
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -67,7 +69,7 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
         private var currentHandle: ArtworkHandle? = null
         private var acceptedArtworkKey: String = ""
         private var previousHandle: ArtworkHandle? = null
-        private var sourceDecodeAllowed: Boolean = false
+        private var loadPlan = PlaybackArtworkLoadPlan(1, false, false)
         var onArtworkAccepted: ((String, Bitmap, Int) -> Unit)? = null
         var onTerminalNoArtwork: ((String) -> Unit)? = null
 
@@ -86,6 +88,8 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
         private var badgeCorner: PlayerHiResBadgeCorner = PlayerHiResBadgeCorner.TOP_LEFT
         private var badgeCustomBitmap: Bitmap? = null
         private var badgeDensity: Float = 1f
+        private var badgeTextSizePx: Float = 10f
+        private var badgeSizeScale: Float = 1f
 
         init {
             // One shader draw never overlaps itself, so parent alpha/3D transforms do not require an
@@ -135,18 +139,29 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
             corner: PlayerHiResBadgeCorner,
             customBitmap: Bitmap?,
             density: Float,
+            textSizePx: Float,
+            sizeScale: Float,
         ) {
             val safeCustom = customBitmap?.takeUnless(Bitmap::isRecycled)
+            val safeTextSizePx = textSizePx.takeIf { it.isFinite() && it > 0f } ?: 10f * density
+            val safeSizeScale = sizeScale.coerceIn(
+                PlayerHiResBadgeSettings.MIN_SIZE_SCALE,
+                PlayerHiResBadgeSettings.MAX_SIZE_SCALE,
+            )
             if (
                 badgeVisible == visible &&
                 badgeCorner == corner &&
                 badgeCustomBitmap === safeCustom &&
-                badgeDensity == density
+                badgeDensity == density &&
+                badgeTextSizePx == safeTextSizePx &&
+                badgeSizeScale == safeSizeScale
             ) return
             badgeVisible = visible
             badgeCorner = corner
             badgeCustomBitmap = safeCustom
             badgeDensity = density.coerceAtLeast(0.1f)
+            badgeTextSizePx = safeTextSizePx
+            badgeSizeScale = safeSizeScale
             invalidate()
         }
 
@@ -157,13 +172,13 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
          * Reference ArtworkImageNode.holder bind callback: bind identity first. Different identity releases the old
          * wrapper/request; the same identity keeps the physical wrapper while its role changes.
          */
-        fun bindIdentity(newKey: String, newToken: Int, allowSourceDecode: Boolean) {
+        fun bindIdentity(newKey: String, newToken: Int, plan: PlaybackArtworkLoadPlan) {
             token = newToken
             if (boundKey == newKey) {
-                val sourceDecodePromoted = !sourceDecodeAllowed && allowSourceDecode
-                sourceDecodeAllowed = allowSourceDecode
+                val tierChanged = loadPlan.targetSide != plan.targetSide
+                loadPlan = plan
                 if (newKey.isNotBlank() && request == null &&
-                    (currentHandle?.isValid != true || acceptedArtworkKey != newKey || sourceDecodePromoted)
+                    (currentHandle?.isValid != true || acceptedArtworkKey != newKey || tierChanged)
                 ) {
                     cancelTransientRetry(resetAttempt = false)
                     attachCachedOrRequest(newKey)
@@ -171,7 +186,6 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
                 return
             }
 
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.HOLDER_BIND)
             bindGeneration += 1L
             cancelTransientRetry()
             cancelRequest()
@@ -186,12 +200,12 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
             val retainedBitmap = bitmap
             val retainedShader = shader
             val retainedQuality = quality
-            val retainPreviousPixels = allowSourceDecode && boundKey.isNotBlank() &&
+            val retainPreviousPixels = plan.retainPreviousPixels && boundKey.isNotBlank() &&
                 retainedHandle?.isValid == true &&
                 retainedBitmap != null &&
                 !retainedBitmap.isRecycled
             boundKey = newKey
-            sourceDecodeAllowed = allowSourceDecode
+            loadPlan = plan
             if (retainPreviousPixels) {
                 currentHandle = retainedHandle
                 bitmap = retainedBitmap
@@ -225,17 +239,12 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
         /** ArtworkImageNode.image provider callback: every bound physical holder owns its provider flight, including parked holders. */
         private fun attachCachedOrRequest(key: String) {
             if (key.isBlank() || key != boundKey) return
-            val preferredSide = BitmapProvider.preferredPlaybackTargetSide()
-            // reference player's provider record keeps a low/high wrapper pair. A parked holder requests
-            // only the low wrapper; the full playback tier is promoted after that holder becomes
-            // the settled current item. This keeps source decode/allocation off the artwork-motion
-            // timeline while still ensuring every previous/current/next physical holder owns real
-            // pixels before it is promoted.
-            val targetSide = if (sourceDecodeAllowed) {
-                preferredSide
-            } else {
-                AlbumArtTiers.LOW_RES_NORMAL_CAP
-            }
+            // All three retained holders prepare the selected playback tier. A neighbour remains
+            // a low-priority request on the existing provider lane, not a low-resolution request
+            // that must be decoded again after the page animation finishes.
+            val targetSide = loadPlan.targetSide
+            val requestPriority = if (loadPlan.foreground) AlbumArtTiers.PLAYBACK_PROVIDER_PRIORITY
+                else BitmapRequest.Priority.LOADING_PREFETCH
             val preferred = BitmapProvider.acquirePreferredPlayback(
                 key = key,
                 surface = ArtworkSurface.Playback,
@@ -287,18 +296,7 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
                 ?.bitmap
                 ?.let { maxOf(it.width, it.height) }
                 ?: 0
-            if (!sourceDecodeAllowed && residentSide >= AlbumArtTiers.LOW_RES_NORMAL_CAP) {
-                return
-            }
-
             val generationAtRequest = bindGeneration
-            if (PlaybackArtworkPerfTrace.isActive()) {
-                PlaybackArtworkPerfTrace.mark(
-                    "holder_art_request",
-                    "key=${PlaybackArtworkPerfTrace.keyTag(key)} generation=$generationAtRequest " +
-                        "tier=${if (sourceDecodeAllowed) "high" else "low"} side=$targetSide resident=$residentSide",
-                )
-            }
             val callback: (Bitmap?) -> Unit = { loadedBitmap ->
                 // terminalNoArt is set on the completed request before this callback is dispatched.
                 // Capture it now because the posted UI admission may run after another bind.
@@ -345,32 +343,21 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
                     }
                 }
             }
-            request = if (sourceDecodeAllowed) {
-                BitmapProvider.load(
-                    key = key,
-                    targetWidth = targetSide,
-                    targetHeight = targetSide,
-                    priority = AlbumArtTiers.PLAYBACK_PROVIDER_PRIORITY,
-                    surface = ArtworkSurface.Playback,
-                    aspectPolicy = ArtworkAspectPolicy.KeepAspect,
-                    callback = callback,
-                )
-            } else {
-                BitmapProvider.loadThumbnail(
-                    key = key,
-                    targetWidth = targetSide,
-                    targetHeight = targetSide,
-                    priority = AlbumArtTiers.PLAYBACK_PROVIDER_PRIORITY,
-                    surface = ArtworkSurface.Playback,
-                    aspectPolicy = ArtworkAspectPolicy.KeepAspect,
-                    callback = callback,
-                )
-            }
+            request = BitmapProvider.load(
+                key = key,
+                targetWidth = targetSide,
+                targetHeight = targetSide,
+                priority = requestPriority,
+                // Queue priority is separate from source capability. Generic Prefetch surfaces
+                // cannot decode embedded artwork; a parked playback holder still needs real pixels.
+                surface = ArtworkSurface.Playback,
+                aspectPolicy = ArtworkAspectPolicy.KeepAspect,
+                callback = callback,
+            )
         }
 
         private fun scheduleTransientRetry(expectedKey: String, expectedGeneration: Long) {
             if (expectedKey.isBlank() || boundKey != expectedKey || bindGeneration != expectedGeneration) return
-            if (!sourceDecodeAllowed) return
             if (transientRetryRunnable != null) return
 
             val delayMs = when (transientRetryAttempt) {
@@ -392,10 +379,6 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
                     return@Runnable
                 }
                 if (request != null) return@Runnable
-                PlaybackArtworkPerfTrace.mark(
-                    "holder_art_retry",
-                    "key=${PlaybackArtworkPerfTrace.keyTag(expectedKey)} generation=$expectedGeneration attempt=$transientRetryAttempt",
-                )
                 attachCachedOrRequest(expectedKey)
             }
             transientRetryRunnable = retry
@@ -456,7 +439,6 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
                 newHandle.release()
                 return
             }
-            val perfStartedNs = if (PlaybackArtworkPerfTrace.isActive()) System.nanoTime() else 0L
             val oldHandle = currentHandle
             acceptedArtworkKey = boundKey
             val oldBitmap = oldHandle?.bitmap
@@ -466,12 +448,6 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
                 bitmap = newHandle.bitmap
                 quality = maxOf(quality, newQuality)
                 if (publishToTransition) publishAcceptedWrapper(boundKey, newHandle.bitmap, quality)
-                if (perfStartedNs != 0L) {
-                    PlaybackArtworkPerfTrace.recordDuration(
-                        PlaybackArtworkPerfStage.HOLDER_BIND,
-                        System.nanoTime() - perfStartedNs,
-                    )
-                }
                 return
             }
 
@@ -498,11 +474,6 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
                 nextIsFallback = newIsFallback,
             ) && oldBitmap != null && !oldBitmap.isRecycled && oldShader != null
             if (animateReplacement) {
-                PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.HOLDER_REPLACEMENT_START)
-                PlaybackArtworkPerfTrace.mark(
-                    "replacement_start",
-                    "key=${PlaybackArtworkPerfTrace.keyTag(boundKey)} q=$oldQuality->$newQuality fallback=$oldWasFallback->$newIsFallback",
-                )
                 previousHandle = oldHandle
                 previousBitmap = oldBitmap
                 previousShader = oldShader
@@ -517,12 +488,6 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
                 clearPreviousVisual(releaseHandle = true)
             }
             invalidate()
-            if (perfStartedNs != 0L) {
-                PlaybackArtworkPerfTrace.recordDuration(
-                    PlaybackArtworkPerfStage.HOLDER_BIND,
-                    System.nanoTime() - perfStartedNs,
-                )
-            }
         }
 
         private fun publishAcceptedWrapper(expectedKey: String, expectedBitmap: Bitmap, acceptedQuality: Int) {
@@ -546,7 +511,7 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
             cancelTransientRetry()
             cancelRequest()
             boundKey = ""
-            sourceDecodeAllowed = false
+            loadPlan = PlaybackArtworkLoadPlan(1, false, false)
             token = 0
             active = false
             cancelReplacementFade()
@@ -699,8 +664,6 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
                     replacementProgress = 1f
                     clearPreviousVisual(cancelAnimator = false, releaseHandle = true)
                     replacementAnimator = null
-                    PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.HOLDER_REPLACEMENT_END)
-                    PlaybackArtworkPerfTrace.mark("replacement_end", "token=$token q=$quality")
                     invalidate()
                 }
                 start()
@@ -768,12 +731,23 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
             if (!badgeVisible || artworkRect.width() <= 0f || artworkRect.height() <= 0f) return
             val margin = 12f * badgeDensity
             val custom = badgeCustomBitmap?.takeUnless(Bitmap::isRecycled)
-            val badgeSide = min(
-                54f * badgeDensity,
-                min(artworkRect.width(), artworkRect.height()) * 0.22f,
-            ).coerceAtLeast(18f * badgeDensity)
-            val badgeWidth = if (custom != null) badgeSide else min(58f * badgeDensity, artworkRect.width() * 0.30f)
-            val badgeHeight = if (custom != null) badgeSide else min(28f * badgeDensity, artworkRect.height() * 0.16f)
+            val displaySize = resolvePlayerHiResBadgeDisplaySize(
+                customSource = custom?.let { PlayerHiResBadgeSourceInfo(it.width, it.height) },
+                sizeScale = badgeSizeScale,
+            )
+            val maxWidth = (artworkRect.width() - margin * 2f).coerceAtLeast(1f)
+            val maxHeight = (artworkRect.height() - margin * 2f).coerceAtLeast(1f)
+            val desiredWidth = displaySize.widthDp * badgeDensity
+            val desiredHeight = displaySize.heightDp * badgeDensity
+            val clampScale = min(
+                1f,
+                min(
+                    maxWidth / desiredWidth.coerceAtLeast(1f),
+                    maxHeight / desiredHeight.coerceAtLeast(1f),
+                ),
+            )
+            val badgeWidth = (desiredWidth * clampScale).coerceAtLeast(9f * badgeDensity)
+            val badgeHeight = (desiredHeight * clampScale).coerceAtLeast(9f * badgeDensity)
             val left = when (badgeCorner) {
                 PlayerHiResBadgeCorner.TOP_LEFT,
                 PlayerHiResBadgeCorner.BOTTOM_LEFT -> artworkRect.left + margin
@@ -799,9 +773,9 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
             if (custom != null) {
                 canvas.drawBitmap(custom, null, destination, badgeBitmapPaint)
             } else {
-                val radius = 7f * badgeDensity
+                val radius = 7f * badgeDensity * badgeSizeScale
                 canvas.drawRoundRect(destination, radius, radius, badgeBackgroundPaint)
-                badgeTextPaint.textSize = 10f * badgeDensity
+                badgeTextPaint.textSize = badgeTextSizePx * badgeSizeScale * clampScale
                 val baseline = destination.centerY() -
                     (badgeTextPaint.ascent() + badgeTextPaint.descent()) * 0.5f
                 canvas.drawText("HI-RES", destination.centerX(), baseline, badgeTextPaint)
@@ -836,7 +810,7 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
     private var providerOwnerRegistered = false
     private var observerRegistered = false
     private val presentationObserver = PlaybackArtworkPresentationObserver { topologyChanged, pixelsChangedToken ->
-        PlaybackArtworkPerfTrace.measure(PlaybackArtworkPerfStage.OBSERVER_DISPATCH) {
+        run {
             if (topologyChanged) syncTopology()
             // Foreground pixels are delivered directly to the bound physical holder by its own
             // provider callback. State pixel notifications belong to background/legacy consumers.
@@ -852,6 +826,7 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
     private var hiResBadgeSettings = PlayerHiResBadgeSettings()
     private var hiResArtworkKeys: Set<String> = emptySet()
     private var hiResCustomBadgeBitmap: Bitmap? = null
+    private var hiResBadgeTextSizePx = 10f * resources.displayMetrics.density
 
     init {
         clipChildren = false
@@ -875,6 +850,7 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
         localScale: Float,
         radiusPx: Float,
         elevationPx: Float,
+        badgeTextSizePx: Float,
         hiResBadgeSettings: PlayerHiResBadgeSettings = PlayerHiResBadgeSettings(),
         hiResArtworkKeys: Set<String> = emptySet(),
     ) {
@@ -898,6 +874,8 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
         val safeScale = localScale.coerceIn(0.01f, 1f)
         val safeRadius = radiusPx.coerceAtLeast(0f)
         val safeElevation = elevationPx.coerceAtLeast(0f)
+        val safeBadgeTextSizePx = badgeTextSizePx.takeIf { it.isFinite() && it > 0f }
+            ?: (10f * resources.displayMetrics.density)
         val geometryChanged =
             contentInsetPx != safeInset ||
                 contentScaleFactor != safeScale ||
@@ -914,13 +892,17 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
         val badgePathChanged = this.hiResBadgeSettings.customPath != hiResBadgeSettings.customPath
         val badgeConfigurationChanged = this.hiResBadgeSettings != hiResBadgeSettings ||
             this.hiResArtworkKeys != hiResArtworkKeys
+        val badgeTextSizeChanged = hiResBadgeTextSizePx != safeBadgeTextSizePx
         if (badgePathChanged) {
             hiResCustomBadgeBitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
             hiResCustomBadgeBitmap = decodePlayerHiResBadgeBitmap(hiResBadgeSettings.customPath)
         }
         this.hiResBadgeSettings = hiResBadgeSettings
         this.hiResArtworkKeys = hiResArtworkKeys
-        if (badgeConfigurationChanged || badgePathChanged) applyBadgeConfiguration()
+        hiResBadgeTextSizePx = safeBadgeTextSizePx
+        if (badgeConfigurationChanged || badgePathChanged || badgeTextSizeChanged) {
+            applyBadgeConfiguration()
+        }
 
         // The View already owns a direct PlaybackArtworkPresentationObserver. Ratio/topology ticks
         // arrive there and mutate the three retained holder RenderNodes directly. AndroidView's
@@ -944,7 +926,6 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         state?.let(::acquireProviderOwner)
-        PlaybackArtworkPerfTrace.attach(this)
         registerObserver()
         syncTopology()
         syncTransforms()
@@ -954,7 +935,6 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
     override fun onDetachedFromWindow() {
         releaseProviderOwner()
         unregisterObserver()
-        PlaybackArtworkPerfTrace.detach(this)
         // Detach is a temporary scene-window event, not destruction. Keep the accepted wrapper and
         // pixels so a PLAYER/category re-attach is a zero-decode handoff. Only in-flight callbacks
         // and interrupted replacement state are cancelled; release() remains the destructive path.
@@ -1028,6 +1008,8 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
                 corner = hiResBadgeSettings.corner,
                 customBitmap = hiResCustomBadgeBitmap,
                 density = density,
+                textSizePx = hiResBadgeTextSizePx,
+                sizeScale = hiResBadgeSettings.sizeScale,
             )
         }
     }
@@ -1048,9 +1030,7 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
     }
 
     private fun syncTopology() {
-        val startedNs = if (PlaybackArtworkPerfTrace.isActive()) System.nanoTime() else 0L
         val currentState = state ?: return
-        PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.HOLDER_TOPOLOGY_SYNC)
         val current = slot(
             currentState.foregroundCurrentKey(),
             currentState.foregroundCurrentToken(),
@@ -1132,42 +1112,25 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
             holder.bindIdentity(
                 newKey = desired.key,
                 newToken = desired.token,
-                // The moving pager consumes already-owned low/high wrappers only. Do not begin a
-                // full-size source decode when a target is promoted into motion; that allocation
-                // can trigger a stop-the-world GC/texture upload in the middle of the 550 ms page
-                // animation. A near-complete settle can briefly promote target -> current and make
-                // target null before the settle owner itself has finished. Treat that as motion,
-                // not idle: starting a 1536px upgrade in that transient window made the high decode
-                // land inside the very next rapid-Next animation. Only a genuinely idle current
-                // holder may upgrade its low wrapper to the selected playback tier in-place.
-                allowSourceDecode = target == null &&
-                    !currentState.isSettling &&
-                    !currentState.isGestureActive &&
-                    desired.key == current?.key,
+                plan = playbackArtworkLoadPlan(
+                    preferredSide = BitmapProvider.preferredPlaybackTargetSide(),
+                    isCurrent = desired.key == current?.key,
+                    isTarget = desired.key == target?.key,
+                    isMoving = target != null || currentState.isSettling || currentState.isGestureActive,
+                ),
             )
             holder.configureHiResBadge(
                 visible = hiResBadgeSettings.enabled && desired.key in hiResArtworkKeys,
                 corner = hiResBadgeSettings.corner,
                 customBitmap = hiResCustomBadgeBitmap,
                 density = resources.displayMetrics.density,
+                textSizePx = hiResBadgeTextSizePx,
+                sizeScale = hiResBadgeSettings.sizeScale,
             )
             holder.active = true
         }
         holders.forEach { holder -> if (!holder.active) holder.alpha = 0f }
         updateHolderDrawingOrder(ordered)
-        if (startedNs != 0L) {
-            PlaybackArtworkPerfTrace.recordDuration(
-                PlaybackArtworkPerfStage.HOLDER_TOPOLOGY_SYNC,
-                System.nanoTime() - startedNs,
-            )
-            PlaybackArtworkPerfTrace.mark(
-                "holder_topology",
-                "current=${PlaybackArtworkPerfTrace.keyTag(current?.key.orEmpty())}/${current?.token ?: 0} " +
-                    "target=${PlaybackArtworkPerfTrace.keyTag(target?.key.orEmpty())}/${target?.token ?: 0} " +
-                    "prev=${PlaybackArtworkPerfTrace.keyTag(previous?.key.orEmpty())}/${previous?.token ?: 0} " +
-                    "next=${PlaybackArtworkPerfTrace.keyTag(next?.key.orEmpty())}/${next?.token ?: 0}",
-            )
-        }
     }
 
     private fun updateHolderDrawingOrder(ordered: List<Slot>) {
@@ -1199,7 +1162,6 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
     }
 
     private fun syncTransforms() {
-        val startedNs = if (PlaybackArtworkPerfTrace.isActive()) System.nanoTime() else 0L
         val currentState = state ?: return
         if (width <= 0 || height <= 0) return
         val progress = currentState.foregroundPresentationRatio().coerceIn(0f, 1f)
@@ -1251,12 +1213,6 @@ internal class ArtworkPagerView(context: Context) : FrameLayout(context) {
                 }
             }.coerceIn(-1f, 1f)
             setArtworkPagerTransform(holder, signedDistance)
-        }
-        if (startedNs != 0L) {
-            PlaybackArtworkPerfTrace.recordDuration(
-                PlaybackArtworkPerfStage.HOLDER_TRANSFORM_SYNC,
-                System.nanoTime() - startedNs,
-            )
         }
     }
 

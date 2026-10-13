@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -30,7 +31,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.ui.R
 import com.rawsmusic.core.ui.scene.NavScene
+import com.rawsmusic.core.ui.scene.labelRes
 import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
+import com.rawsmusic.core.ui.widget.ActivityOverlayBackOwner
+import com.rawsmusic.core.ui.scene.LocalRawWindowLayoutProfile
+import top.yukonga.miuix.kmp.window.WindowDialog
+import androidx.compose.foundation.layout.widthIn
 import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
@@ -47,8 +53,17 @@ internal fun HomeCardAddDialog(
     onDismissRequest: () -> Unit,
 ) {
     if (!show) return
+    val context = LocalContext.current
     var sort by remember(show, group) { mutableStateOf(HomeCardChooserSort.DEFAULT) }
-    val hidden = remember(state.hiddenScenes, state.libraryOrder, state.toolOrder, group, sort, contentCounts) {
+    val hidden = remember(
+        state.hiddenScenes,
+        state.libraryOrder,
+        state.toolOrder,
+        group,
+        sort,
+        contentCounts,
+        context.resources.configuration,
+    ) {
         val base = when (group) {
             HomeCardGroup.LIBRARY -> state.hidden(HomeCardGroup.LIBRARY)
             HomeCardGroup.TOOLS -> state.hidden(HomeCardGroup.TOOLS)
@@ -56,10 +71,10 @@ internal fun HomeCardAddDialog(
         }
         when (sort) {
             HomeCardChooserSort.DEFAULT -> base
-            HomeCardChooserSort.NAME -> base.sortedBy { it.label.lowercase() }
+            HomeCardChooserSort.NAME -> base.sortedBy { context.getString(it.labelRes()).lowercase() }
             HomeCardChooserSort.CONTENT_COUNT -> base.sortedWith(
                 compareByDescending<NavScene> { contentCounts[it] ?: -1 }
-                    .thenBy { it.label.lowercase() }
+                    .thenBy { context.getString(it.labelRes()).lowercase() }
             )
         }
     }
@@ -128,14 +143,40 @@ fun HomeCardSettingsDialog(
     onDismissRequest: () -> Unit,
     renderInRootScaffold: Boolean = true,
 ) {
+    val title = stringResource(R.string.home_card_settings_title)
+    val summary = stringResource(R.string.home_card_settings_summary)
+    if (!renderInRootScaffold) {
+        // Settings runs in its own Activity without the HOME root Scaffold popup host. An
+        // Overlay dialog there is laid out inside whichever Scaffold happens to enclose the call
+        // site, so it ends up behind/inside the settings list instead of above it. Use the MIUIX
+        // window-level dialog: it owns a real Dialog window and its own back handling.
+        ActivityOverlayBackOwner(active = show)
+        WindowDialog(
+            show = show,
+            modifier = Modifier.widthIn(max = LocalRawWindowLayoutProfile.current.dialogMaxWidth),
+            title = title,
+            summary = summary,
+            onDismissRequest = onDismissRequest,
+        ) {
+            HomeCardSettingsContent(state = state)
+        }
+        return
+    }
     if (!show) return
     RawMiuixOverlayDialog(
         show = true,
-        title = stringResource(R.string.home_card_settings_title),
-        summary = stringResource(R.string.home_card_settings_summary),
+        title = title,
+        summary = summary,
         onDismissRequest = onDismissRequest,
-        renderInRootScaffold = renderInRootScaffold,
+        renderInRootScaffold = true,
     ) {
+        HomeCardSettingsContent(state = state)
+    }
+}
+
+@Composable
+private fun HomeCardSettingsContent(state: HomeCardLayoutState) {
+    Column {
         HomeCardSettingsGroup(
             title = stringResource(R.string.home_library_section),
             group = HomeCardGroup.LIBRARY,
@@ -219,7 +260,7 @@ private fun HomeCardSettingsGroup(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = scene.label,
+                        text = stringResource(scene.labelRes()),
                         color = MiuixTheme.colorScheme.onSurface,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
@@ -282,7 +323,7 @@ private fun HomeCardDialogRow(
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = scene.label,
+                text = stringResource(scene.labelRes()),
                 color = MiuixTheme.colorScheme.onSurface,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,

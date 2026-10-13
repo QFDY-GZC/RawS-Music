@@ -4,9 +4,12 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 @Immutable
@@ -22,7 +25,7 @@ data class ComposeVirtualListMetrics(
 internal fun computeVirtualListMetrics(
     widthPx: Int,
     density: Float,
-    scaledDensity: Float,
+    fontDensity: Density,
     mode: ComposeVirtualListDisplayMode,
     params: ListZoomParams
 ): ComposeVirtualListMetrics {
@@ -30,7 +33,21 @@ internal fun computeVirtualListMetrics(
     val cellWidth = (widthPx / columns).coerceAtLeast(1)
     return if (mode.isGrid) {
         val cover = (cellWidth - (16f * density).toInt()).coerceAtLeast(1)
-        val cellHeight = (cover + 58f * density).toInt().coerceAtLeast(1)
+        val titleHeight = virtualListGridTextLaneHeightPx(
+            fontDensity = fontDensity,
+            density = density,
+            fontSizeSp = 22f * 0.65f,
+            minimumHeightDp = 18f,
+        )
+        val subtitleHeight = virtualListGridTextLaneHeightPx(
+            fontDensity = fontDensity,
+            density = density,
+            fontSizeSp = 18.25f * 0.65f,
+            minimumHeightDp = 16f,
+        )
+        val minimumTextArea = (58f * density).roundToInt()
+        val resolvedTextArea = (24f * density).roundToInt() + titleHeight + subtitleHeight
+        val cellHeight = (cover + maxOf(minimumTextArea, resolvedTextArea)).coerceAtLeast(1)
         ComposeVirtualListMetrics(
             columns = columns,
             rowHeightPx = cellHeight,
@@ -41,17 +58,21 @@ internal fun computeVirtualListMetrics(
         )
     } else {
         val minRow = if (params.rowHeightIsSp) {
-            (params.rowHeightValue * scaledDensity).toInt()
+            fontDensity.virtualListSpToPx(params.rowHeightValue).toInt()
         } else {
             (params.rowHeightValue * density).toInt()
         }
         val cover = (params.coverSizeDp * density).toInt().coerceAtLeast(1)
         val coverContribution = cover +
             ((params.coverMarginTopDp + params.coverMarginBottomDp) * density).toInt()
-        val titleHeight = (22f * params.textScale * scaledDensity).toInt()
-        val line2Height = if (params.line2Visible) (18.25f * params.textScale * scaledDensity).toInt() else 0
+        val titleHeight = fontDensity.virtualListSpToPx(22f * params.textScale).toInt()
+        val line2Height = if (params.line2Visible) {
+            fontDensity.virtualListSpToPx(18.25f * params.textScale).toInt()
+        } else {
+            0
+        }
         val metaHeight = if (params.metaVisible && params.metaInlineFraction < 1f) {
-            (13.5f * params.textScale * scaledDensity).toInt()
+            fontDensity.virtualListSpToPx(13.5f * params.textScale).toInt()
         } else {
             0
         }
@@ -67,6 +88,19 @@ internal fun computeVirtualListMetrics(
         )
     }
 }
+
+internal fun Density.virtualListSpToPx(fontSizeSp: Float): Float =
+    with(this) { fontSizeSp.sp.toPx() }
+
+internal fun virtualListGridTextLaneHeightPx(
+    fontDensity: Density,
+    density: Float,
+    fontSizeSp: Float,
+    minimumHeightDp: Float,
+): Int = maxOf(
+    minimumHeightDp * density,
+    fontDensity.virtualListSpToPx(fontSizeSp) * 1.25f,
+).roundToInt().coerceAtLeast(1)
 
 internal fun Modifier.virtualListPointerInput(
     state: ComposeVirtualListState,

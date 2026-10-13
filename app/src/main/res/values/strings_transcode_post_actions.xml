@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="transcode_post_source_delete_needs_consent">Conversion completed. System authorization is required before the source file can be deleted.</string>
+    <string name="transcode_post_source_deleted">Conversion completed and the source file was deleted.</string>
+    <string name="transcode_post_source_delete_failed">Conversion completed, but the source file could not be deleted.</string>
+    <string name="transcode_post_library_refresh_requested">Conversion completed and a library refresh was requested.</string>
+    <string name="transcode_post_action_notice">Conversion completed, but a follow-up media-library action could not be completed.</string>
+</resources>

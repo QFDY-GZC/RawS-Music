@@ -1,6 +1,7 @@
 package com.rawsmusic.module.data.prefs
 
 import android.content.Context
+import androidx.room.withTransaction
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.module.data.db.MusicDatabase
 import com.rawsmusic.module.data.db.entity.DailyListenEntity
@@ -11,6 +12,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,7 +58,9 @@ class PlaybackStatsStore private constructor(private val context: Context) {
     private val statsFile = context.filesDir.resolve("playback_stats.json")
     private val historyFile = context.filesDir.resolve("playback_history.json")
     private val dailyFile = context.filesDir.resolve("playback_daily_stats.json")
-    private val dao = MusicDatabase.getInstance(context).playbackStatsDao()
+    private val database = MusicDatabase.getInstance(context)
+    private val dao = database.playbackStatsDao()
+    private val ready = CompletableDeferred<Unit>()
     private val databaseDispatcher = Executors
         .newSingleThreadExecutor { runnable ->
             Thread(runnable, "RawS-PlaybackStatsRoom").apply { isDaemon = true }
@@ -83,24 +87,31 @@ class PlaybackStatsStore private constructor(private val context: Context) {
             _dailyListenMs.value = legacyDaily
         }
         databaseScope.launch {
-            if (statsFile.exists() || historyFile.exists() || dailyFile.exists()) {
-                dao.replaceAll(
-                    stats = _stats.value.map(SongPlaybackStats::toEntity),
-                    history = _history.value.map(PlaybackHistoryEntry::toEntity),
-                    daily = _dailyListenMs.value.map { (date, listenedMs) ->
-                        DailyListenEntity(date, listenedMs)
-                    }
-                )
-                deleteLegacyFiles()
-            } else {
-                loadRoomSnapshot()
+            try {
+                if (statsFile.exists() || historyFile.exists() || dailyFile.exists()) {
+                    dao.replaceAll(
+                        stats = _stats.value.map(SongPlaybackStats::toEntity),
+                        history = _history.value.map(PlaybackHistoryEntry::toEntity),
+                        daily = _dailyListenMs.value.map { (date, listenedMs) -> DailyListenEntity(date, listenedMs) },
+                    )
+                    deleteLegacyFiles()
+                } else {
+                    loadRoomSnapshot()
+                }
+                ready.complete(Unit)
+            } catch (error: Throwable) {
+                ready.completeExceptionally(error)
+                throw error
             }
         }
     }
 
     fun recordPlay(song: AudioFile) {
         val now = System.currentTimeMillis()
+        enqueueWrite {
         val updatedStat: SongPlaybackStats
+        val updatedStats: List<SongPlaybackStats>
+        val updatedHistory: List<PlaybackHistoryEntry>
         val historyEntry = PlaybackHistoryEntry(
             songId = song.id,
             title = song.title,
@@ -130,24 +141,32 @@ class PlaybackStatsStore private constructor(private val context: Context) {
                     lastPlayedAt = now
                 ).also(list::add)
             }
-            _stats.value = list
-            _history.value = buildList {
+            updatedStats = list
+            updatedHistory = buildList {
                 add(historyEntry)
                 addAll(_history.value)
             }.take(MAX_HISTORY_ITEMS)
         }
-        databaseScope.launch {
+        database.withTransaction {
             dao.upsertStat(updatedStat.toEntity())
             dao.insertHistory(historyEntry.toEntity())
             dao.trimHistory(MAX_HISTORY_ITEMS)
+        }
+        synchronized(lock) {
+            _stats.value = updatedStats
+            _history.value = updatedHistory
+        }
         }
     }
 
     fun addListenTime(song: AudioFile, listenedMs: Long) {
         if (listenedMs <= 0L) return
         val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        enqueueWrite {
         val updatedStat: SongPlaybackStats
         val updatedDailyMs: Long
+        val updatedStats: List<SongPlaybackStats>
+        val updatedDaily: Map<String, Long>
         synchronized(lock) {
             val list = _stats.value.toMutableList()
             val index = list.indexOfFirst { it.songId == song.id }
@@ -169,15 +188,28 @@ class PlaybackStatsStore private constructor(private val context: Context) {
                     lastPlayedAt = 0L
                 ).also(list::add)
             }
-            _stats.value = list
+            updatedStats = list
             val daily = _dailyListenMs.value.toMutableMap()
             updatedDailyMs = (daily[today] ?: 0L) + listenedMs
             daily[today] = updatedDailyMs
-            _dailyListenMs.value = daily
+            updatedDaily = daily
         }
-        databaseScope.launch {
+        database.withTransaction {
             dao.upsertStat(updatedStat.toEntity())
             dao.upsertDaily(DailyListenEntity(today, updatedDailyMs))
+        }
+        synchronized(lock) {
+            _stats.value = updatedStats
+            _dailyListenMs.value = updatedDaily
+        }
+        }
+    }
+
+    /** Derive absolute values inside the gate, not when the playback event is first queued. */
+    private fun enqueueWrite(block: suspend () -> Unit) {
+        databaseScope.launch {
+            ready.await()
+            BackupWriteGate.withExclusive { block() }
         }
     }
 
@@ -211,14 +243,32 @@ class PlaybackStatsStore private constructor(private val context: Context) {
 
     /** Serialize only after earlier Room initialization/writes on the single store dispatcher complete. */
     suspend fun exportJsonForBackup(): JSONObject = withContext(databaseDispatcher) {
+        ready.await()
+        BackupWriteGate.withExclusive { exportJson() }
+    }
+
+    suspend fun awaitBackupReady() = ready.await()
+
+    /** Caller holds BackupWriteGate. */
+    suspend fun reloadAfterBackup() = withContext(databaseDispatcher) {
+        ready.await()
+        loadRoomSnapshot()
+    }
+
+    /** Caller holds BackupWriteGate. */
+    suspend fun exportJsonUnderBackupGate(): JSONObject = withContext(databaseDispatcher) {
+        ready.await()
         exportJson()
     }
 
     fun restoreJson(json: JSONObject) {
         val payload = parseRestorePayload(json)
-        applyRestorePayloadToMemory(payload)
         databaseScope.launch {
+            ready.await()
+            BackupWriteGate.withExclusive {
             persistRestorePayload(payload)
+            loadRoomSnapshot()
+            }
         }
     }
 
@@ -228,15 +278,20 @@ class PlaybackStatsStore private constructor(private val context: Context) {
      */
     suspend fun restoreJsonAndVerify(json: JSONObject): Boolean {
         val payload = parseRestorePayload(json)
-        applyRestorePayloadToMemory(payload)
         return withContext(databaseDispatcher) {
+            ready.await()
+            BackupWriteGate.withExclusive {
             persistRestorePayload(payload)
             val storedStats = dao.getStats().map(PlaybackStatEntity::toModel)
             val storedHistory = dao.getHistory(MAX_HISTORY_ITEMS).map(PlaybackHistoryEntity::toModel)
             val storedDaily = dao.getDaily().associate { it.date to it.listenedMs }
-            sameStats(storedStats, payload.stats) &&
+            val verified = sameStats(storedStats, payload.stats) &&
                 sameHistory(storedHistory, payload.history) &&
                 storedDaily == payload.daily
+            check(verified) { "播放统计写入校验失败" }
+            applyRestorePayloadToMemory(payload)
+            verified
+            }
         }
     }
 

@@ -6,6 +6,10 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class IncrementalBaselineIndexTest {
+    @Test fun pendingMetadataDoesNotReuseMatchingFingerprint() {
+        val song = AudioFile(id = 4, path = "/music/pending.flac", fileSize = 1000, dateModified = 20)
+        assertNull(IncrementalBaselineIndex(listOf(song), setOf(scanRowKey(song))).reusableSongs(song))
+    }
     @Test
     fun `same size and mtime reuses enriched database row`() {
         val old = song(path = "/Music/A.flac", size = 1234, modified = 55, title = "Enriched")

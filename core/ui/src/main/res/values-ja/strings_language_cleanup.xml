@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="lyric_font_size_small">小</string>
+    <string name="lyric_font_size_standard">標準</string>
+    <string name="lyric_font_size_large">大</string>
+    <string name="lyric_font_size_extra_large">特大</string>
+    <string name="lyric_font_size_huge">最大</string>
+    <string name="library_unknown_genre">不明なジャンル</string>
+    <string name="library_unknown_year">不明な年</string>
+    <string name="library_unknown_composer">不明な作曲者</string>
+    <string name="common_cancel_selection">選択を解除</string>
+    <string name="artist_biography_language_zh_cn">簡体字中国語</string>
+    <string name="artist_biography_language_en">英語</string>
+    <string name="artist_biography_language_ja">日本語</string>
+    <string name="artist_biography_language_ko">韓国語</string>
+    <string name="artist_biography_language_zh_tw">繁体字中国語（台湾）</string>
+    <string name="artist_biography_language_zh_hk">繁体字中国語（香港）</string>
+    <string name="artist_biography_source_netease_short">NetEase Cloud Music</string>
+    <string name="artist_biography_source_netease">NetEase Cloud Music</string>
+</resources>

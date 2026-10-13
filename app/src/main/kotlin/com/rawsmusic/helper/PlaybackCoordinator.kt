@@ -2,7 +2,6 @@ package com.rawsmusic.helper
 
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.PlayState
-import com.rawsmusic.core.common.utils.PlayerSwitchTrace
 import com.rawsmusic.core.ui.widget.PlayerSceneController
 import com.rawsmusic.module.player.LyriconProviderManager
 import com.rawsmusic.module.player.PlayerService
@@ -57,49 +56,18 @@ class PlaybackCoordinator(
 
     fun onCurrentSongChanged(song: AudioFile) {
         val generation = ++songPresentationGeneration
-        PlayerSwitchTrace.mark(
-            "playback_coordinator_song_begin",
-            "generation=$generation songId=${song.id} title=${song.title} thread=${Thread.currentThread().name}",
-        )
         // Publish the in-app identity immediately. MediaSession and lyric loading start in
         // independent cancellable lanes; no fixed-delay gate is allowed to bunch work near
         // the end of the artwork animation.
-        val miniStartNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
         miniPlayer.updateSong(song)
-        if (miniStartNs != 0L) {
-            PlayerSwitchTrace.duration(
-                "playback_coordinator_mini_song",
-                System.nanoTime() - miniStartNs,
-            )
-        }
         // Advance lyric ownership immediately without rebuilding its Compose tree. This prevents
         // position ticks from publishing the retiring song's lines while its replacement loads.
-        val lyricOwnerStartNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
         lyrics.markSongPending(song)
-        if (lyricOwnerStartNs != 0L) {
-            PlayerSwitchTrace.duration(
-                "playback_coordinator_lyric_owner",
-                System.nanoTime() - lyricOwnerStartNs,
-            )
-        }
 
         mediaIdentityJob?.cancel()
         mediaIdentityJob = scope.launch(Dispatchers.IO) {
             if (generation == songPresentationGeneration) {
-                val startedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
-                if (startedNs != 0L) {
-                    PlayerSwitchTrace.mark(
-                        "playback_media_identity_begin",
-                        "generation=$generation thread=${Thread.currentThread().name}",
-                    )
-                }
                 playerServiceBridgeHelper.pushSongUpdate(song)
-                if (startedNs != 0L) {
-                    PlayerSwitchTrace.duration(
-                        "playback_media_identity",
-                        System.nanoTime() - startedNs,
-                    )
-                }
             }
         }
 
@@ -107,40 +75,14 @@ class PlaybackCoordinator(
         auxiliaryUiJob = scope.launch {
             yield()
             if (generation == songPresentationGeneration) {
-                val startedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
-                if (startedNs != 0L) {
-                    PlayerSwitchTrace.mark(
-                        "playback_aux_ui_begin",
-                        "generation=$generation thread=${Thread.currentThread().name}",
-                    )
-                }
                 onCurrentSongChangedExtra(song)
-                if (startedNs != 0L) {
-                    PlayerSwitchTrace.duration(
-                        "playback_aux_ui",
-                        System.nanoTime() - startedNs,
-                    )
-                }
             }
         }
 
         lyricsJob?.cancel()
         lyricsJob = scope.launch {
             if (generation == songPresentationGeneration) {
-                val startedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
-                if (startedNs != 0L) {
-                    PlayerSwitchTrace.mark(
-                        "playback_lyrics_load_begin",
-                        "generation=$generation thread=${Thread.currentThread().name}",
-                    )
-                }
                 lyrics.loadLyricsForSong(song)
-                if (startedNs != 0L) {
-                    PlayerSwitchTrace.duration(
-                        "playback_lyrics_load",
-                        System.nanoTime() - startedNs,
-                    )
-                }
             }
         }
     }

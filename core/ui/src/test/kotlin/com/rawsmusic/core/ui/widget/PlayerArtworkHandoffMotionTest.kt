@@ -116,6 +116,59 @@ class PlayerArtworkHandoffMotionTest {
         assertEquals(first, second)
     }
 
+    @Test
+    fun immersiveClearArtworkTargetUsesRealPortraitAndLandscapeLanes() {
+        val portrait = resolveImmersiveClearArtworkHandoffRect(
+            viewportWidth = 1080f,
+            viewportHeight = 2340f,
+            edgeExtensionPx = 96f,
+            clearFraction = 0.41f,
+        )
+        val landscape = resolveImmersiveClearArtworkHandoffRect(
+            viewportWidth = 2340f,
+            viewportHeight = 1080f,
+            edgeExtensionPx = 96f,
+            clearFraction = 0.41f,
+        )
+        assertEquals(PlayerArtworkHandoffRect(0f, 0f, 1080f, 1055.4f), portrait)
+        assertEquals(PlayerArtworkHandoffRect(0f, 0f, 1055.4f, 1080f), landscape)
+        assertEquals(
+            PlayerArtworkHandoffRect(0f, 180f, 1055.4f, 720f),
+            resolveImmersiveClearArtworkHandoffRect(
+                viewportWidth = 2340f,
+                viewportHeight = 1080f,
+                edgeExtensionPx = 96f,
+                clearFraction = 0.41f,
+                landscapeTopInsetPx = 180f,
+                landscapeBottomInsetPx = 180f,
+            ),
+        )
+    }
+
+    @Test
+    fun immersiveMainHandoffUsesSameClockForArtworkAndSurfaceBothDirections() {
+        val sourceArtwork = PlayerArtworkHandoffRect(36f, 2160f, 72f, 72f)
+        val targetArtwork = PlayerArtworkHandoffRect(0f, 0f, 1080f, 1055.4f)
+        fun artworkAt(t: Float) = resolvePlayerArtworkHandoffRect(
+            sourceArtwork.left, sourceArtwork.top, sourceArtwork.width, sourceArtwork.height,
+            targetArtwork.left, targetArtwork.top, targetArtwork.width, targetArtwork.height, t,
+        )
+        fun surfaceAt(t: Float) = resolvePlayerSurfaceHandoffBounds(
+            12f, 2140f, 1068f, 2240f, 50f, 1080f, 2340f, t,
+        )
+        assertEquals(sourceArtwork, artworkAt(0f))
+        assertEquals(targetArtwork, artworkAt(1f))
+        assertEquals(artworkAt(0.4f), artworkAt(0.4f))
+        assertEquals(
+            PlayerSurfaceHandoffBounds(12f, 2140f, 1068f, 2240f, 50f),
+            surfaceAt(0f),
+        )
+        assertEquals(
+            PlayerSurfaceHandoffBounds(0f, 0f, 1080f, 2340f, 0f),
+            surfaceAt(1f),
+        )
+    }
+
 
     @Test
     fun playerVisibleArtworkEndpointUsesTheSameInsetAndLocalScaleAsTheRealCard() {

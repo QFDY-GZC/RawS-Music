@@ -1,0 +1,14 @@
+<resources>
+    <string name="spectrum_heading">スペクトル解析</string>
+    <string name="spectrum_close_chart">全画面表示を閉じる</string>
+    <string name="spectrum_back">戻る</string>
+    <string name="spectrum_mean_level">平均レベル</string>
+    <string name="spectrum_peak_level">ピークレベル</string>
+    <string name="spectrum_bandwidth">推定帯域幅</string>
+    <string name="spectrum_duration">再生時間</string>
+    <string name="spectrum_waterfall_tab">スペクトログラム</string>
+    <string name="spectrum_fullscreen">全画面</string>
+    <string name="spectrum_stereo">ステレオ</string>
+    <string name="spectrum_log">対数</string>
+    <string name="spectrum_linear">線形</string>
+</resources>

@@ -50,6 +50,15 @@ internal class PlaybackDspControllerRegistry(
     private var speakerOutputElasticity: SpeakerOutputElasticityController? = null
     private var surround360: Surround360Controller? = null
     private var panoramic360: Panoramic360Controller? = null
+    private var reverb: com.rawsmusic.module.player.dsp.ReverbController? = null
+    val reverbController: com.rawsmusic.module.player.dsp.ReverbController
+        get()=reverb?:com.rawsmusic.module.player.dsp.ReverbController(engineOrStub("Reverb",true)).also { reverb=it }
+    fun ensureReverbConnected() {
+        initializedEngine()?.let { engine ->
+            if(reverb==null)reverb=com.rawsmusic.module.player.dsp.ReverbController(engine)
+            else reverb?.connectEngine(engine)
+        }
+    }
     private var fftConvolverRestoreJob: Job? = null
 
     val peqController: ParametricEQController

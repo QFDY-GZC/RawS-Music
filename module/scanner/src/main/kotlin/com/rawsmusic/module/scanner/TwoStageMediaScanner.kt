@@ -52,7 +52,9 @@ object TwoStageMediaScanner {
             val skippedDirectoryCount: Int = 0,
             /** Number of database rows reused by the cold-start fingerprint gate. */
             val baselineHits: Int = 0,
-            val incremental: Boolean = false
+            val incremental: Boolean = false,
+            val metadataOutcomes: List<MetadataScanOutcome> = emptyList(),
+            val directorySnapshots: Map<String, Long> = emptyMap()
         ) : Event()
         data class Error(val message: String) : Event()
     }
@@ -84,10 +86,13 @@ object TwoStageMediaScanner {
     fun scan(
         context: Context,
         options: Options = Options(),
-        baselineSongs: List<AudioFile> = emptyList()
+        baselineSongs: List<AudioFile> = emptyList(),
+        pendingKeys: Set<String> = emptySet(),
+        directoryBaseline: Map<String, Long> = emptyMap()
     ): Flow<Event> = flow {
         val appContext = context.applicationContext
         val startTime = System.currentTimeMillis()
+        val pathIndex = ScanPathIndex(baselineSongs)
 
         val cacheLoadStart = System.currentTimeMillis()
         val cache = if (options.usePersistentCache) PersistentMetadataCache.load(appContext) else null
@@ -100,6 +105,7 @@ object TwoStageMediaScanner {
         var hadError = false
         var canDeleteMissing = true
         var skippedDirectoryCount = 0
+        val directorySnapshots = linkedMapOf<String, Long>()
 
         when (options.sourceMode) {
             SourceMode.MEDIA_STORE -> {
@@ -230,7 +236,9 @@ object TwoStageMediaScanner {
                             customPaths = accessiblePaths,
                             quickScan = true,
                             incrementalDirectoryScan = options.incrementalMetadataOnly,
-                            baselineSongs = baselineSongs
+                            baselineSongs = baselineSongs,
+                            directorySnapshots = directoryBaseline,
+                            baselineIndex = pathIndex
                         )
                     }
                     val safReport = if (safUris.isNotEmpty()) {
@@ -238,7 +246,9 @@ object TwoStageMediaScanner {
                             appContext,
                             quickScan = true,
                             incrementalDirectoryScan = options.incrementalMetadataOnly,
-                            baselineSongs = baselineSongs
+                            baselineSongs = baselineSongs,
+                            directorySnapshotsBaseline = directoryBaseline,
+                            baselineIndex = pathIndex
                         )
                     } else {
                         SafMusicScanner.ScanReport(emptyList(), emptySet(), emptyMap())
@@ -251,6 +261,10 @@ object TwoStageMediaScanner {
                         emit(Event.Error(if (!directPermission) LegacyFileAccess.unavailableMessage() else "所选音乐文件夹无法读取"))
                     } else {
                         val directReport = directResult.getOrDefault(emptyDirectReport)
+                        if (directResult.isSuccess && directReport.failedDirectories.isEmpty()) {
+                            directorySnapshots.putAll(directReport.directorySnapshots.mapKeys { (path, _) -> DirectoryScanState.fileSystemKey(path) })
+                        }
+                        directorySnapshots.putAll(safReport.directorySnapshots)
                         skippedDirectoryCount = directReport.skippedDirectoryCount + safReport.skippedDirectoryCount
                         canDeleteMissing = directResult.isSuccess &&
                             inaccessiblePaths.isEmpty() &&
@@ -283,7 +297,8 @@ object TwoStageMediaScanner {
                     enrichedCount = 0,
                     canDeleteMissing = canDeleteMissing && !hadError,
                     skippedDirectoryCount = skippedDirectoryCount,
-                    incremental = options.incrementalMetadataOnly
+                    incremental = options.incrementalMetadataOnly,
+                    directorySnapshots = directorySnapshots
                 )
             )
             return@flow
@@ -296,11 +311,12 @@ object TwoStageMediaScanner {
         val enrichWorkerCount = options.workerCount.coerceIn(1, 6)
         val enrichSemaphore = Semaphore(enrichWorkerCount)
         val baselineIndex = if (options.incrementalMetadataOnly) {
-            IncrementalBaselineIndex(baselineSongs)
+            IncrementalBaselineIndex(baselineSongs, pendingKeys, pathIndex)
         } else {
             null
         }
         Log.d(TAG, "enrich start: total=${quickSongs.size} incremental=${options.incrementalMetadataOnly} batch=$ENRICH_BATCH_SIZE workers=$enrichWorkerCount cacheSize=${cache?.size() ?: -1}")
+        val metadataOutcomes = mutableListOf<MetadataScanOutcome>()
 
         for (batch in quickSongs.chunked(ENRICH_BATCH_SIZE)) {
             val batchStartMs = System.currentTimeMillis()
@@ -318,21 +334,27 @@ object TwoStageMediaScanner {
                 unresolved.map { (index, song) ->
                     async(Dispatchers.IO) {
                         val result = enrichSemaphore.withPermit {
-                            val cached = cache?.get(song)
+                            val existingRows = pathIndex.rowsForPath(song.path)
+                            val cached = if (existingRows.any { scanRowKey(it) in pendingKeys }) null else cache?.get(song)
                             if (cached != null) {
-                                val expanded = (if (options.expandCueTracks) MediaStoreScanner.expandCueTracks(cached) else listOf(cached))
+                                val expanded = MediaStoreScanner.expandContainerTracks(cached, options.expandCueTracks)
                                     .filter { MediaStoreScanner.shouldInclude(it, options.scannerOptions) }
                                 EnrichedResult(song, expanded, fromCache = true, reusedBaseline = false)
                             } else {
-                                val enriched = if (song.path.startsWith("content://", ignoreCase = true)) {
-                                    SafMusicScanner.enrichSong(appContext, song)
+                                val outcome = if (song.path.startsWith("content://", ignoreCase = true)) {
+                                    scanWorkload().execute { SafMusicScanner.enrichSongOutcome(appContext, song) }
                                 } else {
-                                    MediaStoreScanner.enrichSong(song)
+                                    scanWorkload().execute { MediaStoreScanner.enrichSongOutcome(song) }
                                 }
-                                cache?.put(enriched)
-                                val expanded = (if (options.expandCueTracks) MediaStoreScanner.expandCueTracks(enriched) else listOf(enriched))
+                                val enriched = outcome.song
+                                if (outcome.completed) cache?.put(enriched)
+                                val expanded = (if (!outcome.completed && existingRows.isEmpty() &&
+                                        com.rawsmusic.core.common.sacd.SacdIsoBridge.isIso(song)) emptyList()
+                                    else if (!outcome.completed) outcome.resolveAgainst(existingRows)
+                                    else MediaStoreScanner.expandContainerTracks(enriched, options.expandCueTracks))
                                     .filter { MediaStoreScanner.shouldInclude(it, options.scannerOptions) }
-                                EnrichedResult(song, expanded, fromCache = false, reusedBaseline = false)
+                                EnrichedResult(song, expanded, fromCache = false, reusedBaseline = false,
+                                    outcomes = expanded.map { MetadataScanOutcome(it, outcome.completed) })
                             }
                         }
                         index to result
@@ -343,6 +365,7 @@ object TwoStageMediaScanner {
 
             val batchSongs = ArrayList<AudioFile>(results.sumOf { it.songs.size })
             for (r in results) {
+                metadataOutcomes.addAll(r.outcomes)
                 finalSongs.addAll(r.songs)
                 if (!r.reusedBaseline) batchSongs.addAll(r.songs)
                 processed++
@@ -384,7 +407,9 @@ object TwoStageMediaScanner {
                 canDeleteMissing = canDeleteMissing,
                 skippedDirectoryCount = skippedDirectoryCount,
                 baselineHits = baselineHits,
-                incremental = options.incrementalMetadataOnly
+                incremental = options.incrementalMetadataOnly,
+                metadataOutcomes = metadataOutcomes,
+                directorySnapshots = directorySnapshots
             )
         )
     }.flowOn(Dispatchers.IO)
@@ -397,11 +422,17 @@ object TwoStageMediaScanner {
         val original: AudioFile,
         val songs: List<AudioFile>,
         val fromCache: Boolean,
-        val reusedBaseline: Boolean
+        val reusedBaseline: Boolean,
+        val outcomes: List<MetadataScanOutcome> = emptyList()
     )
 
     private fun isReadableDirectory(path: String): Boolean {
         val root = java.io.File(path)
         return root.exists() && root.isDirectory && runCatching { root.listFiles() }.getOrNull() != null
     }
+
+    private fun scanWorkload() = ScanWorkloadPolicy(
+        getPriority = { android.os.Process.getThreadPriority(android.os.Process.myTid()) },
+        setPriority = { android.os.Process.setThreadPriority(it) }
+    )
 }

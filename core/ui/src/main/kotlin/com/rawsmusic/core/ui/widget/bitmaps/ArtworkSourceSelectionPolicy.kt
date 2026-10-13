@@ -46,7 +46,7 @@ internal object ArtworkSourceSelectionPolicy {
         val extension = raw.substringAfterLast('.', "").lowercase()
         return extension in setOf(
             "mp3", "flac", "m4a", "mp4", "aac", "ogg", "opus", "wma", "wav",
-            "aiff", "aif", "ape", "wv", "tta", "dsf", "dff", "mka", "amr"
+            "aiff", "aif", "ape", "wv", "tta", "dsf", "dff", "mka", "amr", "iso"
         )
     }
 }

@@ -56,7 +56,7 @@ class AiStemDependencyPolicyTest {
 
     @Test
     fun missingStemIsNeverReusable() {
-        val root = createTempDir(prefix = "rawsmusic-stem-policy-")
+        val root = kotlin.io.path.createTempDirectory(prefix = "rawsmusic-stem-policy-").toFile()
         try {
             val vocals = File(root, "vocals.flac").apply { writeBytes(ByteArray(128)) }
             val missingInstrumental = File(root, "instrumental.flac")
@@ -129,7 +129,7 @@ class AiStemDependencyPolicyTest {
     )
 
     private inline fun withTempStems(block: (File, File) -> Unit) {
-        val root = createTempDir(prefix = "rawsmusic-stem-policy-")
+        val root = kotlin.io.path.createTempDirectory(prefix = "rawsmusic-stem-policy-").toFile()
         try {
             val vocals = File(root, "vocals.flac").apply { writeBytes(ByteArray(128)) }
             val instrumental = File(root, "instrumental.flac").apply { writeBytes(ByteArray(128)) }

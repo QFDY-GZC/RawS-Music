@@ -5,6 +5,16 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberUpdatedState
+import com.airbnb.lottie.compose.LottieAnimation
+import com.airbnb.lottie.compose.LottieCompositionSpec
+import com.airbnb.lottie.compose.rememberLottieComposition
+import com.rawsmusic.core.common.ui.AppNoticeAnimation
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -73,26 +83,26 @@ import top.yukonga.miuix.kmp.icon.extended.Playlist
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val NOTICE_ANIMATION_MS = 250
-private const val NOTICE_VISIBLE_MS = 2000L
 private val NoticeMotionEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 
 /**
  * Activity-scene notice prototype.
  *
  * The bus is UI-toolkit agnostic. This host owns presentation only: one retained popup surface,
- * a 250 ms bottom/fade entrance, 2 s steady state and the exact reverse automatic exit.
+ * a 250 ms bottom/fade entrance, 3.5 s steady state and the exact reverse automatic exit.
  * Horizontal drag never changes layout; it moves the retained layer and may fling it away.
  */
 @Composable
 fun AppNoticeHost(
     backdrop: Backdrop?,
     modifier: Modifier = Modifier,
+    bottomInsetOverride: Dp? = null,
 ) {
     val density = LocalDensity.current
     val windowInfo = LocalWindowInfo.current
     val material by PersonalizationPreferences.noticeSurfaceStyle.collectAsState()
     val glassSettings by PersonalizationPreferences.globalLiquidGlassSettings.collectAsState()
-    val bottomInset = LocalBottomChromeInsets.current.contentBottom
+    val bottomInset = bottomInsetOverride ?: LocalBottomChromeInsets.current.contentBottom
     val scope = rememberCoroutineScope()
 
     var activeNotice by remember { mutableStateOf<AppNoticeEvent?>(null) }
@@ -102,6 +112,17 @@ fun AppNoticeHost(
     var swipeMotionActive by remember { mutableStateOf(false) }
     var popupHeightPx by remember { mutableIntStateOf(0) }
     var popupWidthPx by remember { mutableIntStateOf(0) }
+    val iconProgress = remember { Animatable(0f) }
+    val animationResource = when (activeNotice?.animation) {
+        AppNoticeAnimation.FAVORITE -> R.raw.notice_playlist_added
+        AppNoticeAnimation.DELETE -> R.raw.notice_playlist_delete
+        else -> null
+    }
+    val iconComposition = if (animationResource != null) {
+        val composition by rememberLottieComposition(LottieCompositionSpec.RawRes(animationResource))
+        composition
+    } else null
+    val currentIconComposition by rememberUpdatedState(iconComposition)
 
     val slideDistancePx = with(density) { 54.dp.toPx() }
     val dismissDistancePx = with(density) { 72.dp.toPx() }
@@ -124,6 +145,7 @@ fun AppNoticeHost(
         swipeMotionActive = false
         verticalOffset.snapTo(slideDistancePx)
         visibilityAlpha.snapTo(0f)
+        iconProgress.snapTo(0f)
         coroutineScope {
             launch {
                 verticalOffset.animateTo(
@@ -138,7 +160,18 @@ fun AppNoticeHost(
                 )
             }
         }
-        delay(NOTICE_VISIBLE_MS)
+        val composition = if (notice.animation != AppNoticeAnimation.NONE) {
+            withTimeoutOrNull(1500L) { snapshotFlow { currentIconComposition }.filterNotNull().first() }
+        } else null
+        val animationMs = composition?.let {
+            kotlin.math.ceil(it.duration.toDouble()).toLong().coerceAtLeast(1L)
+        }
+        coroutineScope {
+            if (animationMs != null) launch {
+                iconProgress.animateTo(1f, tween(animationMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), easing = LinearEasing))
+            }
+            delay(noticeVisibleDurationMs(animationMs))
+        }
         coroutineScope {
             launch {
                 verticalOffset.animateTo(
@@ -166,6 +199,7 @@ fun AppNoticeHost(
         val dragFade = (1f - abs(dragOffsetX) / (windowWidthPx * 0.9f))
             .coerceIn(0.18f, 1f)
         val iconSize = 22.dp
+        val iconSlotSize = if (notice.animation != AppNoticeAnimation.NONE) 40.dp else 30.dp
         val noticeShape = RoundedCornerShape(18.dp)
         val draggableState = rememberDraggableState { delta ->
             dragOffsetX += delta
@@ -264,14 +298,20 @@ fun AppNoticeHost(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(
-                modifier = Modifier.width(30.dp),
+                modifier = Modifier.width(iconSlotSize),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                AppNoticeGlyph(
-                    icon = notice.icon,
-                    tint = MiuixTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(iconSize),
-                )
+                Box(Modifier.size(iconSlotSize), contentAlignment = Alignment.Center) {
+                    if (notice.animation == AppNoticeAnimation.FAVORITE && iconComposition == null) {
+                        Icon(painterResource(R.drawable.ic_playlist_favorite_filled), null,
+                            tint = Color(0xFFEF5350), modifier = Modifier.size(iconSize))
+                    } else if (iconComposition == null) {
+                        AppNoticeGlyph(notice.icon, MiuixTheme.colorScheme.onSurface, Modifier.size(iconSize))
+                    }
+                    if (iconComposition != null) {
+                        LottieAnimation(iconComposition, progress = { iconProgress.value }, modifier = Modifier.size(iconSlotSize))
+                    }
+                }
             }
             Text(
                 text = notice.message,
@@ -281,7 +321,7 @@ fun AppNoticeHost(
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier
                     .padding(start = 10.dp, end = 2.dp)
-                    .widthIn(max = (maxPopupWidth - 58.dp).coerceAtLeast(120.dp)),
+                    .widthIn(max = (maxPopupWidth - iconSlotSize - 28.dp).coerceAtLeast(120.dp)),
             )
         }
     }

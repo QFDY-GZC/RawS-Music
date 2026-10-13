@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_scan_pending_request">A scan is already running; the new scan request has been queued</string>
+    <string name="library_scan_stage_start">Starting</string>
+    <string name="library_scan_stage_complete">Complete</string>
+    <string name="library_scan_stage_error">Error</string>
+    <string name="library_scan_stage_quick_write">Quick write</string>
+    <string name="library_scan_stage_background_enrich">Background enrichment</string>
+    <string name="library_scan_stage_final_sync">Final sync</string>
+    <string name="library_scan_stage_database_complete">Database complete</string>
+    <string name="library_scan_stage_visible">Ready to browse</string>
+    <string name="library_scan_stage_cache">Reading cache</string>
+    <string name="library_scan_stage_quick">Quick scan</string>
+    <string name="library_scan_stage_quick_complete">Quick scan complete</string>
+    <string name="library_scan_stage_enrich">Enriching metadata</string>
+    <string name="library_scan_stage_prepare_sync">Preparing database sync</string>
+    <string name="library_scan_stage_cancelled">Cancelled</string>
+    <string name="library_scan_preparing">%1$s: preparing scan</string>
+    <string name="library_scan_failed_detail">Scan failed: %1$s</string>
+    <string name="library_scan_sync_started">%1$s: %2$s · %3$d songs</string>
+    <string name="library_scan_quick_visible">%1$s: quick results are visible · %2$d added/updated</string>
+    <string name="library_scan_enriched_written">%1$s: background enrichment written · %2$d updated</string>
+    <string name="library_scan_database_synced">%1$s: database sync complete · %2$d added · %3$d updated · %4$d deleted · %5$d unchanged</string>
+    <string name="library_scan_visible_message">%1$s: %2$d songs are ready to browse; metadata enrichment continues in the background</string>
+    <string name="library_scan_completed_message">%1$s: completed %2$d songs in %3$d ms</string>
+    <string name="library_scan_reason_failed">%1$s: failed · %2$s</string>
+    <string name="library_scan_started_message">%1$s: scanning %2$d media items</string>
+    <string name="library_scan_cache_loaded">%1$s: loaded %2$d cached entries</string>
+    <string name="library_scan_quick_progress">%1$s: quick scan %2$d/%3$d</string>
+    <string name="library_scan_quick_completed">%1$s: found %2$d songs; writing quick results</string>
+    <string name="library_scan_enrich_progress">%1$s: enriching %2$d/%3$d · cache %4$d · newly read %5$d</string>
+    <string name="library_scan_enrich_completed">%1$s: enrichment complete · %2$d songs · cache %3$d · newly read %4$d</string>
+    <string name="library_scan_channel_name">Music library scan</string>
+    <string name="library_scan_channel_description">Shows RawSMusic music-library scan progress</string>
+    <string name="library_scan_cancelled">Scan cancelled</string>
+    <string name="library_scan_reason_manual">Manual scan</string>
+    <string name="library_scan_reason_auto">Media library changed</string>
+    <string name="library_scan_unknown_error">Unknown scan error</string>
+</resources>

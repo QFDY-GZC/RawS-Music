@@ -1,6 +1,10 @@
 package com.rawsmusic.core.ui.widget.bitmaps
 
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Runs audio artwork source selection exactly once for every provider path.
@@ -22,7 +26,38 @@ internal object AudioArtworkDecodeCoordinator {
         val sourcePath: String
     )
 
-    private val sourceSelectionsInFlight = ConcurrentHashMap<String, Any>()
+    private val sourceSelectionsInFlight = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+
+    private class AnalysisAttempt {
+        var busySource: CompletableDeferred<Unit>? = null
+    }
+
+    private val analysisAttempt = ThreadLocal<AnalysisAttempt>()
+
+    /** Only analysis consumers suspend; visible artwork workers retain their non-blocking path. */
+    internal suspend fun <T> retryAnalysisAfterSourceSelection(decode: () -> T?): T? {
+        repeat(4) { attemptNumber ->
+            currentCoroutineContext().ensureActive()
+            val attempt = AnalysisAttempt()
+            val previous = analysisAttempt.get()
+            analysisAttempt.set(attempt)
+            // decode is synchronous. Restore thread-local decoder state BEFORE any suspension,
+            // because an IO coroutine may resume on a different existing pool thread.
+            val result = try {
+                decode()
+            } finally {
+                if (previous == null) analysisAttempt.remove() else analysisAttempt.set(previous)
+            }
+            if (result != null) return result
+            val busySource = attempt.busySource ?: return null
+            if (attemptNumber == 3) return null
+            // Await the exact flight observed by the failed probe, not a later map lookup that
+            // could miss completion. Cancellation of this waiter never cancels the source owner.
+            val completed = withTimeoutOrNull(5_000L) { busySource.await(); true } ?: false
+            if (!completed) return null
+        }
+        return null
+    }
 
     fun <T> decode(
         providerKey: String,
@@ -30,8 +65,10 @@ internal object AudioArtworkDecodeCoordinator {
         decodeFolder: () -> FolderCandidate<T>?,
         discardRejectedFolder: (T) -> Unit = {}
     ): DecodeResult<T> {
-        val flight = Any()
-        if (sourceSelectionsInFlight.putIfAbsent(providerKey, flight) != null) {
+        val flight = CompletableDeferred<Unit>()
+        val existingFlight = sourceSelectionsInFlight.putIfAbsent(providerKey, flight)
+        if (existingFlight != null) {
+            analysisAttempt.get()?.busySource = existingFlight
             // The owner is still resolving embedded-vs-folder authority. Do not block another
             // BitmapWorker and do not race a folder commit. The request remains retryable; once
             // the owner publishes source authority, a later request takes the indexed fast path.
@@ -95,6 +132,7 @@ internal object AudioArtworkDecodeCoordinator {
             }
         } finally {
             sourceSelectionsInFlight.remove(providerKey, flight)
+            flight.complete(Unit)
         }
     }
 }

@@ -90,7 +90,7 @@ fun NormalBottomChrome(
     backdrop: Backdrop?,
     tabScenes: List<NavScene>,
     selectedTabIndex: Int,
-    onTabSelected: (Int) -> Unit,
+    onTabSelected: (NavScene) -> Unit,
     onOpenPlayer: () -> Unit,
     onPlayPause: () -> Unit,
     onSkipPrevious: () -> Unit,
@@ -359,7 +359,7 @@ fun NormalBottomChrome(
                         modifier = Modifier
                             .weight(1f)
                             .height(navigationHeight)
-                            .clickableWithoutRipple { onTabSelected(index) },
+                            .clickableWithoutRipple { onTabSelected(scene) },
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
                     ) {

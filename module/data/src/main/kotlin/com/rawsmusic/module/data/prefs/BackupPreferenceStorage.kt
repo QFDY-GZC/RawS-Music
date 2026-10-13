@@ -13,6 +13,9 @@ object BackupPreferenceStorage {
 
     fun contains(key: String): Boolean = storage.containsKey(key)
 
+    /** Removes only the requested key, including keys created by a failed restore. */
+    fun remove(key: String) = storage.removeValueForKey(key)
+
     fun readBoolean(key: String, defaultValue: Boolean = false): Boolean =
         storage.decodeBool(key, defaultValue)
 

@@ -24,7 +24,7 @@ object MusicSourceSearchStore {
     private const val SESSION_KEY = "music_source_search_sessions_v1"
     private const val MAX_HISTORY = 15
     private const val MAX_SESSIONS = 6
-    private const val MAX_GROUP_ITEMS = 120
+    private const val MAX_GROUP_ITEMS = MUSIC_SOURCE_SEARCH_DISPLAY_LIMIT
     private const val MAX_ITEM_PAYLOAD_CHARS = 64 * 1024
     private const val MAX_SESSION_PAYLOAD_CHARS = 512 * 1024
 

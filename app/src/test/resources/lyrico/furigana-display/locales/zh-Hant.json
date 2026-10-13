@@ -1,0 +1,5 @@
+{
+  "plugin.name": "日語歌詞源插件",
+  "plugin.description": "專門搜日語歌詞，並自動為漢字加上注音（フリガナ）。Lyrico 匯出 TTML 時帶 tts:ruby 注音。只提供歌詞源，不包含元數據搜尋和封面搜尋。只返回日語歌詞，中文等其他語言的歌詞不會出現在搜尋結果裡。",
+  "error.lyricsCandidate": "歌曲 %1$s 的歌詞候選取得失敗：%2$s"
+}

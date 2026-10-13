@@ -39,6 +39,8 @@ internal class GaplessNextDecoder(
         private val primedPcm: PreparedPcmBuffer,
         private val producer: PendingDecoderPcmProducer,
         private val gaplessAuditRegistry: DecoderGaplessAuditRegistry,
+        val sourceStartMs: Long = 0L,
+        val durationMs: Long = 0L,
     ) {
         val primedBytes: Int get() = primedPcm.availableBytes
         val primedFrames: Long get() = primedPcm.availableFrames
@@ -140,7 +142,8 @@ internal class GaplessNextDecoder(
         wavSampleRate: Int,
         wavBitsPerSample: Int,
         wavChannels: Int,
-        ownerGeneration: Int
+        ownerGeneration: Int,
+        sourceStartMs: Long = 0L,
     ): Boolean {
         if (!isGenerationCurrent(ownerGeneration)) {
             AppLogger.w(tag, "Gapless: skip prepare for stale generation path=$path gen=$ownerGeneration")
@@ -206,6 +209,7 @@ internal class GaplessNextDecoder(
                 val sr = PlaybackDecoderBridge.getDecoderSampleRate(handle)
                 val ch = PlaybackDecoderBridge.getDecoderChannels(handle)
                 val bits = PlaybackDecoderBridge.getDecoderBitsPerSample(handle)
+                val decoderDurationMs = PlaybackDecoderBridge.getDecoderDuration(handle)
                 if (!isGenerationCurrent(ownerGeneration)) {
                     try { PlaybackDecoderBridge.closeDecoder(handle) } catch (_: Throwable) {}
                     AppLogger.w(tag, "Gapless: prepared decoder discarded because generation is obsolete path=$path gen=$ownerGeneration")
@@ -225,6 +229,11 @@ internal class GaplessNextDecoder(
                     outputFrameSize = frameSize,
                     alreadyResolvedPath = resolvedPath,
                 )
+                if (sourceStartMs > 0L && !PlaybackDecoderBridge.seekDecoder(handle, sourceStartMs)) {
+                    error("automatic entry seek failed")
+                }
+                if (!isGenerationCurrent(ownerGeneration)) error("obsolete entry analysis")
+                if (sourceStartMs > 0L) gaplessAuditRegistry.invalidate(handle, "automatic_entry_trim")
                 val maximumQueueBytes = if (NativeTransitionCapabilities.complete) {
                     NativePcmSlotQueue.maximumSlotBytes()
                 } else {
@@ -339,6 +348,8 @@ internal class GaplessNextDecoder(
                     primedPcm = primeBuffer,
                     producer = producer,
                     gaplessAuditRegistry = gaplessAuditRegistry,
+                    sourceStartMs = sourceStartMs,
+                    durationMs = decoderDurationMs,
                 )
                 prepared = result
                 onPrepared(result, elapsedMs)

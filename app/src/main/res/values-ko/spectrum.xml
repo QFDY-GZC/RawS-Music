@@ -1,0 +1,14 @@
+<resources>
+    <string name="spectrum_heading">스펙트럼 분석</string>
+    <string name="spectrum_close_chart">전체 화면 닫기</string>
+    <string name="spectrum_back">뒤로</string>
+    <string name="spectrum_mean_level">평균 레벨</string>
+    <string name="spectrum_peak_level">최대 레벨</string>
+    <string name="spectrum_bandwidth">추정 대역폭</string>
+    <string name="spectrum_duration">재생 시간</string>
+    <string name="spectrum_waterfall_tab">스펙트로그램</string>
+    <string name="spectrum_fullscreen">전체 화면</string>
+    <string name="spectrum_stereo">스테레오</string>
+    <string name="spectrum_log">로그</string>
+    <string name="spectrum_linear">선형</string>
+</resources>

@@ -362,6 +362,7 @@ private fun CurrentQueueSummary(
     onClearPriorityQueue: (() -> Unit)?,
     modifier: Modifier = Modifier
 ) {
+    val unknownArtist = stringResource(R.string.common_unknown_artist)
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -380,7 +381,7 @@ private fun CurrentQueueSummary(
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = song?.displayName ?: "暂无播放歌曲",
+                text = song?.displayName ?: stringResource(R.string.player_no_song),
                 color = colors.primaryText,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -388,7 +389,7 @@ private fun CurrentQueueSummary(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = song?.artist?.ifBlank { "未知艺术家" }.orEmpty(),
+                text = song?.artist?.ifBlank { unknownArtist }.orEmpty(),
                 color = colors.secondaryText,
                 fontSize = 12.sp,
                 maxLines = 1,
@@ -424,6 +425,7 @@ private fun InlineQueueRow(
     colors: InlinePlayerQueueColors,
     onClick: () -> Unit
 ) {
+    val unknownArtist = stringResource(R.string.common_unknown_artist)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -470,7 +472,7 @@ private fun InlineQueueRow(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = song.artist.ifBlank { "未知艺术家" },
+                text = song.artist.ifBlank { unknownArtist },
                 color = colors.secondaryText,
                 fontSize = 11.sp,
                 maxLines = 1,

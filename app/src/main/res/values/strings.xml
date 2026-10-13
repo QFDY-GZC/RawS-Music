@@ -27,8 +27,8 @@
     <string name="settings_lyrico_runtime_checking">Checking QuickJS runtime…</string>
     <string name="settings_lyrico_runtime_ready">Ready. Compatible Lyrico source plugins can run inside RawSMusic.</string>
     <string name="settings_lyrico_runtime_failed">Runtime self-test failed. Imported sources are disabled.</string>
-    <string name="settings_lyrico_import_plugin">Import source plugin</string>
-    <string name="settings_lyrico_import_plugin_summary">Select a Lyrico plugin ZIP; files are validated before installation</string>
+    <string name="settings_lyrico_import_plugin">Import plugin ZIP</string>
+    <string name="settings_lyrico_import_plugin_summary">Choose a Lyrico plugin ZIP file and validate it before installation</string>
     <string name="settings_lyrico_no_plugins">No source plugins</string>
     <string name="settings_lyrico_no_plugins_summary">Import a Lyrico API v4 source plugin to search online lyrics (v1-v3 are also supported)</string>
     <string name="settings_lyrico_plugin_label">%1$s · %2$s</string>
@@ -222,7 +222,7 @@
     <string name="settings_status_bar_lyric_keywords">external lyrics status bar Flyme Samsung Lyric Getter Bluetooth car</string>
     <string name="settings_global_font_title">Global font</string>
     <string name="settings_global_font_summary">Font size, weight, italic style, and global display</string>
-    <string name="settings_global_font_keywords">font typeface global</string>
+    <string name="settings_global_font_keywords">font typeface global lyric lyrics weight variable wght</string>
     <string name="settings_album_art_title">Album art</string>
     <string name="settings_album_art_summary">Artwork quality, high-resolution output, defaults, animation, and cache</string>
     <string name="settings_album_art_keywords">cover cache high resolution album art</string>
@@ -328,6 +328,8 @@
     <string name="settings_player_default_bg_rule_desc">Light mode uses white background with black text; dark mode uses pure black background with white text.</string>
     <string name="settings_player_play_page_section">Playback screen</string>
     <string name="settings_player_immersive">Immersive mode</string>
+    <string name="settings_player_immersive_vertical_swipe">Immersive vertical track gestures</string>
+    <string name="settings_player_immersive_vertical_swipe_summary">Swipe up for the next track. Swipe down outside the artwork for the previous track; inside the artwork, swipe down to return. Lyrics and album details are unchanged. Disabled by default; the playback swipe lock takes priority.</string>
     <string name="settings_player_immersive_desc">Show album-art background on the playback screen</string>
     <string name="settings_player_artwork_corner_radius">Artwork corner radius</string>
     <string name="settings_player_artwork_corner_radius_desc">Adjust the standard player artwork corner radius. Immersive player artwork is not affected.</string>
@@ -347,6 +349,10 @@
     <string name="settings_player_hires_badge_replace">Replace badge</string>
     <string name="settings_player_hires_badge_builtin">Use built-in</string>
     <string name="settings_player_hires_badge_import_failed">Could not import badge image</string>
+    <string name="settings_player_hires_badge_size">Badge size</string>
+    <string name="settings_player_hires_badge_size_value">%1$d%% · %2$d×%3$ddp</string>
+    <string name="settings_player_hires_badge_size_builtin_summary">Built-in source baseline: 58×28dp. Size scales from this native aspect ratio.</string>
+    <string name="settings_player_hires_badge_size_custom_summary">Imported source: %1$d×%2$dpx. Display size keeps the source aspect ratio.</string>
     <string name="settings_player_hide_status_bar">Hide status bar</string>
     <string name="settings_player_hide_status_bar_desc">Hide the system status bar at the top of the app to free more space for content.</string>
     <string name="settings_player_visualizer">Audio visualization</string>
@@ -389,6 +395,10 @@
     <string name="settings_player_page_memory">Playback-screen memory</string>
     <string name="settings_player_page_memory_desc">Restore the last playback screen when reopening the app</string>
     <string name="settings_font_preview">Preview</string>
+    <string name="settings_font_settings_title">Font settings</string>
+    <string name="settings_font_settings_summary">Global and lyric fonts, weight, size, and font capabilities</string>
+    <string name="settings_font_scope_global">Global</string>
+    <string name="settings_font_scope_lyrics">Lyrics</string>
     <string name="settings_global_font_preview_title">RawS Music</string>
     <string name="settings_global_font_preview_alphabet">ABCDEFGHIJKLMNOPQRSTUVWXYZ</string>
     <string name="settings_global_font_preview_mixed">0123456789 こんにちは 你好</string>
@@ -402,6 +412,20 @@
     <string name="settings_percent_value">%1$d%%</string>
     <string name="settings_percent_value_one_decimal">%1$.1f%%</string>
     <string name="settings_font_weight_value">%1$s (%2$d)</string>
+    <string name="settings_font_weight_system_family_hint">System default uses the ROM font family and its native weight mapping.</string>
+    <string name="settings_font_weight_variable_hint">Variable font · native wght %1$d–%2$d</string>
+    <string name="settings_font_weight_variable_clamped_hint">Variable font · native wght %1$d–%2$d · current request resolves to %3$d</string>
+    <string name="settings_font_weight_static_hint">Static font · exact weights depend on available faces; lighter weights may not be synthesizable.</string>
+    <string name="settings_font_weight_static_native_value">Native static weight: %1$d</string>
+    <string name="settings_font_capability_loading">Reading font capabilities…</string>
+    <string name="settings_font_capability_variable_short">Variable · wght %1$d–%2$d</string>
+    <string name="settings_font_capability_static_short">Static · %1$d</string>
+    <string name="settings_font_weight_static_face_hint">Static font · native face %1$d</string>
+    <string name="settings_font_weight_unknown_capability_hint">Font capability could not be read; actual weight behavior depends on Android and the font file.</string>
+    <string name="settings_font_weight_experimental_section">Experimental</string>
+    <string name="settings_font_weight_experimental_title">Extended font weight</string>
+    <string name="settings_font_weight_experimental_summary">Native range is %1$d–%2$d. Values outside it are sent to Android as an experiment and may be clamped or ignored.</string>
+    <string name="settings_font_weight_experimental_active_summary">Native range is %1$d–%2$d. Experimental request %3$d may be clamped or ignored by the ROM/font engine.</string>
     <string name="settings_lyric_font_title">Lyric font settings</string>
     <string name="settings_lyric_font_preview_text">Lyric preview Lyrics Preview</string>
     <string name="settings_lyric_font_scale">Font scale</string>
@@ -438,6 +462,12 @@
     <string name="settings_car_lyrics_desc">Push lyrics to car systems over Bluetooth</string>
     <string name="settings_bluetooth_car_lyrics">Bluetooth car lyrics</string>
     <string name="settings_car_lyrics_translation">Car lyric translation</string>
+    <string name="settings_car_lyrics_field">Bluetooth lyric metadata field</string>
+    <string name="settings_car_lyrics_field_artist">Artist (original mode)</string>
+    <string name="settings_car_lyrics_field_title">Title (AVRCP compatibility)</string>
+    <string name="settings_car_lyrics_field_dual">Two lines (V1-compatible experiment)</string>
+    <string name="settings_car_lyrics_compatibility_title">Car stereo compatibility</string>
+    <string name="settings_car_lyrics_compatibility_desc">If the first lyric sticks, try Two lines. The current lyric is sent as Title; its translation (when enabled), otherwise the next lyric, is sent as Artist. This minimal mode skips per-line notification/playback-state updates. Both fields temporarily replace song metadata. Car support varies; return to Artist mode if needed.</string>
     <string name="settings_webdav_backup_restore_header">Backup and restore</string>
     <string name="settings_webdav_backup_restore_desc">Use the same verified backup archive with your configured WebDAV server.</string>
     <string name="settings_webdav_not_configured">⚠ WebDAV is not configured. Configure the connection from the WebDAV entry in the sidebar first.</string>
@@ -505,8 +535,14 @@
     <string name="settings_audio_focus_allow_duck_summary">Lower the music volume instead of pausing when the other app allows ducking.</string>
     <string name="settings_audio_focus_permanent_loss">Pause on long-term audio-focus loss</string>
     <string name="settings_audio_focus_permanent_loss_summary">Pause when another app takes audio focus for an extended time.</string>
-    <string name="settings_audio_volume_normalization">Volume normalization</string>
-    <string name="settings_audio_volume_normalization_desc">Automatically adjusts playback loudness from song loudness metadata for more consistent perceived volume.</string>
+    <string name="settings_audio_volume_normalization">Loudness normalization (ReplayGain)</string>
+    <string name="settings_audio_volume_normalization_desc">Use embedded ReplayGain metadata to normalize playback loudness.</string>
+    <string name="settings_audio_replaygain_off">Off</string>
+    <string name="settings_audio_replaygain_off_desc">Do not change playback gain from ReplayGain metadata.</string>
+    <string name="settings_audio_replaygain_track">Per track</string>
+    <string name="settings_audio_replaygain_track_desc">Use Track Gain and Track Peak. Best for mixed playlists and shuffle playback.</string>
+    <string name="settings_audio_replaygain_album">Per album</string>
+    <string name="settings_audio_replaygain_album_desc">Use Album Gain and Album Peak to preserve the intended loudness differences within an album.</string>
     <string name="settings_audio_dvc">Direct Volume Control (DVC)</string>
     <string name="settings_audio_dvc_desc">DVC control, volume curve, and no-DVC headroom</string>
     <string name="settings_audio_dvc_info">DVC lets RawS Music own the user-volume gain before equalizers and other effects, preserving DSP headroom. While active, the media stream stays at full scale and volume keys control the player directly. USB exclusive output is not affected.</string>
@@ -536,9 +572,8 @@
     <string name="settings_audio_bluetooth_sco_desc">For car Bluetooth devices that only support call protocols (HFP/HSP)</string>
     <string name="settings_audio_sco_downsample">Downsample to 16 kHz</string>
     <string name="settings_audio_sco_downsample_desc">SCO call-channel bandwidth is limited. Downsampling improves compatibility but reduces quality.</string>
-    <string name="settings_audio_info_volume_title">Volume normalization</string>
-    <string name="settings_audio_info_volume_body">Automatically adjusts playback gain from embedded loudness metadata (ReplayGain), making songs with different mastering loudness sound more consistent.
- Based on the ITU-R BS.1770 loudness normalization standard.</string>
+    <string name="settings_audio_info_volume_title">Loudness normalization (ReplayGain)</string>
+    <string name="settings_audio_info_volume_body">Uses embedded ReplayGain gain and peak metadata. Per-track mode normalizes each song independently; per-album mode preserves the relative loudness between songs in the same album. Gain is limited when necessary to prevent digital clipping. Strict bit-perfect output bypasses normalization.</string>
     <string name="settings_audio_info_gapless_title">Gapless playback</string>
     <string name="settings_audio_info_gapless_body">When the current song ends, switch directly to the next song decoder stream to remove the short silent gap commonly heard between tracks.
 
@@ -907,26 +942,26 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="immersive_waveform_played_color">Played</string>
     <string name="immersive_waveform_climax_color">Climax</string>
 
-    <string name="folder_filter_title">音乐文件夹</string>
-    <string name="folder_filter_summary">选择要扫描的本地音乐目录</string>
-    <string name="folder_filter_selected_count">已选 %1$d</string>
-    <string name="folder_filter_root_count">根目录 %1$d</string>
-    <string name="folder_filter_loading">加载中</string>
-    <string name="folder_filter_empty">还没有可扫描的文件夹</string>
-    <string name="folder_filter_add_folder">添加文件夹</string>
-    <string name="folder_filter_clear">清除</string>
-    <string name="folder_filter_cancel">取消</string>
-    <string name="folder_filter_save_and_scan">保存并扫描</string>
-    <string name="folder_filter_folder_unavailable">文件夹不可用</string>
-    <string name="folder_filter_folder_added">已添加：%1$s</string>
-    <string name="folder_filter_saf_unsupported">无法保存这个文件夹的持久读取权限，请重新选择</string>
-    <string name="folder_filter_saf_required">该目录当前无法直接读取，请通过系统文件夹选择器授权</string>
-    <string name="folder_filter_select_at_least_one">请至少选择一个文件夹</string>
-    <string name="folder_filter_saved_start_scan">已保存 %1$d 个文件夹，开始扫描</string>
-    <string name="folder_filter_load_failed">加载文件夹失败</string>
-    <string name="folder_filter_internal_storage">内部存储</string>
-    <string name="folder_filter_usb_storage">USB 存储</string>
-    <string name="folder_filter_sd_card">SD 卡</string>
+    <string name="folder_filter_title">Music folders</string>
+    <string name="folder_filter_summary">Choose local music folders to scan</string>
+    <string name="folder_filter_selected_count">%1$d selected</string>
+    <string name="folder_filter_root_count">%1$d root folders</string>
+    <string name="folder_filter_loading">Loading</string>
+    <string name="folder_filter_empty">No folders available to scan yet</string>
+    <string name="folder_filter_add_folder">Add folder</string>
+    <string name="folder_filter_clear">Clear</string>
+    <string name="folder_filter_cancel">Cancel</string>
+    <string name="folder_filter_save_and_scan">Save and scan</string>
+    <string name="folder_filter_folder_unavailable">Folder unavailable</string>
+    <string name="folder_filter_folder_added">Added: %1$s</string>
+    <string name="folder_filter_saf_unsupported">Persistent read access could not be saved for this folder. Please choose it again.</string>
+    <string name="folder_filter_saf_required">This folder cannot currently be read directly. Authorize it with the system folder picker.</string>
+    <string name="folder_filter_select_at_least_one">Select at least one folder</string>
+    <string name="folder_filter_saved_start_scan">Saved %1$d folders. Starting scan.</string>
+    <string name="folder_filter_load_failed">Failed to load folders</string>
+    <string name="folder_filter_internal_storage">Internal storage</string>
+    <string name="folder_filter_usb_storage">USB storage</string>
+    <string name="folder_filter_sd_card">SD card</string>
     <string name="settings_audio_engine_audiotrack_hint">System mixer · High compatibility · PCM ≤ 48kHz / 24bit / Stereo</string>
     <string name="settings_personalization_title">Personalization</string>
     <string name="settings_personalization_summary">Interaction, performance, and interface layout</string>
@@ -997,40 +1032,37 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="scan_complete_no_changes">Scan complete: no changes, %1$d tracks total, %2$.1f s</string>
     <string name="scan_complete_summary">Scan complete: %1$d added, %2$d updated, %3$d removed; %4$d unchanged, %5$d total, %6$.1f s</string>
     <string name="update_dialog_title">RawS Music v%1$s</string>
-    <string name="update_dialog_time">Updated: September 20, 2026</string>
+    <string name="update_dialog_time">Updated: October 13, 2026</string>
     <string name="update_developer_message_title">A word from the developer</string>
-    <string name="update_join_qq_group">点击链接加入群聊【RawS Music交流群】：https://qm.qq.com/q/bOvqTQPABi</string>
+    <string name="update_join_qq_group">Tap the link to join the RawS Music QQ group: https://qm.qq.com/q/bOvqTQPABi</string>
     <string name="update_close">Close</string>
     <string-array name="update_notes">
-        <item>## Fixes</item>
-        <item>Fixed inconsistent structure between the folder hierarchy page and other category pages.</item>
-        <item>Fixed some lyric lines moving only halfway upward during the upward-motion animation.</item>
-        <item>Fixed stutter in the highlighted-lyric upward animation.</item>
-        <item>Fixed Lyrico lyric-source identification issues.</item>
-        <item>Fixed font-weight adjustments not taking effect.</item>
-        <item>Fixed electronic-noise artifacts that could occur when changing tracks in USB Exclusive mode.</item>
-        <item>Fixed sudden volume jumps when switching repeatedly between hardware and software volume in USB Exclusive mode, reducing the risk of dangerously loud output.</item>
-        <item>Fixed track-change fade-in/fade-out not working in USB Exclusive software-volume mode.</item>
-        <item>Fixed abnormal list track switching after repeatedly changing between hardware and software volume in USB Exclusive mode.</item>
-        <item>## Improvements</item>
-        <item>Improved status-bar hiding so it no longer changes page layout.</item>
-        <item>Improved the smoothness and presentation of lyric upward-motion animations.</item>
-        <item>Improved the overall structure, interactions, and transitions between category and detail pages.</item>
-        <item>Refined USB Exclusive hardware volume, software volume, bit-perfect, and gain handling for improved listening performance.</item>
-        <item>Refined lyric settings and redesigned the selectors.</item>
-        <item>Improved the USB Exclusive playback model for better stability during frequent track changes and long playback sessions.</item>
-        <item>Improved notification popups: they no longer use the system default behavior and can now be dismissed with gestures.</item>
-        <item>Rewrote the WebDAV protocol layer and expanded its functionality (thanks to Halcyon).</item>
-        <item>Updated the Lyrico API.</item>
-        <item>## New</item>
-        <item>Added “Particles” audio visualization with rainbow and white styles, energy-driven brightness and motion, plus optional vibration feedback for a more immersive effect.</item>
-        <item>Added progress-bar visualization options.</item>
-        <item>Added material selection for “Music Spine”: custom materials can be selected in Settings or globally; choosing Acrylic or Liquid Glass synchronizes the background with the existing material effect.</item>
-        <item>Added artist biographies and artist-cover viewing (thanks to Halcyon).</item>
-        <item>Added notification-popup support to material settings.</item>
-        <item>Added a “Dynamic Spectrum” progress-bar style.</item>
-        <item>## Notice</item>
-        <item>If you experience dropped frames, try disabling the flowing-light background or Liquid Glass to reduce GPU load and improve frame rate.</item>
+        <item>## Added</item>
+        <item>Added a COUI-style progress bar.</item>
+        <item>Added a keep-screen-on setting for the player screen.</item>
+        <item>Added Super Island artwork display and artwork-based colors.</item>
+        <item>Added SACD-ISO reading with automatic detection of DSD tracks inside the image, plus SACD-ISO output in format conversion.</item>
+        <item>Added reverb with space presets and adjustable parameters.</item>
+        <item>## Improved</item>
+        <item>Improved rounded-corner support on devices running Android API 32 or later.</item>
+        <item>Added fade transitions for titles, lyrics, and other changing player content when switching tracks.</item>
+        <item>Improved automatic crossfade triggering, mixing, and track handoff.</item>
+        <item>Improved lyric language display.</item>
+        <item>## Fixed</item>
+        <item>Fixed several in-car lyric delivery issues.</item>
+        <item>Fixed space handling in furigana annotations.</item>
+        <item>Fixed Super Island lyric display issues.</item>
+        <item>Fixed background colors falling out of sync after a cold start.</item>
+        <item>Fixed accelerated pitch and unexpected second track changes during mixing in some cases.</item>
+        <item>Fixed playback suddenly pausing near the end of a track in USB exclusive mode and restarting the audio when Play was pressed again.</item>
+        <item>Fixed incorrect volume comparisons causing Previous playback to fail in USB exclusive mode.</item>
+        <item>Fixed successful format conversions being reported as internal conversion failures.</item>
+        <item>Fixed container validation failures during FLAC-to-FLAC conversion.</item>
+        <item>Fixed inconsistent furigana positions caused by insufficient reserved space.</item>
+        <item>Fixed brief black screens when expanding the player.</item>
+        <item>Fixed USB restarts or freezes in some cases.</item>
+        <item>Fixed lyric source names showing unresolved resource names.</item>
+        <item>Fixed memory bottlenecks when batch-matching lyrics for a large number of tracks.</item>
     </string-array>
     <string-array name="update_developer_quotes">
         <item>“永远快乐”这句话，不但渺茫得不能实现，并且荒谬得不能成立。快过的决不会永久；我们说永远快乐，正好像说四方的圆形、静止的动作，同样地自相矛盾。在高兴的时候，我们空对瞬息即逝的时间喊着说：“逗留一会儿吧！你太美了！”那有什么用？你要永久，你该向痛苦里去找。不讲别的，只要一个失眠的晚上，或者有约不来的下午，或者一课沉闷的听讲，这许多比一切宗教信仰更有效力，能使你尝到什么叫做“永生”的滋味。人生的刺就在这里：留恋着不肯快走的，偏是你所不留恋的东西。</item>
@@ -1558,14 +1590,20 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="desktop_lyric_use_lyric_font">Use the configured lyric font</string>
     <string name="common_confirm">Confirm</string>
     <string name="settings_lyrics_title">Lyrics</string>
+    <string name="settings_lyric_export_section">Lyric exports</string>
+    <string name="settings_lyric_export_signature">Poster and video signature (blank to hide)</string>
     <string name="settings_lyrics_summary">Manage lyrics, lyric typography, and system lyric integrations</string>
     <string name="settings_lyrics_keywords">lyrics lyric font status bar floating lyric lyric source</string>
     <string name="settings_lyrics_content_section">Lyric settings</string>
     <string name="settings_background_style">Background style</string>
     <string name="settings_background_style_desc">Flow and static backgrounds share the album-art palette.</string>
     <string name="settings_background_style_flow">Flow</string>
+    <string name="settings_background_style_album_color">Album colors</string>
     <string name="settings_background_style_static">Static</string>
     <string name="settings_background_style_simple">Simple</string>
+    <string name="settings_background_frame_rate">Flow frame rate</string>
+    <string name="settings_background_frame_rate_desc">Changes only the refresh cadence, not motion speed. Lower values save power; higher values look smoother.</string>
+    <string name="settings_background_frame_rate_value">%1$d FPS</string>
     <string name="settings_background_speed">Motion speed</string>
     <string name="settings_background_speed_value">%1$.1f×</string>
     <string name="settings_background_saturation">Palette saturation</string>
@@ -1584,97 +1622,97 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="audio_spectrum_left_short">L</string>
     <string name="audio_spectrum_right_short">R</string>
     <string name="audio_spectrum_dbfs">dBFS</string>
-    <string name="playlist_create_failed">无法创建歌单，请稍后重试</string>
+    <string name="playlist_create_failed">Couldn’t create the playlist. Please try again later.</string>
     <string name="preset_saved">Preset saved</string>
     <string name="preset_save_failed">Save failed: %1$s</string>
     <string name="preset_read_failed">Read failed: %1$s</string>
     <string name="logs_empty">No logs</string>
     <string name="logs_exported">Logs exported</string>
     <string name="logs_export_failed">Export failed: %1$s</string>
-    <string name="dialog_qq_title">QQ群号</string>
-    <string name="dialog_qq_description">QQ群号1093312333，欢迎大家进群讨论。</string>
-    <string name="dialog_confirm">确定</string>
-    <string name="sleep_timer_title">睡眠定时</string>
-    <string name="sleep_timer_cancel">取消</string>
-    <string name="sleep_timer_off">关闭</string>
-    <string name="sleep_timer_10">10 分钟</string>
-    <string name="sleep_timer_15">15 分钟</string>
-    <string name="sleep_timer_20">20 分钟</string>
-    <string name="sleep_timer_30">30 分钟</string>
-    <string name="sleep_timer_45">45 分钟</string>
-    <string name="sleep_timer_60">60 分钟</string>
-    <string name="sleep_timer_90">90 分钟</string>
-    <string name="sleep_timer_current">播完当前</string>
-    <string name="sleep_timer_3_songs">播完 3 首后</string>
-    <string name="sleep_timer_5_songs">播完 5 首后</string>
-    <string name="ui_audio_open_file">打开音频文件</string>
-    <string name="ui_no_audio_app">没有可打开此音频的应用</string>
-    <string name="ui_file_missing">文件不存在：%1$s</string>
-    <string name="ui_no_matching_songs">没有可匹配的歌曲</string>
-    <string name="ui_matching_in_progress">已有自动匹配任务正在进行</string>
-    <string name="ui_import_source_first">请先导入并启用至少一个歌词音源</string>
-    <string name="ui_queue_added">已添加到播放队列</string>
-    <string name="ui_play_next_added">已加入下一首播放</string>
-    <string name="ui_no_current_song">当前没有正在播放的歌曲</string>
-    <string name="ui_playback_list_finished">列表已结束</string>
-    <string name="ui_delete_cancelled">已取消删除</string>
-    <string name="ui_delete_result">已删除 %1$d 首</string>
-    <string name="ui_delete_result_failed">已删除 %1$d 首，%2$d 首失败</string>
-    <string name="ui_no_exportable_logs">暂无可导出的播放日志</string>
-    <string name="ui_no_email_app">未找到可用的邮箱应用</string>
-    <string name="ui_metadata_save_state_expired">保存状态已失效，请重试</string>
-    <string name="ui_metadata_write_permission_denied">写入权限被拒绝</string>
-    <string name="ui_metadata_file_missing">文件不存在: %1$s</string>
-    <string name="ui_metadata_permission_failed">权限请求失败: %1$s</string>
-    <string name="ui_metadata_media_missing">未在系统媒体库中找到该歌曲，无法获取写入权限</string>
-    <string name="ui_metadata_song_missing">歌曲未在 MediaStore 中找到</string>
-    <string name="ui_saved">已保存</string>
-    <string name="ui_media_update_empty">保存失败，MediaStore 更新返回 0</string>
-    <string name="ui_save_failed">保存失败: %1$s</string>
-    <string name="ui_metadata_write_failed">元数据写入失败 (错误码: %1$d)</string>
-    <string name="ui_temp_file_missing">临时文件不存在或为空</string>
-    <string name="ui_temp_file_invalid">临时文件校验失败，原音频未改动</string>
-    <string name="ui_file_replace_failed">文件替换失败，已恢复原音频</string>
-    <string name="ui_deleted">已删除</string>
-    <string name="ui_delete_failed">删除失败</string>
-    <string name="ui_delete_song">删除歌曲</string>
-    <string name="ui_confirm_delete_song">确定要删除“%1$s”吗？此操作不可撤销。</string>
-    <string name="ui_create_playlist_title">新建歌单</string>
-    <string name="ui_playlist_name">歌单名称</string>
-    <string name="ui_playlist_create_and_add">创建并加入</string>
-    <string name="ui_playlist_created_summary">创建后自动加入已选歌曲</string>
-    <string name="ui_playlist_song_count">%1$d 首歌曲</string>
-    <string name="ui_unknown_album">未知专辑</string>
-    <string name="ui_cancel">取消</string>
-    <string name="ui_playlist_create_failed">创建歌单失败</string>
-    <string name="ui_playlist_added">已添加到「%1$s」</string>
-    <string name="ui_playlist_picker_title">快捷加入歌单</string>
-    <string name="ui_playlist_add_selected">加入所选歌单（%1$d）</string>
-    <string name="ui_playlist_added_partial">已加入 %1$d 个歌单，%2$d 个失败</string>
-    <string name="ui_playlist_add_failed">加入歌单失败</string>
+    <string name="dialog_qq_title">QQ group number</string>
+    <string name="dialog_qq_description">QQ group 1093312333. You’re welcome to join the discussion.</string>
+    <string name="dialog_confirm">OK</string>
+    <string name="sleep_timer_title">Sleep timer</string>
+    <string name="sleep_timer_cancel">Cancel</string>
+    <string name="sleep_timer_off">Off</string>
+    <string name="sleep_timer_10">10 minutes</string>
+    <string name="sleep_timer_15">15 minutes</string>
+    <string name="sleep_timer_20">20 minutes</string>
+    <string name="sleep_timer_30">30 minutes</string>
+    <string name="sleep_timer_45">45 minutes</string>
+    <string name="sleep_timer_60">60 minutes</string>
+    <string name="sleep_timer_90">90 minutes</string>
+    <string name="sleep_timer_current">After current song</string>
+    <string name="sleep_timer_3_songs">After 3 songs</string>
+    <string name="sleep_timer_5_songs">After 5 songs</string>
+    <string name="ui_audio_open_file">Open audio file</string>
+    <string name="ui_no_audio_app">No app can open this audio file</string>
+    <string name="ui_file_missing">File not found: %1$s</string>
+    <string name="ui_no_matching_songs">No songs available to match</string>
+    <string name="ui_matching_in_progress">An automatic matching task is already running</string>
+    <string name="ui_import_source_first">Import and enable at least one lyric source first</string>
+    <string name="ui_queue_added">Added to playback queue</string>
+    <string name="ui_play_next_added">Added to Play Next</string>
+    <string name="ui_no_current_song">No song is currently playing</string>
+    <string name="ui_playback_list_finished">End of list</string>
+    <string name="ui_delete_cancelled">Deletion cancelled</string>
+    <string name="ui_delete_result">Deleted %1$d songs</string>
+    <string name="ui_delete_result_failed">Deleted %1$d songs; %2$d failed</string>
+    <string name="ui_no_exportable_logs">No playback logs to export</string>
+    <string name="ui_no_email_app">No email app available</string>
+    <string name="ui_metadata_save_state_expired">The save state expired. Please try again.</string>
+    <string name="ui_metadata_write_permission_denied">Write permission denied</string>
+    <string name="ui_metadata_file_missing">File not found: %1$s</string>
+    <string name="ui_metadata_permission_failed">Permission request failed: %1$s</string>
+    <string name="ui_metadata_media_missing">This song was not found in the system media library, so write permission cannot be requested</string>
+    <string name="ui_metadata_song_missing">Song not found in MediaStore</string>
+    <string name="ui_saved">Saved</string>
+    <string name="ui_media_update_empty">Save failed: MediaStore update returned 0</string>
+    <string name="ui_save_failed">Save failed: %1$s</string>
+    <string name="ui_metadata_write_failed">Metadata write failed (error code: %1$d)</string>
+    <string name="ui_temp_file_missing">Temporary file is missing or empty</string>
+    <string name="ui_temp_file_invalid">Temporary-file validation failed; the original audio was not changed</string>
+    <string name="ui_file_replace_failed">File replacement failed; the original audio was restored</string>
+    <string name="ui_deleted">Deleted</string>
+    <string name="ui_delete_failed">Delete failed</string>
+    <string name="ui_delete_song">Delete song</string>
+    <string name="ui_confirm_delete_song">Delete “%1$s”? This cannot be undone.</string>
+    <string name="ui_create_playlist_title">New playlist</string>
+    <string name="ui_playlist_name">Playlist name</string>
+    <string name="ui_playlist_create_and_add">Create and add</string>
+    <string name="ui_playlist_created_summary">Selected songs will be added automatically after creation</string>
+    <string name="ui_playlist_song_count">%1$d songs</string>
+    <string name="ui_unknown_album">Unknown album</string>
+    <string name="ui_cancel">Cancel</string>
+    <string name="ui_playlist_create_failed">Failed to create playlist</string>
+    <string name="ui_playlist_added">Added to “%1$s”</string>
+    <string name="ui_playlist_picker_title">Quick add to playlist</string>
+    <string name="ui_playlist_add_selected">Add to selected playlists (%1$d)</string>
+    <string name="ui_playlist_added_partial">Added to %1$d playlists; %2$d failed</string>
+    <string name="ui_playlist_add_failed">Failed to add to playlist</string>
     <plurals name="ui_playlist_added_multiple">
-        <item quantity="one">已加入 %d 个歌单</item>
-        <item quantity="other">已加入 %d 个歌单</item>
+        <item quantity="one">Added to %d playlist</item>
+        <item quantity="other">Added to %d playlists</item>
     </plurals>
-    <string name="ui_back">返回</string>
-    <string name="ui_log_filter">过滤</string>
-    <string name="ui_refresh">刷新</string>
-    <string name="ui_log_share">分享</string>
-    <string name="ui_log_share_title">分享日志</string>
-    <string name="ui_log_search_hint">搜索日志</string>
-    <string name="ui_log_tag_filter">标签过滤：</string>
-    <string name="ui_log_count">共 %1$d 条日志</string>
-    <string name="ui_close">关闭</string>
-    <string name="ui_clear_logs_title">清空日志</string>
-    <string name="ui_clear_logs_confirm">确定要清空所有日志吗？此操作不可恢复。</string>
-    <string name="ui_overview">概览</string>
-    <string name="ui_total">总计</string>
-    <string name="ui_error">错误</string>
-    <string name="ui_warning">警告</string>
-    <string name="ui_info">信息</string>
-    <string name="ui_debug">调试</string>
-    <string name="ui_top_tags">高频标签 Top 5：</string>
-    <string name="ui_occurrences">%1$d 次</string>
+    <string name="ui_back">Back</string>
+    <string name="ui_log_filter">Filter</string>
+    <string name="ui_refresh">Refresh</string>
+    <string name="ui_log_share">Share</string>
+    <string name="ui_log_share_title">Share logs</string>
+    <string name="ui_log_search_hint">Search logs</string>
+    <string name="ui_log_tag_filter">Tag filter:</string>
+    <string name="ui_log_count">%1$d log entries</string>
+    <string name="ui_close">Close</string>
+    <string name="ui_clear_logs_title">Clear logs</string>
+    <string name="ui_clear_logs_confirm">Clear all logs? This cannot be undone.</string>
+    <string name="ui_overview">Overview</string>
+    <string name="ui_total">Total</string>
+    <string name="ui_error">Error</string>
+    <string name="ui_warning">Warning</string>
+    <string name="ui_info">Info</string>
+    <string name="ui_debug">Debug</string>
+    <string name="ui_top_tags">Top 5 tags:</string>
+    <string name="ui_occurrences">%1$d occurrences</string>
     <string name="ui_about_title">About</string>
     <string name="ui_about_version">Version 1.3.0</string>
     <string name="ui_about_author">Author</string>
@@ -1795,6 +1833,14 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_bottom_navigation_style_section">Navigation bar style</string>
     <string name="settings_bottom_navigation_preview_expanded">Expanded state</string>
     <string name="settings_bottom_navigation_preview_minimized">Minimized state</string>
+    <string name="settings_bottom_navigation_compact_style_title">Minimized layout</string>
+    <string name="settings_bottom_navigation_compact_style_classic">Classic side buttons</string>
+    <string name="settings_bottom_navigation_compact_style_adaptive">Adaptive width</string>
+    <string name="settings_bottom_navigation_compact_leading_title">Left compact button</string>
+    <string name="settings_bottom_navigation_compact_leading_summary">Show the current navigation tab at the left edge when the bottom bar is minimized.</string>
+    <string name="settings_bottom_navigation_compact_trailing_title">Right search button</string>
+    <string name="settings_bottom_navigation_compact_trailing_summary">Show Search at the right edge when the bottom bar is minimized.</string>
+    <string name="settings_bottom_navigation_compact_adaptive_summary">Adaptive mode starts with both side buttons hidden. Enable either side and the MiniPlayer automatically uses the remaining width; enable both to extend between both buttons.</string>
     <string name="settings_bottom_navigation_height_title">Navigation bar height</string>
     <string name="settings_bottom_navigation_bottom_lift_title">Bottom bar vertical lift</string>
     <string name="settings_bottom_navigation_radius_title">Corner radius</string>
@@ -1802,7 +1848,7 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_bottom_navigation_trailing_margin_title">Trailing margin</string>
     <string name="settings_bottom_navigation_curve_title">Corner curve</string>
     <string name="settings_bottom_navigation_curve_summary">2.0 keeps a conventional rounded corner; higher values make the navigation surface more squircle-like.</string>
-    <string name="settings_bottom_navigation_inline_height_summary">When the bottom chrome minimizes, the left and right navigation buttons automatically match the MiniPlayer compact height so all three surfaces stay aligned.</string>
+    <string name="settings_bottom_navigation_inline_height_summary">When the bottom chrome minimizes, any enabled side button automatically matches the MiniPlayer compact height so the inline surfaces stay aligned.</string>
     <string name="settings_bottom_navigation_style_reset">Reset navigation bar style</string>
     <string name="settings_bottom_navigation_scroll_behavior_section">Scroll behavior</string>
     <string name="settings_bottom_navigation_scroll_behavior_default">Default</string>
@@ -1919,6 +1965,8 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_language_system">System</string>
     <string name="settings_language_chinese">简体中文</string>
     <string name="settings_language_english">English</string>
+    <string name="settings_language_japanese">Japanese</string>
+    <string name="settings_language_korean">Korean</string>
     <string name="webdav_title">WebDAV</string>
     <string name="metadata_match_progress">Processed %1$d/%2$d · written %3$d</string>
     <string name="metadata_match_progress_failed">Processed %1$d/%2$d · written %3$d · failed %4$d</string>
@@ -2006,6 +2054,8 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_custom_background_settings">Show on settings pages</string>
     <string name="settings_custom_background_settings_summary">Keep the selected media behind all settings pages.</string>
     <string name="settings_custom_background_clear">Remove custom background</string>
+    <string name="settings_custom_background_full_image">Show full background image</string>
+    <string name="settings_custom_background_full_image_summary">On: preserve the entire image; uncovered areas show the underlying background. Off: fill the screen with centered cropping. Images only.</string>
     <string name="usb_dac_header_route_android">Current output: Android USB Audio · %1$s</string>
     <string name="usb_dac_header_route_exclusive">Current output: USB exclusive · After exclusive: %1$s</string>
     <string name="usb_dac_header_route_starting">Enabling USB exclusive · After exclusive: %1$s</string>
@@ -2019,7 +2069,6 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_mini_lyric_alignment_desc">Choose left, center, or right alignment for the mini lyrics independently of the title information.</string>
     <string name="settings_mini_player_karaoke_effect">Mini-player word-by-word lyric effect</string>
     <string name="settings_mini_player_karaoke_effect_desc">Highlight timed words progressively in the playback bar when word timing is available. Plain lyrics remain unchanged.</string>
-
     <string name="hardware_device_control_title">Current device · Hardware DSP</string>
     <string name="hardware_device_control_summary">Dynamically show controls exposed by the current USB or Bluetooth audio device.</string>
     <string name="hardware_device_control_keywords">hardware dsp device eq equalizer bluetooth usb dac anc filter</string>
@@ -2041,7 +2090,6 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="hardware_device_control_copy_diagnostics">Diagnostics</string>
     <string name="hardware_device_control_diagnostics_copied">Hardware DSP diagnostics copied</string>
     <string name="hardware_device_control_write_failed">Hardware control failed: %1$s</string>
-
     <string name="settings_mini_controls_section">Mini player controls</string>
     <string name="settings_mini_previous_title">Previous button</string>
     <string name="settings_mini_previous_summary">Show Previous immediately to the left of Play/Pause.</string>
@@ -2095,7 +2143,6 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="settings_mini_player_artwork_display_title">MiniPlayer artwork</string>
     <string name="settings_mini_player_artwork_display_adjustment_title">Artwork adjustments</string>
     <string name="settings_mini_player_artwork_display_summary">%1$s · %2$d dp · Tap to adjust</string>
-
     <string name="settings_liquid_glass_global_section">Liquid glass</string>
     <string name="settings_surface_style_title">Material assignment</string>
     <string name="settings_surface_style_summary">Choose where each material is used.</string>
@@ -2198,4 +2245,218 @@ When disabled, the system tries to output at the original sample rate; some devi
     <string name="transcode_stage_completed">Conversion complete</string>
     <string name="transcode_stage_failed">Conversion failed</string>
     <string name="transcode_stage_cancelled">Conversion cancelled</string>
+    <string name="reward_wechat_qr_description">WeChat donation QR code</string>
+    <string name="reward_alipay_qr_description">Alipay donation QR code</string>
+    <string name="reward_image_saved">Image saved</string>
+    <string name="reward_image_save_failed">Couldn’t save the image. Please try again.</string>
+    <string name="reward_support_message">Your support keeps this project moving.\nThank you for every contribution and for helping RawS Music get better.\nLong-press either donation code to preview and save it.</string>
+    <string name="reward_save_image">Save image</string>
+    <string name="transcode_screen_title">Audio conversion</string>
+    <string name="transcode_tab_settings">Convert</string>
+    <string name="transcode_tab_queue">Queue</string>
+    <string name="transcode_tab_results">Results</string>
+    <string name="transcode_storage_permission_required">Conversion results must be written to the Music folder. Grant file access and try again.</string>
+    <string name="transcode_no_usable_audio_stream">The selected files contain no usable audio stream</string>
+    <string name="transcode_batch_settings">Batch conversion settings</string>
+    <string name="transcode_settings">Conversion settings</string>
+    <string name="transcode_select_audio_first">Select audio to convert first</string>
+    <string name="transcode_started_count">Started %1$d conversion tasks</string>
+    <string name="transcode_service_start_failed">Couldn’t start the conversion service</string>
+    <string name="transcode_started_priority">Priority conversion started</string>
+    <string name="transcode_added_to_queue">Added to the conversion queue</string>
+    <string name="transcode_queue_add_failed">Couldn’t add the task to the conversion queue</string>
+    <string name="transcode_added_to_queue_count">Added %1$d tasks to the conversion queue</string>
+    <string name="transcode_started_priority_count">Priority-started %1$d conversion tasks</string>
+    <string name="transcode_source_empty_title">Give your music a new format</string>
+    <string name="transcode_source_selected_count">%1$d audio files selected</string>
+    <string name="transcode_source_empty_summary">Add audio from the library or system files and convert it in batches.</string>
+    <string name="transcode_source_selected_summary">%1$s · Select tracks or adjust individual settings in Queue</string>
+    <string name="transcode_add_from_library">Add from library</string>
+    <string name="transcode_add_from_system">Choose system files</string>
+    <string name="transcode_output_format">Output format</string>
+    <string name="transcode_loading_formats">Loading available formats…</string>
+    <string name="transcode_dsd_rate">DSD rate</string>
+    <string name="transcode_sample_rate">Sample rate</string>
+    <string name="transcode_follow_source_auto">Auto · Follow source</string>
+    <string name="transcode_bitrate">Bitrate</string>
+    <string name="transcode_recommended">Recommended</string>
+    <string name="transcode_bit_depth">Bit depth</string>
+    <string name="transcode_follow_source">Follow source</string>
+    <string name="transcode_compression">Compression</string>
+    <string name="transcode_flac_faster">Faster</string>
+    <string name="transcode_flac_balanced">Balanced</string>
+    <string name="transcode_flac_smaller">Smaller</string>
+    <string name="transcode_flac_level">%1$s · Level %2$d</string>
+    <string name="transcode_dsd_note">For DSD-capable playback devices. PCM→DSD is modulation conversion and cannot add information missing from the source; output files are usually much larger.</string>
+    <string name="transcode_lossy_note">Smaller files for everyday listening. Lossy conversion cannot restore source quality.</string>
+    <string name="transcode_lossless_note">Lossless storage for archiving. Conversion cannot improve the source quality.</string>
+    <string name="transcode_more_settings">More settings</string>
+    <string name="transcode_metadata_strict_short">Preserve all tags</string>
+    <string name="transcode_metadata_best_effort_short">Preserve tags where possible</string>
+    <string name="transcode_hardware_acceleration">Hardware acceleration</string>
+    <string name="transcode_delete_source_after">Delete source after completion</string>
+    <string name="transcode_auto_scan">Auto scan</string>
+    <string name="transcode_collapse">Collapse</string>
+    <string name="transcode_expand">Expand</string>
+    <string name="transcode_metadata_strict">Preserve all tags and artwork</string>
+    <string name="transcode_metadata_strict_summary">Stop conversion if they cannot be preserved completely</string>
+    <string name="transcode_hardware_acceleration_summary">Fall back to software encoding when unsupported</string>
+    <string name="transcode_delete_source_after_summary">Delete only after conversion and verification succeed</string>
+    <string name="transcode_add_to_library_after">Add to music library when finished</string>
+    <string name="transcode_add_to_library_dsd_summary">DSF is scanned automatically; enable this to scan other formats after queue completion too</string>
+    <string name="transcode_add_to_library_summary">Scan automatically after all tasks finish</string>
+    <string name="transcode_save_location">Save location</string>
+    <string name="transcode_save_location_summary">Conversion results are saved to Music / RawSMusic / Converted.</string>
+    <string name="transcode_override_count">%1$d tracks use individual settings</string>
+    <string name="transcode_source_will_be_deleted">Source files will be deleted after successful conversion</string>
+    <string name="transcode_start_count">Start conversion · %1$d tracks</string>
+    <string name="transcode_add_audio_first">Add audio first</string>
+    <string name="transcode_pending_title">Pending</string>
+    <string name="transcode_pending_empty">No pending items</string>
+    <string name="transcode_pending_selected_summary">%1$d selected · Override settings per track or convert in a batch</string>
+    <string name="transcode_select_all">Select all</string>
+    <string name="transcode_deselect_all">Deselect all</string>
+    <string name="transcode_pending_add_hint">Select multiple tracks from the library or add several files at once with the system picker.</string>
+    <string name="transcode_results_title">Conversion results</string>
+    <string name="transcode_running_title">Running</string>
+    <string name="transcode_running_summary">A task is running; the next one starts automatically when it finishes</string>
+    <string name="transcode_results_summary">Completed files and processing records</string>
+    <string name="transcode_queue_summary">Convert automatically in queue order</string>
+    <string name="transcode_not_started">Conversion has not started</string>
+    <string name="transcode_clear_finished">Clear finished</string>
+    <string name="transcode_results_empty">No conversion results yet\nCompleted tasks and failure details will remain here.</string>
+    <string name="transcode_running_empty">No active conversion tasks</string>
+    <string name="transcode_selected_of_total">Selected %1$d / %2$d</string>
+    <string name="transcode_none_selected">No pending items selected</string>
+    <string name="transcode_batch_affects_selected">Batch actions affect only checked items</string>
+    <string name="transcode_select_for_batch">Check items to remove or convert them in a batch</string>
+    <string name="transcode_remove">Remove</string>
+    <string name="transcode_add_to_queue">Add to queue</string>
+    <string name="transcode_start_now">Start now</string>
+    <string name="transcode_start_now_count">Start now (%1$d)</string>
+    <string name="transcode_state_waiting_short">Waiting</string>
+    <string name="transcode_state_converting_short">Converting</string>
+    <string name="transcode_state_completed_short">Done</string>
+    <string name="transcode_state_failed_short">Failed</string>
+    <string name="transcode_state_cancelled_short">Cancelled</string>
+    <string name="transcode_individual_parameters">Individual · %1$s</string>
+    <string name="transcode_follow_batch_settings">Batch settings · %1$s</string>
+    <string name="transcode_individual_settings">Individual settings</string>
+    <string name="transcode_output_path">Output: %1$s</string>
+    <string name="transcode_move_up">Move up</string>
+    <string name="transcode_move_down">Move down</string>
+    <string name="transcode_retry">Retry</string>
+    <string name="transcode_open">Open</string>
+    <string name="transcode_authorize_delete">Authorize delete</string>
+    <string name="transcode_individual_settings_title">Individual settings · %1$s</string>
+    <string name="transcode_individual_settings_summary">Overrides only this audio item; other items continue using batch settings</string>
+    <string name="transcode_override_batch_settings">Override batch settings</string>
+    <string name="transcode_restore_batch_settings">Restore batch settings</string>
+    <string name="transcode_save">Save</string>
+    <string name="transcode_library_picker_summary">Choose audio from the RawSMusic library. Tracks already in the draft queue stay selected and locked.</string>
+    <string name="transcode_library_search_hint">Search songs / artists / albums</string>
+    <string name="transcode_library_selected_sort">Selected %1$d · %2$s</string>
+    <string name="transcode_library_selected_sort_desc">Selected %1$d · %2$s · Descending</string>
+    <string name="transcode_sort">Sort</string>
+    <string name="transcode_deselect_visible">Deselect all visible results</string>
+    <string name="transcode_select_visible">Select all visible results</string>
+    <string name="transcode_library_loading_or_empty">The library is still loading or is currently empty.</string>
+    <string name="transcode_library_no_match">No matching songs.</string>
+    <string name="transcode_already_added">Added</string>
+    <string name="transcode_add_count">Add (%1$d)</string>
+    <string name="transcode_sort_summary">Uses the same sort modes as the library; toggle descending order independently on the right</string>
+    <string name="transcode_descending">Descending</string>
+    <string name="transcode_sort_lossless">Lossless</string>
+    <string name="transcode_sort_lossy">Lossy</string>
+    <string name="transcode_sort_dsd">DSD first</string>
+    <string name="transcode_sort_bit_depth">Bit depth</string>
+    <string name="transcode_sort_sample_rate">Sample rate</string>
+    <string name="transcode_output_missing">The output file no longer exists</string>
+    <string name="transcode_open_result">Open conversion result</string>
+    <string name="transcode_no_app_to_open">No available app can open this audio file</string>
+    <string name="transcode_follow_compatible_source">Follow / compatible source</string>
+    <string name="transcode_recommended_bitrate">Recommended bitrate</string>
+    <string name="transcode_keep_sample_rate">Keep sample rate</string>
+    <string name="transcode_keep_bit_depth">Keep bit depth</string>
+    <string name="transcode_processing">Processing</string>
+    <string name="common_back">Back</string>
+    <string name="transcode_storage_access_granted">File access granted. You can start converting.</string>
+    <string name="transcode_storage_access_denied">File access was not granted, so conversion results cannot be written.</string>
+    <string name="transcode_delete_consent_denied">Source-file deletion was not authorized. The original file was kept.</string>
+    <string name="transcode_source_deleted_after_consent">The source file was deleted after system authorization.</string>
+    <string name="transcode_source_still_exists_after_consent">System authorization returned, but the source file still exists.</string>
+    <string name="transcode_open_storage_settings_failed">Couldn’t open file-access settings.</string>
+    <string name="transcode_source_already_missing">The source file no longer exists.</string>
+    <string name="transcode_delete_consent_launch_failed">Couldn’t request system authorization to delete the source file.</string>
+    <string name="settings_ai_realtime_factor"> · %1$.2f× realtime</string>
+    <string name="settings_ai_preparing">Preparing</string>
+    <string name="settings_ai_melody_model_imported_notice">RMVPE melody model installed</string>
+    <string name="settings_ai_melody_model_import_failed_notice">Failed to install the RMVPE model</string>
+    <string name="settings_ai_instrument_pack_imported_notice">Instrument sample pack installed</string>
+    <string name="settings_ai_instrument_pack_import_failed_notice">Failed to install the instrument pack</string>
+    <string name="settings_ai_job_cancelling">Cancelling AI separation</string>
+    <string name="settings_ai_job_select_executable_model">Select an installed executable schema 2/3 model first</string>
+    <string name="settings_ai_job_preparing_task">Preparing AI separation</string>
+    <string name="settings_ai_job_runtime_first_prepare">Preparing the AI inference runtime for first use</string>
+    <string name="settings_ai_job_runtime_downloading_percent">Downloading AI inference runtime · %1$d%%</string>
+    <string name="settings_ai_job_runtime_verifying">Verifying AI inference runtime</string>
+    <string name="settings_ai_job_runtime_installing">Installing AI inference runtime</string>
+    <string name="settings_ai_job_runtime_preparing">Preparing AI inference runtime</string>
+    <string name="settings_ai_job_loading_model">Loading ONNX Runtime model</string>
+    <string name="settings_ai_job_separating">Separating vocals and instrumental</string>
+    <string name="settings_ai_job_encoding_flac">Encoding FLAC · 16-bit/44.1 kHz · Level 8</string>
+    <string name="settings_ai_job_encoding_aac">Encoding AAC-LC · 44.1 kHz</string>
+    <string name="settings_ai_job_committing">Committing separation result atomically</string>
+    <string name="settings_ai_job_completed">AI vocal separation complete</string>
+    <string name="settings_ai_job_completed_summary">%1$s · Vocals and instrumental generated</string>
+    <string name="settings_ai_job_cancelled">AI vocal separation cancelled</string>
+    <string name="settings_ai_job_failed">AI vocal separation failed</string>
+    <string name="settings_ai_job_check_model_contract">Check the model contract</string>
+    <string name="settings_ai_job_decoding_direct">Directly decoding and resampling audio</string>
+    <string name="settings_ai_job_decoding">Decoding and resampling audio</string>
+    <string name="settings_ai_job_notification_channel">AI vocal separation</string>
+    <string name="settings_ai_job_other_song_running">Another song is already being separated</string>
+    <string name="settings_ai_job_already_running">An AI separation task is already running</string>
+    <string name="play_mode_sequential">Sequential</string>
+    <string name="play_mode_shuffle_all">Shuffle all</string>
+    <string name="play_mode_shuffle_once">Shuffle</string>
+    <string name="metadata_detail_status">Status</string>
+    <string name="metadata_detail_no_current_song">No song is currently playing</string>
+    <string name="metadata_detail_tag_title">Tag title</string>
+    <string name="metadata_detail_duration">Duration</string>
+    <string name="metadata_detail_format">Format</string>
+    <string name="metadata_detail_encoding_format">Encoding format</string>
+    <string name="metadata_detail_bitrate">Bitrate</string>
+    <string name="metadata_detail_sample_rate">Sample rate</string>
+    <string name="metadata_detail_bit_depth">Bit depth</string>
+    <string name="metadata_detail_channel_count">Channels</string>
+    <string name="metadata_detail_file_extension">File extension</string>
+    <string name="metadata_detail_file_size">File size</string>
+    <string name="metadata_detail_file_path">File path</string>
+    <string name="metadata_detail_artwork_path">Artwork path</string>
+    <string name="metadata_detail_database_id">Database ID</string>
+    <string name="metadata_detail_album_id">Album ID</string>
+    <string name="metadata_detail_favorite_status">Favorite status</string>
+    <string name="metadata_detail_favorited">Favorited</string>
+    <string name="metadata_detail_not_favorited">Not favorited</string>
+    <string name="metadata_detail_dsd_source">DSD source</string>
+    <string name="metadata_detail_cue_track_index">CUE track number</string>
+    <string name="metadata_detail_cue_start">CUE start</string>
+    <string name="metadata_detail_cue_end">CUE end</string>
+    <string name="metadata_detail_date_added">Date added</string>
+    <string name="metadata_detail_date_modified">Date modified</string>
+    <string name="metadata_detail_lyrics">Lyrics</string>
+    <string name="metadata_detail_no_lyrics">No lyrics found</string>
+    <string name="metadata_detail_lossy_encoding">Lossy encoding</string>
+    <string name="common_yes">Yes</string>
+    <string name="common_no">No</string>
+    <string name="ui_metadata_no_writable_parent">The audio file has no writable parent folder</string>
+    <string name="ui_metadata_temp_cleanup_failed">Could not remove the previous metadata temporary file</string>
+    <string name="webdav_test_success">Connection successful</string>
+    <string name="webdav_test_failed">Connection failed</string>
+    <string name="scan_stage_cancelled">Cancelled</string>
+    <string name="scan_cancelled">Scan cancelled</string>
+    <string name="scan_preparing">%1$s: preparing scan</string>
+    <string name="settings_player_disable_track_swipe">Disable swipe to change tracks</string>
+    <string name="settings_player_disable_track_swipe_summary">Only blocks track swipes on the player page. Track buttons, home carousel and lyric scrolling are unaffected.</string>
 </resources>

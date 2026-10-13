@@ -3,6 +3,8 @@ package com.rawsmusic.core.ui.scene.pages
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.ui.platform.LocalContext
+import com.rawsmusic.core.ui.theme.ThemeManager
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -233,7 +235,9 @@ internal fun SourcePortalBottomNavigation(
     backdrop: Backdrop?,
     modifier: Modifier = Modifier,
 ) {
-    val isLight = !isSystemInDarkTheme()
+    // ALBUM_COLOR forces the dark theme; every other background style keeps the system flag.
+    val isLight = !isSystemInDarkTheme() &&
+        !ThemeManager.albumColorForcesDark(LocalContext.current)
     val contentColor = if (isLight) Color.Black else Color.White
     val selectedIndex = SourcePortalTab.entries.indexOf(selectedTab).coerceAtLeast(0)
     if (backdrop != null) {

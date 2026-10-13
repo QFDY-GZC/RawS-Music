@@ -61,6 +61,7 @@ fun LiquidGlassAudioEffectsScreen(
     speakerOutputElasticityController: SpeakerOutputElasticityController? = null,
     surround360Controller: Surround360Controller? = null,
     panoramic360Controller: Panoramic360Controller? = null,
+    reverbController: com.rawsmusic.module.player.dsp.ReverbController? = null,
     onExportPeqToFile: (String) -> Unit = {},
     onImportPeqFromFile: () -> Unit = {},
     importedPeqFileContent: String? = null,
@@ -171,6 +172,7 @@ fun LiquidGlassAudioEffectsScreen(
                     AudioEffectDimension.SPATIAL_REVERB -> AudioEffectsDimensionList(
                         state = spatialListState
                     ) {
+                        ReverbSettingsCard(controller = reverbController)
                         SectionHeader(stringResource(R.string.settings_effects_convolution))
                         FftConvolverSettingsCard(controller = fftConvolverController)
                         SpatialSoundSettingsContent()

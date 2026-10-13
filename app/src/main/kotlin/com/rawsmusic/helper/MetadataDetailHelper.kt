@@ -55,7 +55,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
 
 class MetadataDetailHelper(
-    @Suppress("UNUSED_PARAMETER") private val context: Context,
+    private val context: Context,
     private val getPlayerController: () -> PlayerController?,
     private val getLyricSong: () -> Song?,
     private val setGestureInterceptDisabled: (Boolean) -> Unit,
@@ -93,19 +93,7 @@ class MetadataDetailHelper(
     }
 
     fun editField(label: String) {
-        val field = when (label) {
-            "标题", "标签标题" -> MetadataEditField.TITLE
-            "艺术家" -> MetadataEditField.ARTIST
-            "专辑" -> MetadataEditField.ALBUM
-            "专辑艺术家" -> MetadataEditField.ALBUM_ARTIST
-            "流派" -> MetadataEditField.GENRE
-            "作曲" -> MetadataEditField.COMPOSER
-            "年份" -> MetadataEditField.YEAR
-            "音轨号" -> MetadataEditField.TRACK
-            "碟片号" -> MetadataEditField.DISC
-            "BPM" -> MetadataEditField.BPM
-            else -> null
-        } ?: return
+        val field = fieldForLabel(label) ?: return
         getMetadataEditor().prepareInlineEdit(field)
         activeEditField = field
     }
@@ -129,16 +117,17 @@ class MetadataDetailHelper(
     }
 
     fun fieldForLabel(label: String): MetadataEditField? = when (label) {
-        "标题", "标签标题" -> MetadataEditField.TITLE
-        "艺术家" -> MetadataEditField.ARTIST
-        "专辑" -> MetadataEditField.ALBUM
-        "专辑艺术家" -> MetadataEditField.ALBUM_ARTIST
-        "流派" -> MetadataEditField.GENRE
-        "作曲" -> MetadataEditField.COMPOSER
-        "年份" -> MetadataEditField.YEAR
-        "音轨号" -> MetadataEditField.TRACK
-        "碟片号" -> MetadataEditField.DISC
-        "BPM" -> MetadataEditField.BPM
+        context.getString(R.string.metadata_field_title),
+        context.getString(R.string.metadata_detail_tag_title) -> MetadataEditField.TITLE
+        context.getString(R.string.metadata_field_artist) -> MetadataEditField.ARTIST
+        context.getString(R.string.metadata_field_album) -> MetadataEditField.ALBUM
+        context.getString(R.string.metadata_field_album_artist) -> MetadataEditField.ALBUM_ARTIST
+        context.getString(R.string.metadata_field_genre) -> MetadataEditField.GENRE
+        context.getString(R.string.metadata_field_composer) -> MetadataEditField.COMPOSER
+        context.getString(R.string.metadata_field_year) -> MetadataEditField.YEAR
+        context.getString(R.string.metadata_field_track) -> MetadataEditField.TRACK
+        context.getString(R.string.metadata_field_disc) -> MetadataEditField.DISC
+        context.getString(R.string.metadata_field_bpm) -> MetadataEditField.BPM
         else -> null
     }
 
@@ -150,13 +139,16 @@ class MetadataDetailHelper(
     fun isEditable(label: String): Boolean = fieldForLabel(label) != null
 
     private fun buildEntries(song: AudioFile?, lyricSong: Song?): List<Pair<String, String>> {
-        song ?: return listOf("状态" to "当前没有正在播放的歌曲")
+        song ?: return listOf(
+            context.getString(R.string.metadata_detail_status) to
+                context.getString(R.string.metadata_detail_no_current_song)
+        )
         val usbSr = getPlayerController()?.getUsbOutputSampleRate() ?: 0
         val srDisplay = when {
             usbSr > 0 && song.sampleRate != usbSr -> "${song.sampleRate} Hz → ${usbSr} Hz（DAC）"
             usbSr > 0 -> "${usbSr} Hz（DAC）"
             song.sampleRate > 0 -> "${song.sampleRate} Hz"
-            else -> "未知"
+            else -> context.getString(R.string.metadata_unknown)
         }
         val bitRateDisplay = com.rawsmusic.core.common.utils.BitrateNormalizer.formatKbps(
             rawBitrate = song.bitRate,
@@ -167,49 +159,51 @@ class MetadataDetailHelper(
             filePath = song.path
         )
         return listOf(
-            "标题" to song.displayName,
-            "标签标题" to song.title,
-            "艺术家" to song.artist,
-            "专辑" to song.album,
-            "专辑艺术家" to song.albumArtist,
-            "流派" to song.genre,
-            "作曲" to song.composer,
-            "年份" to song.year.takeIf { it > 0 }?.toString().orEmpty(),
-            "音轨号" to song.trackNumber.takeIf { it > 0 }?.toString().orEmpty(),
-            "碟片号" to song.discNumber.takeIf { it > 0 }?.toString().orEmpty(),
-            "BPM" to song.bpm.takeIf { it > 0 }?.toString().orEmpty(),
-            "时长" to AudioUtils.formatDuration(song.duration),
-            "格式" to song.format.ifBlank { song.extension },
-            "编码格式" to song.encodingFormat,
-            "码率" to bitRateDisplay,
-            "采样率" to srDisplay,
-            "位深" to formatBitDepth(song),
-            "声道数" to song.channelCount.takeIf { it > 0 }?.toString().orEmpty(),
-            "文件扩展名" to song.extension,
-            "文件大小" to formatFileSize(song.fileSize),
-            "文件路径" to song.path,
-            "专辑图路径" to song.albumArtPath,
-            "数据库 ID" to song.id.toString(),
-            "专辑 ID" to song.albumId.toString(),
-            "收藏状态" to if (song.isFavorite) "已收藏" else "未收藏",
-            "Hi-Res" to if (song.isHiRes) "是" else "否",
-            "DSD 源" to if (song.isDsdFormat) "是" else "否",
+            context.getString(R.string.metadata_field_title) to song.displayName,
+            context.getString(R.string.metadata_detail_tag_title) to song.title,
+            context.getString(R.string.metadata_field_artist) to song.artist,
+            context.getString(R.string.metadata_field_album) to song.album,
+            context.getString(R.string.metadata_field_album_artist) to song.albumArtist,
+            context.getString(R.string.metadata_field_genre) to song.genre,
+            context.getString(R.string.metadata_field_composer) to song.composer,
+            context.getString(R.string.metadata_field_year) to song.year.takeIf { it > 0 }?.toString().orEmpty(),
+            context.getString(R.string.metadata_field_track) to song.trackNumber.takeIf { it > 0 }?.toString().orEmpty(),
+            context.getString(R.string.metadata_field_disc) to song.discNumber.takeIf { it > 0 }?.toString().orEmpty(),
+            context.getString(R.string.metadata_field_bpm) to song.bpm.takeIf { it > 0 }?.toString().orEmpty(),
+            context.getString(R.string.metadata_detail_duration) to AudioUtils.formatDuration(song.duration),
+            context.getString(R.string.metadata_detail_format) to song.format.ifBlank { song.extension },
+            context.getString(R.string.metadata_detail_encoding_format) to song.encodingFormat,
+            context.getString(R.string.metadata_detail_bitrate) to bitRateDisplay,
+            context.getString(R.string.metadata_detail_sample_rate) to srDisplay,
+            context.getString(R.string.metadata_detail_bit_depth) to formatBitDepth(song),
+            context.getString(R.string.metadata_detail_channel_count) to song.channelCount.takeIf { it > 0 }?.toString().orEmpty(),
+            context.getString(R.string.metadata_detail_file_extension) to song.extension,
+            context.getString(R.string.metadata_detail_file_size) to formatFileSize(song.fileSize),
+            context.getString(R.string.metadata_detail_file_path) to song.path,
+            context.getString(R.string.metadata_detail_artwork_path) to song.albumArtPath,
+            context.getString(R.string.metadata_detail_database_id) to song.id.toString(),
+            context.getString(R.string.metadata_detail_album_id) to song.albumId.toString(),
+            context.getString(R.string.metadata_detail_favorite_status) to
+                context.getString(if (song.isFavorite) R.string.metadata_detail_favorited else R.string.metadata_detail_not_favorited),
+            "Hi-Res" to context.getString(if (song.isHiRes) R.string.common_yes else R.string.common_no),
+            context.getString(R.string.metadata_detail_dsd_source) to
+                context.getString(if (song.isDsdFormat) R.string.common_yes else R.string.common_no),
             "Track Gain" to formatGain(song.trackGain),
             "Track Peak" to formatPeak(song.trackPeak),
             "Album Gain" to formatGain(song.albumGain),
             "Album Peak" to formatPeak(song.albumPeak),
-            "CUE 轨道序号" to song.cueTrackIndex.takeIf { it > 0 }?.toString().orEmpty(),
-            "CUE 起始位置" to formatOptionalDuration(song.cueOffsetMs),
-            "CUE 结束位置" to formatOptionalDuration(song.cueEndMs),
-            "添加时间" to formatTimestamp(song.dateAdded),
-            "修改时间" to formatTimestamp(song.dateModified),
-            "歌词" to formatLyrics(lyricSong)
+            context.getString(R.string.metadata_detail_cue_track_index) to song.cueTrackIndex.takeIf { it > 0 }?.toString().orEmpty(),
+            context.getString(R.string.metadata_detail_cue_start) to formatOptionalDuration(song.cueOffsetMs),
+            context.getString(R.string.metadata_detail_cue_end) to formatOptionalDuration(song.cueEndMs),
+            context.getString(R.string.metadata_detail_date_added) to formatTimestamp(song.dateAdded),
+            context.getString(R.string.metadata_detail_date_modified) to formatTimestamp(song.dateModified),
+            context.getString(R.string.metadata_detail_lyrics) to formatLyrics(lyricSong)
         )
     }
 
     private fun formatLyrics(song: Song?): String {
         val lines = song?.lyrics.orEmpty()
-        if (lines.isEmpty()) return "未找到歌词"
+        if (lines.isEmpty()) return context.getString(R.string.metadata_detail_no_lyrics)
         return lines.joinToString(separator = "\n\n") { line ->
             val main = line.text.orEmpty().trim().ifBlank { "…" }
             val secondary = listOfNotNull(
@@ -247,7 +241,11 @@ class MetadataDetailHelper(
                 else -> "$bits bit"
             }
         }
-        return if (song.isLossyCodec()) "有损编码" else "未知"
+        return if (song.isLossyCodec()) {
+            context.getString(R.string.metadata_detail_lossy_encoding)
+        } else {
+            context.getString(R.string.metadata_unknown)
+        }
     }
 
     private fun formatFileSize(size: Long): String = when {
@@ -255,7 +253,7 @@ class MetadataDetailHelper(
         size >= 1024L * 1024L -> "%.2f MB".format(Locale.US, size / (1024.0 * 1024.0))
         size >= 1024L -> "%.2f KB".format(Locale.US, size / 1024.0)
         size > 0L -> "$size B"
-        else -> "未知"
+        else -> context.getString(R.string.metadata_unknown)
     }
 
     private fun formatGain(value: Float): String = "%.2f dB".format(Locale.US, value)

@@ -63,7 +63,7 @@ private class DirectKaraokeHighlightDrawNode(
         null,
         Shader.TileMode.CLAMP,
     )
-    private val maskPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+    private val maskPaint = AndroidPaint().apply {
         xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
     }
 
@@ -141,59 +141,37 @@ private class DirectKaraokeHighlightDrawNode(
         val contentDrawScope = this
         val width = size.width.coerceAtLeast(1f)
         val feather = featherPx.coerceIn(0f, width)
-        val edge = if (rtl) width * (1f - progress) else width * progress
+        val distance = DirectKaraokeHighlightSpec.sweepDistance(width, feather) * progress
+        val edge = if (rtl) width - distance else distance
 
-        if (!rtl) {
-            val featherStart = (edge - feather).coerceIn(0f, width)
-            if (featherStart > 0f) {
-                clipRect(left = 0f, top = 0f, right = featherStart, bottom = size.height) {
-                    contentDrawScope.drawContent()
-                }
+        if (feather <= 0f) {
+            clipRect(left = if (rtl) edge else 0f, right = if (rtl) width else edge) {
+                contentDrawScope.drawContent()
             }
-            if (edge > featherStart) {
-                drawFeatherMask(
-                    contentDrawScope = contentDrawScope,
-                    left = featherStart,
-                    right = edge,
-                    shader = ltrMaskShader,
-                )
-            }
-        } else {
-            val featherEnd = (edge + feather).coerceIn(0f, width)
-            if (featherEnd < width) {
-                clipRect(left = featherEnd, top = 0f, right = width, bottom = size.height) {
-                    contentDrawScope.drawContent()
-                }
-            }
-            if (featherEnd > edge) {
-                drawFeatherMask(
-                    contentDrawScope = contentDrawScope,
-                    left = edge,
-                    right = featherEnd,
-                    shader = rtlMaskShader,
-                )
-            }
+            return
         }
+        // One full-word layer and one continuous CLAMP mask. Splitting the opaque and feather
+        // strips replays glyphs at fractional clip edges, leaving a one-pixel seam on some GPUs.
+        drawFeatherMask(contentDrawScope,
+            DirectKaraokeHighlightSpec.featherStart(width, progress, feather, rtl), feather,
+            if (rtl) rtlMaskShader else ltrMaskShader)
     }
 
     private fun ContentDrawScope.drawFeatherMask(
         contentDrawScope: ContentDrawScope,
-        left: Float,
-        right: Float,
+        featherStart: Float,
+        featherWidth: Float,
         shader: LinearGradient,
     ) {
-        val stripWidth = (right - left).coerceAtLeast(0.001f)
         val nativeCanvas = drawContext.canvas.nativeCanvas
-        val checkpoint = nativeCanvas.saveLayer(left, 0f, right, size.height, null)
-        clipRect(left = left, top = 0f, right = right, bottom = size.height) {
-            contentDrawScope.drawContent()
-        }
+        val checkpoint = nativeCanvas.saveLayer(0f, 0f, size.width, size.height, null)
+        contentDrawScope.drawContent()
         shaderMatrix.reset()
-        shaderMatrix.setScale(stripWidth, 1f)
-        shaderMatrix.postTranslate(left, 0f)
+        shaderMatrix.setScale(featherWidth, 1f)
+        shaderMatrix.postTranslate(featherStart, 0f)
         shader.setLocalMatrix(shaderMatrix)
         maskPaint.shader = shader
-        nativeCanvas.drawRect(left, 0f, right, size.height, maskPaint)
+        nativeCanvas.drawRect(0f, 0f, size.width, size.height, maskPaint)
         nativeCanvas.restoreToCount(checkpoint)
     }
 

@@ -58,6 +58,7 @@ import com.rawsmusic.core.ui.widget.virtuallist.rememberComposeVirtualListState
 import com.rawsmusic.core.ui.widget.virtuallist.stableVirtualListHash64
 import com.rawsmusic.core.ui.widget.virtuallist.retainedMappedList
 import com.rawsmusic.module.data.prefs.CollectionSortPreferences
+import com.rawsmusic.module.data.repository.sourceFolderDirectory
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
@@ -213,6 +214,7 @@ private fun FolderListPage(
         if (LocalReferenceLibraryProviderPublicationOnly.current) return@LibraryListScaffold
 
         RawAlphabetIndex(
+            sceneId = NavScene.FOLDERS.name,
             data = alphabetIndexData,
             scrollActiveProvider = { state.isListScrollInProgress },
             modifier = Modifier
@@ -297,7 +299,7 @@ internal data class FolderGroupUi(
 internal fun List<AudioFile>.toFolderGroups(): List<FolderGroupUi> {
     return asSequence()
         .filter { it.path.isNotBlank() }
-        .groupBy { song -> File(song.path).parentFile?.absolutePath.orEmpty() }
+        .groupBy { song -> sourceFolderDirectory(song.path) }
         .filterKeys { it.isNotBlank() }
         .map { (folderPath, folderSongs) ->
             val folder = File(folderPath)

@@ -1,0 +1,35 @@
+{
+  "repository": "https://github.com/jiixyj/libebur128",
+  "tag": "v1.2.6",
+  "commit": "67b33abe1558160ed76ada1322329b0e9e058b02",
+  "sourceLicense": "MIT (COPYING)",
+  "portableQueueLicense": "BSD-3-Clause (COPYING.queue)",
+  "modifications": "None. Files copied from the pinned upstream commit; final newline retained.",
+  "files": [
+    {
+      "upstream": "ebur128/ebur128.h",
+      "vendored": "ebur128.h",
+      "sha256": "a988fa03828bcdd6258e6c52300d709a58727272a9ce6cd3fbf351f090517111"
+    },
+    {
+      "upstream": "ebur128/ebur128.c",
+      "vendored": "ebur128.c",
+      "sha256": "c2fc562f1088cacab4d21250b6e04996ef36c7694ea901e08cc4d64eb542b78d"
+    },
+    {
+      "upstream": "COPYING",
+      "vendored": "COPYING",
+      "sha256": "d6b4754bb67bdd08b97d5d11b2d7434997a371585a78fe77007149df3af8d09c"
+    },
+    {
+      "upstream": "ebur128/queue/sys/queue.h",
+      "vendored": "queue/sys/queue.h",
+      "sha256": "8b284031772b1ba2035d9b05b24f2cb9b23e7bd324bcccb5e3fcc57d34aafa48"
+    },
+    {
+      "upstream": "doc/license/queue.txt",
+      "vendored": "COPYING.queue",
+      "sha256": "70cf9b4c1aabf50c12a0bba3d352459d05fb379a047dac5ecc6a9f74e38ed5ef"
+    }
+  ]
+}

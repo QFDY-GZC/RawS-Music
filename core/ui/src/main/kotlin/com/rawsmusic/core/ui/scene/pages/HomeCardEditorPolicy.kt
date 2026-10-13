@@ -2,6 +2,9 @@ package com.rawsmusic.core.ui.scene.pages
 
 import kotlin.math.roundToInt
 
+internal fun shouldShowHomeCardDragHint(wasEditing: Boolean, nextEditing: Boolean): Boolean =
+    !wasEditing && nextEditing
+
 /** Pure two-column HOME-card drop policy, kept outside Compose so it can be regression-tested. */
 internal fun resolveHomeCardDropDelta(
     offsetX: Float,

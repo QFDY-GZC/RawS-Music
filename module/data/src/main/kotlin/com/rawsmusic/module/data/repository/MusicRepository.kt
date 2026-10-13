@@ -8,7 +8,6 @@ import com.rawsmusic.core.common.model.Album
 import com.rawsmusic.core.common.model.Artist
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.Folder
-import com.rawsmusic.core.common.model.FolderHierarchyNode
 import com.rawsmusic.core.common.model.Genre
 import com.rawsmusic.core.common.model.PlayStats
 import com.rawsmusic.core.common.model.SortOrder
@@ -33,6 +32,9 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.asCoroutineDispatcher
 import java.util.concurrent.Executors
+import java.io.File
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 音乐仓库 — 数据库层。
@@ -46,6 +48,9 @@ object MusicRepository {
     private var db: MusicDatabase? = null
 
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val libraryMutationMutex = Mutex()
+    private val libraryPublicationLock = Any()
+    private val deletionFence = LibraryDeletionFence()
     // Metadata edits should never compete at normal IO priority with a PLAYER <-> LYRIC frame.
     // Keep full-library index rebuilds and snapshot serialization on one background-priority lane.
     private val libraryMaintenanceDispatcher = Executors
@@ -98,9 +103,6 @@ object MusicRepository {
     private val _folders = MutableStateFlow<List<Folder>>(emptyList())
     val folders: StateFlow<List<Folder>> = _folders.asStateFlow()
 
-    private val _folderHierarchy = MutableStateFlow<List<FolderHierarchyNode>>(emptyList())
-    val folderHierarchy: StateFlow<List<FolderHierarchyNode>> = _folderHierarchy.asStateFlow()
-
     fun init(context: Context) {
         val appContext = context.applicationContext
         val generation = _startupState.value.generation + 1L
@@ -148,7 +150,7 @@ object MusicRepository {
                     val fallback = startupSnapshotCandidate
                     if (fallback.isNotEmpty()) {
                         val sortedFallback = sortSongs(fallback, AppPreferences.Sort.songSortOrder)
-                        _songs.value = sortedFallback
+                        publishSongs(sortedFallback)
                         scheduleLibraryIndexRefresh(sortedFallback, "warm_start_snapshot_fallback")
                         startupSnapshotCandidate = emptyList()
                         startupSnapshotPublished = false
@@ -177,7 +179,7 @@ object MusicRepository {
                 val sorted = sortSongs(loaded, AppPreferences.Sort.songSortOrder)
                 startupSnapshotPublished = false
                 startupSnapshotCandidate = emptyList()
-                _songs.value = sorted
+                publishSongs(sorted)
                 // The song list is the first useful cold-start surface. Derived category/index
                 // maps are lower priority and can be built after the list is visible, matching
                 // reference player's separately-owned provider metadata instead of blocking first paint.
@@ -207,7 +209,7 @@ object MusicRepository {
                 val fallback = startupSnapshotCandidate
                 if (fallback.isNotEmpty()) {
                     val sortedFallback = sortSongs(fallback, AppPreferences.Sort.songSortOrder)
-                    _songs.value = sortedFallback
+                    publishSongs(sortedFallback)
                     scheduleLibraryIndexRefresh(sortedFallback, "warm_start_exception_fallback")
                     startupSnapshotCandidate = emptyList()
                     startupSnapshotPublished = false
@@ -268,11 +270,12 @@ object MusicRepository {
 
     private fun saveStartupSnapshotAsync(songs: List<AudioFile>, reason: String) {
         val context = startupSnapshotContext ?: return
-        if (songs.isEmpty()) return
         synchronized(startupSnapshotSaveLock) {
             startupSnapshotSaveJob?.cancel()
             startupSnapshotSaveJob = libraryMaintenanceScope.launch {
-                StartupSongSnapshotStore.save(context, songs, AppPreferences.Sort.songSortOrder)
+                val visible = visibleSongs(songs)
+                if (visible.isEmpty()) StartupSongSnapshotStore.clear(context)
+                else StartupSongSnapshotStore.save(context, visible, AppPreferences.Sort.songSortOrder)
                 AppLogger.d(TAG, "startup snapshot save completed: reason=$reason songs=${songs.size}")
             }
         }
@@ -284,10 +287,26 @@ object MusicRepository {
 
     // ────────────────────── 缓存管理 ──────────────────────
 
-    private fun updateCache(songs: List<AudioFile>) {
-        cachedSongs = songs
-        cachedById = songs.associateBy { it.id }
-        cachedByLibraryKey = songs.associateBy { it.libraryKey() }
+    private fun visibleSongs(songs: List<AudioFile>): List<AudioFile> {
+        if (songs.all { deletionFence.isVisible(it.path, it.libraryKey()) }) return songs
+        return songs.filter { deletionFence.isVisible(it.path, it.libraryKey()) }
+    }
+
+    private fun writableSongs(songs: List<AudioFile>): List<AudioFile> = songs.filter { song ->
+        val physicalFilePresent = !deletionFence.needsPhysicalValidation(song.path) ||
+            File(song.path).let { it.isFile && it.canRead() }
+        deletionFence.canWrite(song.path, song.libraryKey(), physicalFilePresent)
+    }
+
+    private fun publishSongs(songs: List<AudioFile>) = synchronized(libraryPublicationLock) {
+        _songs.value = visibleSongs(songs)
+    }
+
+    private fun updateCache(songs: List<AudioFile>) = synchronized(libraryPublicationLock) {
+        val visible = visibleSongs(songs)
+        cachedSongs = visible
+        cachedById = visible.associateBy { it.id }
+        cachedByLibraryKey = visible.associateBy { it.libraryKey() }
     }
 
     private fun invalidateCache() {
@@ -352,7 +371,7 @@ object MusicRepository {
             elapsedMs = elapsed,
             fromCache = false
         )
-        songs
+        visibleSongs(songs)
     }
 
     private fun loadSongsFromStorage(): List<AudioFile> {
@@ -388,7 +407,7 @@ object MusicRepository {
     fun publishTransientScanSongs(songs: List<AudioFile>) {
         if (songs.isEmpty()) return
         val sorted = sortSongs(songs, AppPreferences.Sort.songSortOrder)
-        _songs.value = sorted
+        publishSongs(sorted)
         saveStartupSnapshotAsync(sorted, "transient_scan")
         AppLogger.d(TAG, "publishTransientScanSongs: published ${sorted.size} songs to UI (transient)")
     }
@@ -422,7 +441,7 @@ object MusicRepository {
         val sortedSongs = sortSongs(allSongs, AppPreferences.Sort.songSortOrder)
         startupSnapshotPublished = false
         startupSnapshotCandidate = emptyList()
-        _songs.value = sortedSongs
+        publishSongs(sortedSongs)
         saveStartupSnapshotAsync(sortedSongs, "refresh_songs_only")
         AppLogger.d(TAG, "refreshSongsOnly: ${sortedSongs.size} songs, load=${tLoad - t0}ms, sort=${System.currentTimeMillis() - tLoad}ms, total=${System.currentTimeMillis() - t0}ms")
         return sortedSongs
@@ -430,12 +449,11 @@ object MusicRepository {
 
     fun refreshLibraryIndexes(sourceSongs: List<AudioFile> = _songs.value.ifEmpty { loadSongsFromStorage() }) {
         val t0 = System.currentTimeMillis()
-        val sortedSongs = if (sourceSongs === _songs.value) sourceSongs else sortSongs(sourceSongs, AppPreferences.Sort.songSortOrder)
+        val sortedSongs = visibleSongs(if (sourceSongs === _songs.value) sourceSongs else sortSongs(sourceSongs, AppPreferences.Sort.songSortOrder))
         _artists.value = buildArtists(sortedSongs)
         _albums.value = buildAlbums(sortedSongs)
         _genres.value = buildGenres(sortedSongs)
         _folders.value = buildFolders(sortedSongs)
-        _folderHierarchy.value = buildFolderHierarchyIndex(sortedSongs)
         AppLogger.d(TAG, "refreshLibraryIndexes: ${sortedSongs.size} songs, total=${System.currentTimeMillis() - t0}ms")
     }
 
@@ -452,6 +470,35 @@ object MusicRepository {
     /** 未排序的全量歌曲快照，供扫描/同步链路使用，避免在 IO 协程里做无谓的排序。 */
     suspend fun getAllSongsUnsortedSuspend(): List<AudioFile> {
         return loadSongsFromStorageSuspend()
+    }
+
+    suspend fun getPendingScanSongs(): List<AudioFile> = withContext(Dispatchers.IO) {
+        getDb().folderFileDao().getPendingScanRows().map(EntityConverter::folderFileToAudioFile)
+    }
+
+    suspend fun getScanDirectories(): Map<String, Long> = withContext(Dispatchers.IO) {
+        getDb().scanDirectoryDao().getAll().associate { it.sourceKey to it.modifiedAt }
+    }
+
+    suspend fun commitScanDirectories(snapshots: Map<String, Long>) = withContext(Dispatchers.IO) {
+        if (snapshots.isNotEmpty()) {
+            val checkedAt = System.currentTimeMillis()
+            getDb().scanDirectoryDao().upsertAll(snapshots.filterValues { it > 0 }.map { (key, time) ->
+                com.rawsmusic.module.data.db.entity.ScanDirectoryEntity(key, time, checkedAt)
+            })
+        }
+    }
+
+    suspend fun updateScanTagStatuses(outcomes: List<Pair<AudioFile, Boolean>>) = withContext(Dispatchers.IO) {
+        libraryMutationMutex.withLock {
+            val database = getDb()
+            database.withTransaction {
+                val dao = database.folderFileDao()
+                for ((song, complete) in outcomes) {
+                    dao.updateScanTagStatus(song.path, song.cueOffsetMs, song.cueTrackIndex, if (complete) 1 else 0)
+                }
+            }
+        }
     }
 
     fun getSongById(songId: Long): AudioFile? {
@@ -498,12 +545,12 @@ object MusicRepository {
     suspend fun insertSongsSuspend(songs: List<AudioFile>): Int = withContext(Dispatchers.IO) {
         AppLogger.d(TAG, "insertSongsSuspend: inserting ${songs.size} songs")
         val t0 = System.currentTimeMillis()
-        val result = try {
+        val result = libraryMutationMutex.withLock { try {
             val database = getDb()
             val folderDao = database.folderDao()
             val fileDao = database.folderFileDao()
             val existingKeys = fileDao.getAll().mapTo(HashSet()) { it.libraryKey() }
-            val newSongs = songs.distinctBy { it.libraryKey() }.filter { it.libraryKey() !in existingKeys }
+            val newSongs = writableSongs(songs.distinctBy { it.libraryKey() }).filter { it.libraryKey() !in existingKeys }
             var insertedCount = 0
 
             for ((folderPath, folderSongs) in newSongs.groupBy { it.path.substringBeforeLast("/") }) {
@@ -514,6 +561,7 @@ object MusicRepository {
                 }
                 if (folder != null) {
                     fileDao.insertBatch(folderSongs.map { EntityConverter.audioFileToFolderFile(it, folder.id) })
+                    folderSongs.forEach { deletionFence.written(it.path) }
                     insertedCount += folderSongs.size
                 }
             }
@@ -521,7 +569,7 @@ object MusicRepository {
         } catch (e: Exception) {
             AppLogger.e(TAG, "insertSongsSuspend: error", e)
             0
-        }
+        } }
 
         invalidateCache()
         refreshAllSuspend()
@@ -532,10 +580,10 @@ object MusicRepository {
     /** 增量扫描用：按 path + CUE 信息做稳定 upsert，并保留播放统计/收藏/数据库创建时间。 */
     suspend fun upsertSongsSuspend(
         songs: List<AudioFile>,
-        refreshLibrary: Boolean = true
+        refreshLibrary: Boolean = true,
+        strictScanCommit: Boolean = false
     ): Int = withContext(Dispatchers.IO) {
-        val distinctSongs = songs.distinctBy { it.libraryKey() }
-        if (distinctSongs.isEmpty()) return@withContext 0
+        if (songs.isEmpty()) return@withContext 0
 
         val database = getDb()
         val folderDao = database.folderDao()
@@ -543,6 +591,8 @@ object MusicRepository {
         var changed = 0
         val t0 = System.currentTimeMillis()
 
+        libraryMutationMutex.withLock {
+        val distinctSongs = writableSongs(songs.distinctBy { it.libraryKey() })
         try {
             // 一次性载入已有文件和文件夹，避免 1000 首歌扫描时逐首/逐目录 N+1 查询。
             val allExisting = fileDao.getAll()
@@ -587,8 +637,11 @@ object MusicRepository {
                     changed += updates.size
                 }
             }
+            distinctSongs.forEach { deletionFence.written(it.path) }
         } catch (e: Exception) {
             AppLogger.e(TAG, "upsertSongsSuspend: error", e)
+            LibraryWriteFailurePolicy.check(e, strictScanCommit)
+        }
         }
 
         invalidateCache()
@@ -614,7 +667,7 @@ object MusicRepository {
             val updated = songs.map { if (it.id == songId) it.copy(isFavorite = isFavorite) else it }
             updateCache(updated)
             val sorted = sortSongs(updated, AppPreferences.Sort.songSortOrder)
-            _songs.value = sorted
+            publishSongs(sorted)
             saveStartupSnapshotAsync(sorted, "favorite_toggle")
         }
         return true
@@ -628,8 +681,46 @@ object MusicRepository {
         songs: List<AudioFile>,
         refreshLibrary: Boolean = true
     ) = withContext(Dispatchers.IO) {
-        if (songs.isEmpty()) return@withContext
-        try {
+        deleteSongsInternal(
+            songs = songs,
+            refreshLibrary = refreshLibrary,
+            deleteWholePhysicalPath = true,
+        )
+    }
+
+    /**
+     * Scanner final-delta deletion must remove exactly the library row that disappeared.
+     * A physical quick-scan row and its expanded CUE rows intentionally share file_path;
+     * deleting by path here would erase the freshly inserted CUE expansion as collateral.
+     */
+    suspend fun deleteSongsForScanSuspend(
+        songs: List<AudioFile>,
+        refreshLibrary: Boolean = true,
+    ) = withContext(Dispatchers.IO) {
+        deleteSongsInternal(
+            songs = songs,
+            refreshLibrary = refreshLibrary,
+            deleteWholePhysicalPath = false,
+            strictScanCommit = true,
+        )
+    }
+
+    private suspend fun deleteSongsInternal(
+        songs: List<AudioFile>,
+        refreshLibrary: Boolean,
+        deleteWholePhysicalPath: Boolean,
+        strictScanCommit: Boolean = false,
+    ) {
+        if (songs.isEmpty()) return
+        if (!deleteWholePhysicalPath) {
+            AppLogger.d(
+                TAG,
+                "deleteSongsForScanSuspend: exactRows=${songs.size}, " +
+                    "cue=${songs.count { it.cueOffsetMs > 0L || it.cueTrackIndex > 0 }}, " +
+                    "physical=${songs.count { it.cueOffsetMs == 0L && it.cueTrackIndex == 0 }}"
+            )
+        }
+        libraryMutationMutex.withLock { try {
             val database = getDb()
             val dao = database.folderFileDao()
             // 单事务批量删除，避免逐首 delete 各自开/提交事务（v7c 性能补丁）。
@@ -637,13 +728,30 @@ object MusicRepository {
                 songs.forEach { song ->
                     if (song.cueOffsetMs > 0L || song.cueTrackIndex > 0) {
                         dao.deleteByPathAndCue(song.path, song.cueOffsetMs, song.cueTrackIndex)
-                    } else {
+                    } else if (deleteWholePhysicalPath) {
                         dao.deleteByPath(song.path)
+                    } else {
+                        dao.deleteByPathAndCue(song.path, 0L, 0)
                     }
                 }
             }
+            if (deleteWholePhysicalPath) synchronized(libraryPublicationLock) {
+                songs.forEach { song ->
+                    deletionFence.deleted(
+                        song.path, song.libraryKey(),
+                        wholePath = song.cueOffsetMs == 0L && song.cueTrackIndex == 0,
+                    )
+                }
+                // Publish removal before any delayed scan/cache result can reach the UI.
+                publishSongs(_songs.value)
+                cachedSongs?.let { updateCache(it) }
+                startupSnapshotCandidate = visibleSongs(startupSnapshotCandidate)
+                saveStartupSnapshotAsync(_songs.value, "user_delete")
+            }
         } catch (e: Exception) {
             AppLogger.e(TAG, "deleteSongsSuspend: error", e)
+            LibraryWriteFailurePolicy.check(e, strictScanCommit)
+        }
         }
         invalidateCache()
         if (refreshLibrary) {
@@ -705,7 +813,7 @@ object MusicRepository {
             val replaced = current.toMutableList().apply { this[index] = persistedSong }
             val sorted = sortSongs(replaced, AppPreferences.Sort.songSortOrder)
             startupSnapshotPublished = false
-            _songs.value = sorted
+            publishSongs(sorted)
             // Rebuilding artists/albums/genres plus serializing the full startup snapshot can be
             // noticeably CPU/allocation heavy on large libraries. Keep both off the normal IO pool
             // so an immediate PLAYER <-> LYRIC gesture after a metadata save retains UI priority.

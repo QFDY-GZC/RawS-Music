@@ -33,4 +33,11 @@ internal object VirtualListOuterTransitionNodePolicy {
      */
     fun shouldUpdateInternalScene(kind: VirtualListOuterTransitionKind?): Boolean =
         kind == VirtualListOuterTransitionKind.SHARED
+
+    /**
+     * A holder with both endpoint LayoutRes records owns direct endpoint interpolation.
+     * One-sided holders instead receive the scene GenericPivot transform.
+     */
+    fun interpolatesDualLayoutDirectly(kind: VirtualListOuterTransitionKind?): Boolean =
+        kind == VirtualListOuterTransitionKind.SHARED
 }

@@ -1,5 +1,6 @@
 package com.rawsmusic.module.player
 
+import android.content.Context
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.PlayState
 import com.rawsmusic.core.common.utils.AppLogger
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /** PlayerController-backed online source output. */
 internal class PlayerControllerMusicSourcePlaybackBackend(
+    private val context: Context,
     private val controller: PlayerController,
 ) : MusicSourcePlaybackBackend {
     private val mutableSnapshot = MutableStateFlow(MusicSourceBackendSnapshot())
@@ -182,7 +184,9 @@ internal class PlayerControllerMusicSourcePlaybackBackend(
             FfmpegAudioPlayer.State.ERROR -> {
                 mutableSnapshot.value = current.copy(
                     status = MusicSourceBackendStatus.Error,
-                    error = current.error.ifBlank { "在线播放解码失败" },
+                    error = current.error.ifBlank {
+                        context.getString(R.string.player_error_online_decode_failed)
+                    },
                 )
             }
             FfmpegAudioPlayer.State.COMPLETED -> {

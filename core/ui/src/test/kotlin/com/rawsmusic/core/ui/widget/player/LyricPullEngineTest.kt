@@ -24,22 +24,19 @@ class LyricPullEngineTest {
         val visible = listOf(10, 11, 12, 13)
         assertTrue(engine.beginForwardPull(10, 300f, 1_000f, visible, 1_000L))
 
-        val delay = LyricPullSpec.itemDelayMs(300f, 1_000f)
-        val beforeFirst = engine.advance(1_000L + delay - 1L, visible)
-        assertEquals(LyricPullItemPhase.WaitingForPull, engine.phaseOf(11))
-        assertTrue(beforeFirst.offsetsPx.getValue(11) in 0f..300f)
-
-        engine.advance(1_000L + delay, visible)
+        val immediate = engine.advance(1_000L, visible)
         assertEquals(LyricPullItemPhase.Pulling, engine.phaseOf(11))
         assertEquals(LyricPullItemPhase.WaitingForPull, engine.phaseOf(12))
-
-        val finished = engine.advance(
-            1_000L + delay * 3L + LyricPullSpec.DURATION_MS,
-            visible
-        )
+        assertEquals(0f, immediate.offsetsPx.getValue(11), .001f)
+        engine.advance(1_050L, visible)
+        assertEquals(LyricPullItemPhase.Pulling, engine.phaseOf(12))
+        assertEquals(LyricPullItemPhase.WaitingForPull, engine.phaseOf(13))
+        var finished = immediate
+        for (time in 1_066L..3_500L step 16L) finished = engine.advance(time, visible)
         assertFalse(finished.running)
-        assertEquals(0f, finished.offsetsPx.getValue(13), 0.0001f)
+        assertEquals(0f, finished.offsetsPx.getValue(13), .001f)
         assertEquals(LyricPullItemPhase.Done, engine.phaseOf(13))
+
     }
 
     @Test

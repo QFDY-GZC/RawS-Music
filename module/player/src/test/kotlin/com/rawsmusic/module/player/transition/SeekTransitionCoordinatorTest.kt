@@ -7,6 +7,42 @@ import org.junit.Test
 
 class SeekTransitionCoordinatorTest {
     @Test
+    fun backwardSeekAfterNearEndKeepsFadeAudioUntilDecoderBarrier() {
+        val output = com.rawsmusic.module.player.SeekOutputBarrier()
+        val ring = com.rawsmusic.module.player.RingBuffer(16)
+        var fadeReads = 0
+        val coordinator = SeekTransitionCoordinator(
+            tag = "test",
+            fadeOutBlocking = { _, _, current ->
+                repeat(4) {
+                    ring.write(byteArrayOf(1, 2), 0, 2)
+                    val token = output.beginRead()
+                    assertEquals(2, ring.readWithTimeout(ByteArray(16), 0, 16, 0))
+                    assertEquals(com.rawsmusic.module.player.SeekOutputBarrier.ReadDecision.Accept,
+                        output.finishRead(token))
+                    fadeReads++
+                }
+                current()
+            },
+            armFadeIn = { _, _ -> },
+            seekFadeMs = { 100 },
+            backend = KotlinSeekBarrierBackend(),
+            armOutputBarrier = { output.arm(it.serial, it.targetMs) },
+        )
+        for (target in listOf(290_000L, 5_000L)) {
+            val request = coordinator.begin(target, false, true)
+            assertTrue(coordinator.awaitDecoderBarrier(request))
+            assertEquals(com.rawsmusic.module.player.SeekOutputBarrier.ReadDecision.Discard,
+                output.finishRead(output.beginRead()))
+            assertTrue(coordinator.markDecoderCommitted(request.serial))
+            output.markCommitted(request.serial)
+            assertEquals(com.rawsmusic.module.player.SeekOutputBarrier.ReadDecision.AcceptAndRelease,
+                output.finishRead(output.beginRead()))
+            assertTrue(coordinator.markOutputCommitted(request.serial))
+        }
+        assertEquals(8, fadeReads)
+    }
+    @Test
     fun playingSeekRequiresFadeDecoderAndFirstOutputInOrder() {
         val fades = mutableListOf<String>()
         val backend = KotlinSeekBarrierBackend()

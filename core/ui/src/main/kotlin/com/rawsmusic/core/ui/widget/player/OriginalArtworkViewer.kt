@@ -392,9 +392,12 @@ private object OriginalArtworkResolver {
             !TagLibBridge.isLoaded()
         ) return null
         val output = cacheFile(context, "${stem}_taglib.art")
-        if (output.length() > MIN_ARTWORK_BYTES) return sourceFor(output)
+        if (output.length() > MIN_ARTWORK_BYTES) {
+            OriginalArtworkCacheFiles.imageFileForViewer(output)?.let { sourceFor(it) }?.let { return it }
+        }
         output.delete()
-        return if (TagLibBridge.extractEmbeddedArtworkToFile(audioPath, output.absolutePath)) sourceFor(output) else null
+        if (!TagLibBridge.extractEmbeddedArtworkToFile(audioPath, output.absolutePath)) return null
+        return OriginalArtworkCacheFiles.imageFileForViewer(output)?.let { sourceFor(it) }
     }
 
     private fun extractWithFfmpeg(context: Context, audioPath: String, stem: String): OriginalArtworkSource? {

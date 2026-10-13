@@ -57,7 +57,9 @@
 # Lyric module - 防止歌词视图被混淆导致崩溃
 -keep class io.github.proify.lyricon.** { *; }
 
-# 保留自定义 View 类（只保留项目内的）
+# Keep these Compose hosts until Kotlin/R8 optimization compatibility is validated on ART.
+# Narrowing this rule produced invalid receiver types in PlayerDismissMotionHost's generated
+# lambda (VerifyError against PlayerLyricsRect), despite JVM tests passing.
 -keep class com.rawsmusic.core.ui.widget.** { *; }
 -keep class com.rawsmusic.ui.widget.** { *; }
 
@@ -70,3 +72,7 @@
 
 # Kotlin Coroutines
 -dontwarn kotlinx.coroutines.**
+
+# Compile-only signatures are resolved from the ROM's boot classpath.
+-dontwarn android.net.IConnectivityManager**
+-dontwarn android.os.INetworkManagementService**

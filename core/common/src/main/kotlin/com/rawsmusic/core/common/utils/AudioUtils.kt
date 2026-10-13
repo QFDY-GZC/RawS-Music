@@ -9,7 +9,7 @@ object AudioUtils {
 
     private val SUPPORTED_EXTENSIONS = setOf(
         "mp3", "flac", "wav", "aac", "ogg", "m4a", "wma", "ape", "opus", "alac", "dsf", "dff", "aiff",
-        "ac3", "eac3", "ec3", "truehd", "thd", "mlp", "mka"
+        "ac3", "eac3", "ec3", "truehd", "thd", "mlp", "mka", "iso"
     )
 
     fun isAudioFile(fileName: String): Boolean {

@@ -22,15 +22,19 @@ class FolderHierarchyMotionTest {
     }
 
     @Test
-    fun backUsesSameSourceDestinationRolesWithReverseSharedArtwork() {
+    fun backUsesReferenceHeaderToItemLayoutRoles() {
         val retainedStart = resolveFolderHierarchyRoleMotion(FolderHierarchyDirection.BACK, true, 0f)
         val retainedEnd = resolveFolderHierarchyRoleMotion(FolderHierarchyDirection.BACK, true, 1f)
         val currentStart = resolveFolderHierarchyRoleMotion(FolderHierarchyDirection.BACK, false, 0f)
         val currentEnd = resolveFolderHierarchyRoleMotion(FolderHierarchyDirection.BACK, false, 1f)
 
-        assertEquals(1f, retainedStart.scale, 0f)
-        assertEquals(0.5f, retainedEnd.scale, 0f)
-        assertEquals(1.5f, currentStart.scale, 0f)
-        assertEquals(1f, currentEnd.scale, 0f)
+        assertEquals(1.5f, retainedStart.scale, 0f)
+        assertEquals(1f, retainedEnd.scale, 0f)
+        assertEquals(1f, currentStart.scale, 0f)
+        assertEquals(0.5f, currentEnd.scale, 0f)
+        assertEquals(0f, retainedStart.alpha, 0f)
+        assertEquals(1f, retainedEnd.alpha, 0f)
+        assertEquals(1f, currentStart.alpha, 0f)
+        assertEquals(0f, currentEnd.alpha, 0f)
     }
 }

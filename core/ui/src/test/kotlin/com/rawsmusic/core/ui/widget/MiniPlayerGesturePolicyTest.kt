@@ -29,4 +29,57 @@ class MiniPlayerGesturePolicyTest {
             )
         )
     }
+
+    @Test
+    fun automaticAudioCrossfadeUsesArtworkOnlyWhenRendererTargetIsTheCommittedSong() {
+        assertTrue(
+            shouldUseAutomaticMiniPlayerArtworkFade(
+                activeAutomaticTargetPath = "/music/next.flac",
+                committedSongPath = "/music/next.flac",
+                currentIdentity = "song-a",
+                committedIdentity = "song-b",
+                manualGestureActive = false,
+            )
+        )
+        assertFalse(
+            shouldUseAutomaticMiniPlayerArtworkFade(
+                activeAutomaticTargetPath = "/music/another.flac",
+                committedSongPath = "/music/next.flac",
+                currentIdentity = "song-a",
+                committedIdentity = "song-b",
+                manualGestureActive = false,
+            )
+        )
+        assertFalse(
+            shouldUseAutomaticMiniPlayerArtworkFade(
+                activeAutomaticTargetPath = null,
+                committedSongPath = "/music/next.flac",
+                currentIdentity = "song-a",
+                committedIdentity = "song-b",
+                manualGestureActive = false,
+            )
+        )
+    }
+
+    @Test
+    fun manualGestureAndSameIdentityUpdatesNeverStartMiniPlayerAutomaticDissolve() {
+        assertFalse(
+            shouldUseAutomaticMiniPlayerArtworkFade(
+                activeAutomaticTargetPath = "/music/next.flac",
+                committedSongPath = "/music/next.flac",
+                currentIdentity = "song-a",
+                committedIdentity = "song-b",
+                manualGestureActive = true,
+            )
+        )
+        assertFalse(
+            shouldUseAutomaticMiniPlayerArtworkFade(
+                activeAutomaticTargetPath = "/music/next.flac",
+                committedSongPath = "/music/next.flac",
+                currentIdentity = "song-a",
+                committedIdentity = "song-a",
+                manualGestureActive = false,
+            )
+        )
+    }
 }

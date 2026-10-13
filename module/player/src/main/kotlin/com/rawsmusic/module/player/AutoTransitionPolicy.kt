@@ -20,15 +20,15 @@ internal object AutoTransitionPolicy {
     const val ENVELOPE_LOOKAHEAD_MS = 30_000L
     /** Tracks shorter than one complete analysis window are kept gapless. */
     const val MIN_TRACK_DURATION_MS = ENVELOPE_LOOKAHEAD_MS
-    const val HARD_END_SAFETY_REMAINING_MS = 1_500L
+    const val HARD_END_SAFETY_REMAINING_MS = 15_000L
     /** Smart transitions use the available musical tail instead of a fixed 8 s cap. */
     const val MIN_HANDOVER_MS = 6_000
     const val DEFAULT_HANDOVER_MS = 12_000
-    const val MAX_HANDOVER_MS = 20_000
+    const val MAX_HANDOVER_MS = 15_000
     /** The nominal point where lead/follow ownership is equal. */
     const val SMART_PIVOT_PERCENT = 55
     /** Compatibility name used by the quiet-tail retimer. */
-    const val LEAD_FADE_WINDOW_MS = DEFAULT_HANDOVER_MS
+    const val LEAD_FADE_WINDOW_MS = MAX_HANDOVER_MS
 
     enum class Source {
         LYRICS,
@@ -45,6 +45,11 @@ internal object AutoTransitionPolicy {
         val handoverDurationMs: Int,
         val envelopeLookaheadMs: Long = ENVELOPE_LOOKAHEAD_MS,
         val confidence: Float,
+        val incomingEntryAllowed: Boolean = true,
+        val outgoingTailAllowed: Boolean = true,
+        /** Start of the protected final-phrase overlap; formal gain exchange still follows vocal end. */
+        val gentleStartPositionMs: Long? = null,
+        val vocalEndKnown: Boolean = true,
     )
 
     data class Decision(
@@ -57,11 +62,13 @@ internal object AutoTransitionPolicy {
         current: AudioFile?,
         next: AudioFile?,
         lyrics: LyricData?,
+        allowSameItemCrossfade: Boolean = false,
     ): Decision {
         if (current == null || next == null || next.path.isBlank()) {
             return Decision(null, forceGapless = false, reason = "missing_track")
         }
         if (
+            !allowSameItemCrossfade &&
             current.path == next.path &&
             current.cueTrackIndex == next.cueTrackIndex &&
             current.cueOffsetMs == next.cueOffsetMs
@@ -88,7 +95,10 @@ internal object AutoTransitionPolicy {
             lyrics = lyrics,
         )
         if (lyricRecipe != null) {
-            return Decision(lyricRecipe, forceGapless = false, reason = "lyrics")
+            return Decision(lyricRecipe.copy(incomingEntryAllowed =
+                next.cueTrackIndex <= 0 && next.cueOffsetMs <= 0L,
+                outgoingTailAllowed = current.cueTrackIndex <= 0 && current.cueOffsetMs <= 0L),
+                forceGapless = false, reason = "lyrics")
         }
 
         return Decision(
@@ -98,7 +108,14 @@ internal object AutoTransitionPolicy {
                 triggerPositionMs = null,
                 handoverPositionMs = null,
                 handoverDurationMs = DEFAULT_HANDOVER_MS,
+                // Sparse text is not reliable vocal structure. Give its audio-only detector a
+                // bounded final-fifth window instead of trusting the two text timestamps.
+                envelopeLookaheadMs = if ((lyrics?.lines?.count { it.text.isNotBlank() } ?: 0) in 1..3) {
+                    (durationMs / 5L).coerceIn(ENVELOPE_LOOKAHEAD_MS, 60_000L)
+                } else ENVELOPE_LOOKAHEAD_MS,
                 confidence = 0.45f,
+                incomingEntryAllowed = next.cueTrackIndex <= 0 && next.cueOffsetMs <= 0L,
+                outgoingTailAllowed = current.cueTrackIndex <= 0 && current.cueOffsetMs <= 0L,
             ),
             forceGapless = false,
             reason = "envelope_fallback",
@@ -114,41 +131,61 @@ internal object AutoTransitionPolicy {
         val lyricOffsetMs = lyrics.offset
         val meaningful = lyrics.lines.filter { line ->
             val effectiveStart = line.timeStamp + lyricOffsetMs
-            line.text.isNotBlank() && effectiveStart in 0 until currentDurationMs
-        }
+            TransitionLyricContent.isPerformed(line.text) && effectiveStart in 0 until currentDurationMs
+        }.sortedBy { it.timeStamp }
         if (meaningful.size < MIN_MEANINGFUL_LYRIC_LINES) return null
 
         val last = meaningful.last()
         val lastStart = (last.timeStamp + lyricOffsetMs).coerceIn(0L, currentDurationMs)
         val remainingAfterLastStart = currentDurationMs - lastStart
-        // A lyric file whose last actual line occurs around the middle of the track usually belongs
-        // to a long instrumental outro or is incomplete. Do not let that semantic marker start the
-        // next song tens of seconds early; fall back to the live envelope meter instead.
-        if (lastStart < (currentDurationMs * 0.55).toLong() || remainingAfterLastStart > 30_000L) {
+        // A file ending near the middle may be incomplete. Its last line alone is not an outro.
+        if (lastStart < (currentDurationMs * 0.55).toLong()) {
             return null
         }
 
         val wordEnd = last.words.maxOfOrNull { it.end + lyricOffsetMs }?.takeIf { it > lastStart }
-        val explicitEnd = (last.endTime + lyricOffsetMs).takeIf { last.endTime > 0L && it > lastStart }
-        val estimatedEnd = minOf(currentDurationMs, lastStart + 4_500L)
-        val lastEnd = (wordEnd ?: explicitEnd ?: estimatedEnd).coerceIn(lastStart + 1L, currentDurationMs)
-
-        // Lyrics are a semantic boundary, not a look-ahead hint. Preserve the complete last line,
-        // then introduce the following track immediately after its final timed word/line ends.
-        if (lastEnd >= currentDurationMs) return null
+        val explicitEnd = (last.endTime + lyricOffsetMs).takeIf {
+            !last.endTimeIsEstimated && last.endTime > 0L && it > lastStart
+        }
+        val endingMarker = TransitionLyricContent.isEnding(last.text)
+        val confirmedEnd = wordEnd ?: explicitEnd ?: if (endingMarker) lastStart else null
+        val matchedWindow = confirmedEnd?.let { end -> AutoTransitionVocalWindow.select(
+            meaningful.filterNot { TransitionLyricContent.isEnding(it.text) && it.words.isEmpty() }
+                .map { it.timeStamp + lyricOffsetMs }, end,
+        ) }
+        val gentleStart = matchedWindow ?: if (endingMarker) lastStart else lastStart + 2000L
+        if (gentleStart >= currentDurationMs - 1L) return null
+        // An unconfirmed end no longer blocks low-gain overlap. Keep the final main window
+        // for the main exchange; an independently measured tail may choose an earlier boundary.
+        val lastEnd = when {
+            endingMarker && matchedWindow == null && wordEnd == null && explicitEnd == null -> lastStart + 1000L
+            confirmedEnd != null -> if (confirmedEnd >= currentDurationMs)
+                max(gentleStart + 1L, currentDurationMs - AutoTransitionVocalWindow.MAIN_HANDOVER_MS)
+                else confirmedEnd
+            else -> max(gentleStart + 1000L, currentDurationMs - AutoTransitionVocalWindow.MAIN_HANDOVER_MS)
+        }.coerceIn(gentleStart + 1L, currentDurationMs - 1L)
+        val confidence = if (wordEnd != null) 1.0f else if (confirmedEnd != null) 0.82f else 0.5f
+        if (remainingAfterLastStart > MAX_LYRIC_PREROLL_MS) {
+            // Preserve the audio-envelope source for long outros while also carrying the
+            // final-line gentle entry, so a loud tail no longer blocks all overlap.
+            return Recipe(
+                targetPath = targetPath,
+                source = Source.ENVELOPE,
+                triggerPositionMs = gentleStart,
+                handoverPositionMs = lastEnd,
+                handoverDurationMs = DEFAULT_HANDOVER_MS,
+                confidence = confidence,
+                gentleStartPositionMs = gentleStart,
+                vocalEndKnown = confirmedEnd != null,
+            )
+        }
         val handoverStart = lastEnd
         val handoverMs = adaptiveHandoverMs(currentDurationMs - handoverStart)
-        // Arm/pre-open from the last meaningful line (bounded by the 30 s policy window), but the
-        // mixer does not consume the follow track until the exact handover start.
-        val trigger = max(lastStart, handoverStart - MAX_LYRIC_PREROLL_MS)
+        // Pre-open before the protected final-phrase overlap, bounded by the policy window.
+        val trigger = max(gentleStart ?: lastStart, handoverStart - MAX_LYRIC_PREROLL_MS)
             .coerceAtLeast(0L)
         if (trigger >= currentDurationMs) return null
 
-        val confidence = when {
-            wordEnd != null -> 1.0f
-            explicitEnd != null -> 0.82f
-            else -> 0.68f
-        }
         return Recipe(
             targetPath = targetPath,
             source = Source.LYRICS,
@@ -156,6 +193,8 @@ internal object AutoTransitionPolicy {
             handoverPositionMs = handoverStart,
             handoverDurationMs = handoverMs,
             confidence = confidence,
+            gentleStartPositionMs = gentleStart,
+            vocalEndKnown = confirmedEnd != null,
         )
     }
 
@@ -186,7 +225,7 @@ internal object AutoTransitionPolicy {
         track.duration in 1 until MIN_TRACK_DURATION_MS
 }
 
-/** Start parameters consumed by [CrossfadeTransitionController]. */
+/** Start parameters consumed by [CrossfadeTransitionController]; preRoll protects final vocals at low overlap gain. */
 internal data class AutoTransitionStartPlan(
     val preRollMs: Int,
     val handoverMs: Int,
@@ -201,16 +240,29 @@ internal data class AutoTransitionStartPlan(
  * can remain allocation-light and deterministic.
  */
 internal class AutoTransitionRuntime(private val tag: String) {
+    private companion object {
+        const val MIN_MAIN_FADE_MS = 6000L
+    }
     @Volatile
     private var recipe: AutoTransitionPolicy.Recipe? = null
+    @Volatile private var tailPlan: OutgoingTailPlan? = null
     private val envelope = AutoTransitionEnvelopeTracker()
 
+    @Synchronized
     fun updateRecipe(value: AutoTransitionPolicy.Recipe?) {
+        // Repeated queue/lyric publications must not erase the measured tail of the same plan.
+        if (recipe == value) return
         recipe = value
+        tailPlan = null
         envelope.reset()
     }
 
     fun currentRecipe(): AutoTransitionPolicy.Recipe? = recipe
+
+    @Synchronized
+    fun installTailPlan(expected: AutoTransitionPolicy.Recipe, plan: OutgoingTailPlan?) {
+        if (recipe == expected) tailPlan = plan
+    }
 
     fun observeCurrentPcm(
         positionMs: Long,
@@ -233,35 +285,72 @@ internal class AutoTransitionRuntime(private val tag: String) {
 
     fun resolveStartPlan(positionMs: Long, durationMs: Long): AutoTransitionStartPlan? {
         val activeRecipe = recipe ?: return null
-        if (durationMs < AutoTransitionPolicy.MIN_TRACK_DURATION_MS || activeRecipe.targetPath.isBlank()) return null
+        val timeline = com.rawsmusic.core.common.utils.LyricPlaybackTimeline
+        if (timeline.toLyricTime(durationMs) < AutoTransitionPolicy.MIN_TRACK_DURATION_MS || activeRecipe.targetPath.isBlank()) return null
         val remainingMs = (durationMs - positionMs).coerceAtLeast(0L)
         if (remainingMs <= 0L) return null
+        activeRecipe.gentleStartPositionMs?.let { sourceStart ->
+            val start = timeline.toPlaybackTime(sourceStart)
+            var vocalEnd = activeRecipe.handoverPositionMs?.let(timeline::toPlaybackTime) ?: return@let
+            if (positionMs < start) return null
+            if (!activeRecipe.vocalEndKnown) tailPlan?.let { measured ->
+                if (measured.fadeStartMs >= start && measured.cutoffMs > measured.fadeStartMs) {
+                    vocalEnd = minOf(vocalEnd, measured.fadeStartMs)
+                }
+            }
+            val gentle = (vocalEnd - positionMs).coerceAtLeast(0L).toInt()
+            // Late preparation gets a fresh adjustment window instead of inheriting a nearly
+            // expired lyric/cue deadline that would drive both gains to their endpoints at once.
+            val available = durationMs - max(positionMs, vocalEnd)
+            if (available <= 0L) return null
+            val handover = minOf(available,
+                timeline.toPlaybackTime(AutoTransitionVocalWindow.MAIN_HANDOVER_MS))
+                .coerceAtLeast(MIN_MAIN_FADE_MS).toInt()
+            return AutoTransitionStartPlan(gentle, handover,
+                AutoTransitionPolicy.pivotMs(handover), activeRecipe.source)
+        }
+        tailPlan?.let { tail ->
+            if (positionMs < tail.fadeStartMs) return null
+            // A detected low-energy boundary starts the ramp, but cannot compress the whole
+            // handover to the analyzer's short 3–4 s cue (or to 250 ms after a late open).
+            val handover = minOf(remainingMs,
+                timeline.toPlaybackTime(AutoTransitionVocalWindow.MAIN_HANDOVER_MS))
+                .coerceAtLeast(MIN_MAIN_FADE_MS).toInt()
+            return AutoTransitionStartPlan(0, handover, AutoTransitionPolicy.pivotMs(handover), activeRecipe.source)
+        }
 
         return when (activeRecipe.source) {
             AutoTransitionPolicy.Source.LYRICS -> {
-                val handoverAt = activeRecipe.handoverPositionMs ?: positionMs
-                // The next decoder may be prepared from triggerPositionMs, but decoding it here
-                // consumes its intro. Start the mixer only at the semantic handover point.
+                val handoverAt = activeRecipe.handoverPositionMs?.let(timeline::toPlaybackTime) ?: positionMs
+                // Recipes without an eligible final-phrase window keep the formal semantic start.
                 if (positionMs < handoverAt) return null
+                val handoverMs = timeline.toPlaybackTime(
+                    activeRecipe.handoverDurationMs.coerceAtMost(AutoTransitionPolicy.MAX_HANDOVER_MS).toLong())
+                    .coerceIn(1L, remainingMs.coerceAtLeast(1L)).coerceAtLeast(MIN_MAIN_FADE_MS).toInt()
                 AutoTransitionStartPlan(
                     preRollMs = 0,
-                    handoverMs = activeRecipe.handoverDurationMs.coerceAtLeast(900),
-                    pivotMs = AutoTransitionPolicy.pivotMs(activeRecipe.handoverDurationMs.coerceAtLeast(900)),
+                    handoverMs = handoverMs,
+                    pivotMs = AutoTransitionPolicy.pivotMs(handoverMs),
                     source = activeRecipe.source,
                 )
             }
             AutoTransitionPolicy.Source.ENVELOPE -> {
-                val inLookahead = remainingMs <= activeRecipe.envelopeLookaheadMs
+                val vocalEnd = activeRecipe.handoverPositionMs?.let(timeline::toPlaybackTime)
+                if (vocalEnd != null && positionMs < vocalEnd) return null
+                val inLookahead = remainingMs <= timeline.toPlaybackTime(activeRecipe.envelopeLookaheadMs)
                 val quietTail = inLookahead && envelope.isQuietTail()
-                val fadeTail = inLookahead && !quietTail && envelope.looksLikeFadeOut()
-                val hardEndSafety = remainingMs <= AutoTransitionPolicy.HARD_END_SAFETY_REMAINING_MS
+                val trustedOutro = vocalEnd != null && positionMs >= vocalEnd
+                val fadeTail = (inLookahead || trustedOutro) && !quietTail && envelope.looksLikeFadeOut()
+                val hardEndSafety = remainingMs <= timeline.toPlaybackTime(AutoTransitionPolicy.HARD_END_SAFETY_REMAINING_MS)
                 if (!quietTail && !fadeTail && !hardEndSafety) return null
 
                 // Preparation happens outside the mixer. Never consume the following song before
                 // the real ramp because that permanently skips the same amount of its intro.
-                val desiredHandover = AutoTransitionPolicy.adaptiveHandoverMs(
-                    remainingMs.coerceAtLeast(900L),
-                )
+                val desiredHandover = timeline.toPlaybackTime(
+                    AutoTransitionPolicy.adaptiveHandoverMs(
+                        timeline.toLyricTime(remainingMs.coerceAtLeast(900L)),
+                    ).toLong(),
+                ).coerceIn(1L, remainingMs.coerceAtLeast(1L)).coerceAtLeast(MIN_MAIN_FADE_MS).toInt()
                 AutoTransitionStartPlan(
                     preRollMs = 0,
                     handoverMs = desiredHandover,
@@ -272,9 +361,11 @@ internal class AutoTransitionRuntime(private val tag: String) {
         }
     }
 
+    @Synchronized
     fun resetAfterTrackBoundary() {
         envelope.reset()
         recipe = null
+        tailPlan = null
     }
 }
 
@@ -339,7 +430,8 @@ private class AutoTransitionEnvelopeTracker {
         }
         val netDrop = sections.first() - sections.last()
         val risingSteps = sections.zipWithNext().count { (before, after) -> after > before + 2.5f }
-        val gradualDrop = recentMedian <= -17f && netDrop >= 6f && risingSteps <= 1
+        val continuingDrop = sections.zipWithNext().count { (before, after) -> after <= before - 0.75f } >= 3
+        val gradualDrop = netDrop >= 6f && risingSteps <= 1 && continuingDrop
         val detected = suddenDrop || gradualDrop
         if (detected) fadeLatchedUntilMs = latestPosition + 1_600L
         return detected
@@ -364,6 +456,7 @@ internal object PcmLevelMeter {
         outputIsFloat: Boolean,
         outputIsPacked24: Boolean,
         bitsPerSample: Int,
+        startOffset: Int = 0,
     ): Float {
         val bytesPerSample = when {
             outputIsFloat -> 4
@@ -371,14 +464,16 @@ internal object PcmLevelMeter {
             bitsPerSample > 16 -> 4
             else -> 2
         }
-        if (length < bytesPerSample) return MIN_DB
-        val sampleCount = length / bytesPerSample
+        val baseOffset = startOffset.coerceIn(0, buffer.size)
+        val available = minOf(length.coerceAtLeast(0), buffer.size - baseOffset)
+        if (available < bytesPerSample) return MIN_DB
+        val sampleCount = available / bytesPerSample
         val stride = max(1, sampleCount / 2048)
         var sum = 0.0
         var count = 0
         var index = 0
         while (index < sampleCount) {
-            val offset = index * bytesPerSample
+            val offset = baseOffset + index * bytesPerSample
             val normalized = when {
                 outputIsFloat -> java.lang.Float.intBitsToFloat(readIntLE(buffer, offset)).toDouble()
                 outputIsPacked24 -> readS24LE(buffer, offset).toDouble() / 8_388_608.0

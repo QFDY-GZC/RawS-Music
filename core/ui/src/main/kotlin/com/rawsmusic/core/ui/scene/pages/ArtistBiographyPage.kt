@@ -30,7 +30,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -45,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.R
+import com.rawsmusic.core.ui.scene.LocalRawWindowLayoutProfile
 import com.rawsmusic.core.ui.scene.LocalRetainedSceneMotionActive
 import com.rawsmusic.core.ui.systemui.rawStableStatusBarsPadding
 import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualList
@@ -72,16 +72,16 @@ private const val BIOGRAPHY_SOURCE_LINK = "source_link"
 
 private data class BiographyLanguage(
     val code: String,
-    val label: String,
+    val labelRes: Int,
 )
 
 private val biographyLanguages = listOf(
-    BiographyLanguage("zh", "简中"),
-    BiographyLanguage("en", "English"),
-    BiographyLanguage("ja", "日本語"),
-    BiographyLanguage("ko", "한국어"),
-    BiographyLanguage("zh-tw", "繁中"),
-    BiographyLanguage("zh-hk", "香港"),
+    BiographyLanguage("zh", R.string.artist_biography_language_zh_cn),
+    BiographyLanguage("en", R.string.artist_biography_language_en),
+    BiographyLanguage("ja", R.string.artist_biography_language_ja),
+    BiographyLanguage("ko", R.string.artist_biography_language_ko),
+    BiographyLanguage("zh-tw", R.string.artist_biography_language_zh_tw),
+    BiographyLanguage("zh-hk", R.string.artist_biography_language_zh_hk),
 )
 
 @Composable
@@ -138,11 +138,11 @@ internal fun ArtistBiographyPage(
         splitBiographyParagraphs(biography?.text.orEmpty())
     }
     val density = LocalDensity.current
-    val configuration = LocalConfiguration.current
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
     val textMeasurer = rememberTextMeasurer()
     val paragraphStyle = TextStyle(fontSize = 16.sp, lineHeight = 26.sp)
     val paragraphWidthPx = with(density) {
-        (configuration.screenWidthDp.dp - 40.dp).roundToPx().coerceAtLeast(1)
+        (windowLayoutProfile.contentMaxWidth - 40.dp).roundToPx().coerceAtLeast(1)
     }
     val paragraphHeights = remember(paragraphs, paragraphWidthPx, density.fontScale) {
         paragraphs.map { paragraph ->
@@ -349,7 +349,10 @@ private fun BiographyControls(
             BiographyChoiceChip("Last.fm", source == ArtistBiographySource.LastFm) {
                 onSourceChange(ArtistBiographySource.LastFm)
             }
-            BiographyChoiceChip("网易云", source == ArtistBiographySource.Netease) {
+            BiographyChoiceChip(
+                stringResource(R.string.artist_biography_source_netease_short),
+                source == ArtistBiographySource.Netease,
+            ) {
                 onSourceChange(ArtistBiographySource.Netease)
             }
         }
@@ -361,14 +364,14 @@ private fun BiographyControls(
         )
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
             biographyLanguages.take(3).forEach { option ->
-                BiographyChoiceChip(option.label, language == option.code) {
+                BiographyChoiceChip(stringResource(option.labelRes), language == option.code) {
                     onLanguageChange(option.code)
                 }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
             biographyLanguages.drop(3).forEach { option ->
-                BiographyChoiceChip(option.label, language == option.code) {
+                BiographyChoiceChip(stringResource(option.labelRes), language == option.code) {
                     onLanguageChange(option.code)
                 }
             }
@@ -473,7 +476,7 @@ private fun BiographySourceLink(
     val sourceName = when (source) {
         ArtistBiographySource.Wikipedia -> "Wikipedia"
         ArtistBiographySource.LastFm -> "Last.fm"
-        ArtistBiographySource.Netease -> "网易云音乐"
+        ArtistBiographySource.Netease -> stringResource(R.string.artist_biography_source_netease)
     }
     Box(
         modifier = modifier

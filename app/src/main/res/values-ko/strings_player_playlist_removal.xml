@@ -1,0 +1,7 @@
+<resources>
+    <string name="ui_playlist_remove_title">재생목록에서 곡 제거</string>
+    <string name="ui_playlist_remove_selected_summary">제거할 재생목록 선택 · %1$d개 선택됨</string>
+    <string name="ui_playlist_remove_selected">제거 (%1$d)</string>
+    <string name="ui_playlist_remove_success">%1$d개의 재생목록에서 곡을 제거했습니다</string>
+    <string name="ui_playlist_remove_failed">일부 제거에 실패했습니다. 선택한 재생목록을 확인한 후 다시 시도하세요.</string>
+</resources>

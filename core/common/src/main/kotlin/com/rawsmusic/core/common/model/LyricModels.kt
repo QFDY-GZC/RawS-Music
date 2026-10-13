@@ -46,7 +46,9 @@ data class LyricLine(
     val backgroundStartTime: Long? = null,
     val backgroundEndTime: Long? = null,
     val isTtml: Boolean = false,
-    val extensions: Map<String, String> = emptyMap()
+    val extensions: Map<String, String> = emptyMap(),
+    /** Display/layout fallback, not evidence that the vocalist finishes at this time. */
+    val endTimeIsEstimated: Boolean = false,
 ) : Comparable<LyricLine> {
 
     override fun compareTo(other: LyricLine): Int {

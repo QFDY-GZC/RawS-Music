@@ -17,6 +17,9 @@ object PersonalizationPreferences {
     private const val KEY_BOTTOM_NAV_STYLE_LEADING_MARGIN = "personalization_bottom_nav_style_leading_margin_v1"
     private const val KEY_BOTTOM_NAV_STYLE_TRAILING_MARGIN = "personalization_bottom_nav_style_trailing_margin_v1"
     private const val KEY_BOTTOM_NAV_STYLE_CURVE = "personalization_bottom_nav_style_curve_v1"
+    private const val KEY_BOTTOM_NAV_STYLE_COMPACT_STYLE = "personalization_bottom_nav_style_compact_style_v1"
+    private const val KEY_BOTTOM_NAV_STYLE_COMPACT_LEADING = "personalization_bottom_nav_style_compact_leading_v1"
+    private const val KEY_BOTTOM_NAV_STYLE_COMPACT_TRAILING = "personalization_bottom_nav_style_compact_trailing_v1"
     private const val KEY_MINI_PROGRESS_DIRECTION = "personalization_mini_progress_direction_v1"
     private const val KEY_MINI_BUBBLE_COUNT = "personalization_mini_bubble_count_v1"
     private const val KEY_MINI_BUBBLE_MOTION = "personalization_mini_bubble_motion_v1"
@@ -47,6 +50,7 @@ object PersonalizationPreferences {
     private const val KEY_PLAYER_HIRES_BADGE_ENABLED = "personalization_player_hires_badge_enabled_v1"
     private const val KEY_PLAYER_HIRES_BADGE_CORNER = "personalization_player_hires_badge_corner_v1"
     private const val KEY_PLAYER_HIRES_BADGE_CUSTOM_PATH = "personalization_player_hires_badge_custom_path_v1"
+    private const val KEY_PLAYER_HIRES_BADGE_SIZE_SCALE = "personalization_player_hires_badge_size_scale_v1"
     private const val KEY_GLASS_BLUR_RADIUS = "personalization_glass_blur_radius_v1"
     private const val KEY_GLASS_REFRACTION_HEIGHT = "personalization_glass_refraction_height_v1"
     private const val KEY_GLASS_REFRACTION_AMOUNT = "personalization_glass_refraction_amount_v1"
@@ -166,6 +170,9 @@ object PersonalizationPreferences {
         AppPreferences.storage.encode(KEY_BOTTOM_NAV_STYLE_LEADING_MARGIN, next.leadingMarginDp)
         AppPreferences.storage.encode(KEY_BOTTOM_NAV_STYLE_TRAILING_MARGIN, next.trailingMarginDp)
         AppPreferences.storage.encode(KEY_BOTTOM_NAV_STYLE_CURVE, next.cornerCurve)
+        AppPreferences.storage.encode(KEY_BOTTOM_NAV_STYLE_COMPACT_STYLE, next.compactStyle.prefValue)
+        AppPreferences.storage.encode(KEY_BOTTOM_NAV_STYLE_COMPACT_LEADING, next.compactLeadingButtonEnabled)
+        AppPreferences.storage.encode(KEY_BOTTOM_NAV_STYLE_COMPACT_TRAILING, next.compactTrailingButtonEnabled)
     }
 
     fun resetBottomNavigationStyle() {
@@ -276,6 +283,9 @@ object PersonalizationPreferences {
                 AppPreferences.storage.decodeInt(KEY_PLAYER_HIRES_BADGE_CORNER, PlayerHiResBadgeCorner.TOP_LEFT.prefValue)
             ),
             customPath = AppPreferences.storage.decodeString(KEY_PLAYER_HIRES_BADGE_CUSTOM_PATH, "").orEmpty(),
+            sizeScale = AppPreferences.storage
+                .decodeFloat(KEY_PLAYER_HIRES_BADGE_SIZE_SCALE, 1f)
+                .coerceIn(PlayerHiResBadgeSettings.MIN_SIZE_SCALE, PlayerHiResBadgeSettings.MAX_SIZE_SCALE),
         )
     )
     val playerHiResBadgeSettings = _playerHiResBadgeSettings.asStateFlow()
@@ -283,12 +293,13 @@ object PersonalizationPreferences {
     fun updatePlayerHiResBadgeSettings(
         transform: (PlayerHiResBadgeSettings) -> PlayerHiResBadgeSettings,
     ) {
-        val next = transform(_playerHiResBadgeSettings.value)
+        val next = transform(_playerHiResBadgeSettings.value).normalized()
         if (next == _playerHiResBadgeSettings.value) return
         _playerHiResBadgeSettings.value = next
         AppPreferences.storage.encode(KEY_PLAYER_HIRES_BADGE_ENABLED, next.enabled)
         AppPreferences.storage.encode(KEY_PLAYER_HIRES_BADGE_CORNER, next.corner.prefValue)
         AppPreferences.storage.encode(KEY_PLAYER_HIRES_BADGE_CUSTOM_PATH, next.customPath)
+        AppPreferences.storage.encode(KEY_PLAYER_HIRES_BADGE_SIZE_SCALE, next.sizeScale)
     }
 
     private val _globalLiquidGlassSettings = MutableStateFlow(loadGlobalLiquidGlassSettings())
@@ -495,6 +506,20 @@ object PersonalizationPreferences {
             leadingMarginDp = AppPreferences.storage.decodeFloat(KEY_BOTTOM_NAV_STYLE_LEADING_MARGIN, 16f),
             trailingMarginDp = AppPreferences.storage.decodeFloat(KEY_BOTTOM_NAV_STYLE_TRAILING_MARGIN, 20f),
             cornerCurve = AppPreferences.storage.decodeFloat(KEY_BOTTOM_NAV_STYLE_CURVE, 2f),
+            compactStyle = BottomNavigationCompactStyle.fromPref(
+                AppPreferences.storage.decodeString(
+                    KEY_BOTTOM_NAV_STYLE_COMPACT_STYLE,
+                    BottomNavigationCompactStyle.CLASSIC.prefValue,
+                )
+            ),
+            compactLeadingButtonEnabled = AppPreferences.storage.decodeBool(
+                KEY_BOTTOM_NAV_STYLE_COMPACT_LEADING,
+                false,
+            ),
+            compactTrailingButtonEnabled = AppPreferences.storage.decodeBool(
+                KEY_BOTTOM_NAV_STYLE_COMPACT_TRAILING,
+                false,
+            ),
         ).normalized()
 
     private fun loadMiniPlayerControlSettings(): MiniPlayerControlSettings =
@@ -588,4 +613,14 @@ data class PlayerHiResBadgeSettings(
     val enabled: Boolean = false,
     val corner: PlayerHiResBadgeCorner = PlayerHiResBadgeCorner.TOP_LEFT,
     val customPath: String = "",
-)
+    val sizeScale: Float = 1f,
+) {
+    fun normalized(): PlayerHiResBadgeSettings = copy(
+        sizeScale = sizeScale.coerceIn(MIN_SIZE_SCALE, MAX_SIZE_SCALE),
+    )
+
+    companion object {
+        const val MIN_SIZE_SCALE = 0.5f
+        const val MAX_SIZE_SCALE = 2f
+    }
+}

@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import com.rawsmusic.R
 import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.common.ui.AppNoticeIcon
+import com.rawsmusic.helper.rememberSystemFileAccessGate
 import com.rawsmusic.module.player.dsp.FftConvolverController
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.SliderDefaults
@@ -65,6 +66,7 @@ internal fun FftConvolverSettingsCard(
     }
 
     val context = LocalContext.current
+    val withSystemFileAccess = rememberSystemFileAccessGate()
     val scope = rememberCoroutineScope()
 
     val enabled by controller.isEnabled.collectAsState()
@@ -148,15 +150,17 @@ internal fun FftConvolverSettingsCard(
                         irName
                     },
                     onClick = {
-                        documentLauncher.launch(
-                            arrayOf(
-                                "audio/wav",
-                                "audio/x-wav",
-                                "audio/wave",
-                                "audio/vnd.wave",
-                                "application/octet-stream"
+                        withSystemFileAccess {
+                            documentLauncher.launch(
+                                arrayOf(
+                                    "audio/wav",
+                                    "audio/x-wav",
+                                    "audio/wave",
+                                    "audio/vnd.wave",
+                                    "application/octet-stream"
+                                )
                             )
-                        )
+                        }
                     }
                 )
 

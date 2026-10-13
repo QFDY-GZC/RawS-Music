@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="transcode_post_source_delete_needs_consent">변환이 완료되었습니다. 원본 파일을 삭제하려면 시스템 승인이 필요합니다.</string>
+    <string name="transcode_post_source_deleted">변환이 완료되었고 원본 파일을 삭제했습니다.</string>
+    <string name="transcode_post_source_delete_failed">변환은 완료되었지만 원본 파일을 삭제하지 못했습니다.</string>
+    <string name="transcode_post_library_refresh_requested">변환이 완료되었고 라이브러리 새로 고침을 요청했습니다.</string>
+    <string name="transcode_post_action_notice">변환은 완료되었지만 후속 미디어 라이브러리 작업을 완료하지 못했습니다.</string>
+</resources>

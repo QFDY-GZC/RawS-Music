@@ -45,6 +45,7 @@ import com.rawsmusic.core.ui.R
 import com.rawsmusic.module.data.source.InstalledLxSource
 import com.rawsmusic.module.data.source.InstalledMusicSource
 import com.rawsmusic.module.data.source.runtime.AggregatedMusicSourceSearch
+import com.rawsmusic.module.data.source.runtime.MUSIC_SOURCE_SEARCH_DISPLAY_LIMIT
 import com.rawsmusic.module.data.source.runtime.MusicSourceSearchCoordinator
 import com.rawsmusic.module.data.source.runtime.MusicSourceSearchStore
 import kotlinx.coroutines.CancellationException
@@ -185,7 +186,11 @@ internal fun SourceSearchPage(
                             Spacer(Modifier.width(4.dp))
                         }
                         Text(
-                            text = result.items.size.toString(),
+                            text = stringResource(
+                                R.string.source_search_results_count,
+                                result.items.size,
+                                MUSIC_SOURCE_SEARCH_DISPLAY_LIMIT,
+                            ),
                             color = MiuixTheme.colorScheme.primary,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -294,6 +299,7 @@ private fun SourceSearchResultCard(
     onDownload: () -> Unit,
 ) {
     val scheme = MiuixTheme.colorScheme
+    val unknownSinger = stringResource(R.string.source_unknown_singer)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -321,7 +327,7 @@ private fun SourceSearchResultCard(
             Spacer(Modifier.height(4.dp))
             Text(
                 buildString {
-                    append(item.artists.joinToString(" / ").ifBlank { "未知歌手" })
+                    append(item.artists.joinToString(" / ").ifBlank { unknownSinger })
                     if (item.album.isNotBlank()) append(" · ${item.album}")
                 },
                 color = scheme.onSurfaceVariantSummary,

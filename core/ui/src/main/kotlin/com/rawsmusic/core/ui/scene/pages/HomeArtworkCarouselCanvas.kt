@@ -28,17 +28,21 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkAspectPolicy
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
+import com.rawsmusic.core.ui.widget.bitmaps.DefaultAlbumArtworkPolicy
+import com.rawsmusic.core.ui.widget.bitmaps.decodeDefaultAlbumArtwork
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.player.HOME_HORIZONTAL_CAROUSEL_CORNER_RADIUS_DP
 import kotlin.math.abs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-private const val CanvasLaneRadius = 3
 private const val CanvasDecodeSizePx = 768
 private const val CanvasReflectionHeightFraction = 0.28f
 private const val CanvasReflectionAlpha = 0.24f
@@ -64,6 +68,7 @@ private data class CanvasLane(
     val sizeScale: Float,
     val rotationY: Float,
     val pivotFractionX: Float,
+    val alpha: Float,
     val zIndex: Float
 )
 
@@ -71,13 +76,14 @@ private data class CanvasLane(
  * Compose-owned single-pass renderer matching Mica's Canvas pipeline.
  *
  * Keeping every lane on one native Canvas avoids the per-Composable offscreen texture that made
- * steeply rotated side covers blurry. Seven logical lanes remain available while canvas clipping
- * naturally leaves the central five visible at rest.
+ * steeply rotated side covers blurry. Landscape tablets retain eleven logical lanes, with the
+ * outer two decoded but hidden at rest; other layouts retain their existing seven lanes.
  */
 @Composable
 internal fun HomeArtworkCarouselCanvas(
     songs: List<AudioFile>,
     centerIndex: Int,
+    evenlySpacedTabletLandscape: Boolean = false,
     progressProvider: () -> Float,
     hideCenterLane: Boolean = false,
     centerReflectionAlpha: Float = 1f,
@@ -86,23 +92,34 @@ internal fun HomeArtworkCarouselCanvas(
     onCenterArtworkBoundsChanged: (ComposeRect) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val laneRadius = homeCarouselLaneRadius(evenlySpacedTabletLandscape)
+    val resources = LocalContext.current.resources
+    val defaultEnabled = DefaultAlbumArtworkPolicy.enabled
+    var defaultBitmap by remember(resources) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(resources, defaultEnabled) {
+        if (defaultEnabled && defaultBitmap == null) {
+            defaultBitmap = withContext(Dispatchers.Default) {
+                decodeDefaultAlbumArtwork(resources, CanvasDecodeSizePx)
+            }
+        }
+    }
     DisposableEffect(centerArtworkBoundsHandle) {
         onDispose { centerArtworkBoundsHandle?.clear() }
     }
 
-    val laneSongs = (-CanvasLaneRadius..CanvasLaneRadius).map { logicalOffset ->
+    val laneSongs = (-laneRadius..laneRadius).map { logicalOffset ->
         if (songs.isEmpty() || (songs.size == 1 && logicalOffset != 0)) {
             null
         } else {
-            songs[wrapCanvasCarouselIndex(centerIndex + logicalOffset, songs.size)]
+            songs.getOrNull(centerIndex + logicalOffset)
         }
     }
-    LaunchedEffect(songs, centerIndex) {
+    LaunchedEffect(songs, centerIndex, laneRadius) {
         AppLogger.i(
             "HOME_CAROUSEL_TRACE",
             "artwork_bind center=$centerIndex lanes=" +
                 laneSongs.mapIndexed { index, song ->
-                    val offset = index - CanvasLaneRadius
+                    val offset = index - laneRadius
                     "$offset:${song?.title}:${song?.path?.takeLast(36)}"
                 }.joinToString("|")
         )
@@ -112,7 +129,7 @@ internal fun HomeArtworkCarouselCanvas(
     }
     val laneBitmaps = laneSongs.mapIndexed { laneIndex, song ->
         val artworkKey = song?.resolvePlaybackArtworkKey(null).orEmpty()
-        val logicalOffset = laneIndex - CanvasLaneRadius
+        val logicalOffset = laneIndex - laneRadius
         val occurrence = artworkKeys.take(laneIndex).count { it == artworkKey }
         // Keep the decoded holder attached to the artwork rather than to a physical rail. After a
         // gesture commit the selected cover moves from a side rail to the new centre rail; a rail
@@ -123,17 +140,28 @@ internal fun HomeArtworkCarouselCanvas(
             "home-canvas-empty-lane:$logicalOffset"
         }
         key(holderKey) {
-            rememberHomeCarouselBitmap(artworkKey)
+            rememberHomeCarouselBitmap(artworkKey, song?.albumArtPath.orEmpty(), defaultBitmap)
         }
     }
     val transitionCenterReflectionBitmap = if (
         hideCenterLane && centerReflectionAlpha > 0.001f && centerReflectionArtworkKey.isNotBlank()
     ) {
         key("home-return-reflection:$centerReflectionArtworkKey") {
-            rememberHomeCarouselBitmap(centerReflectionArtworkKey)
+            rememberHomeCarouselBitmap(centerReflectionArtworkKey, defaultBitmap = defaultBitmap)
         }
     } else {
         null
+    }
+    // Diagnostic state edges only: never read gesture progress or log from the draw loop.
+    val centerBitmap = laneBitmaps.getOrNull(laneRadius)
+    val centerKey = artworkKeys.getOrNull(laneRadius).orEmpty()
+    LaunchedEffect(centerKey, centerBitmap, hideCenterLane, songs.size) {
+        AppLogger.i(
+            "ArtworkRestore",
+            "center pid=${android.os.Process.myPid()} key=${centerKey.hashCode()} " +
+                "queue=${songs.size} index=$centerIndex hidden=$hideCenterLane " +
+                "bitmap=${centerBitmap?.let { "${it.width}x${it.height}/recycled=${it.isRecycled}" } ?: "null"}",
+        )
     }
     val density = LocalDensity.current.density
     val camera = remember { Camera() }
@@ -166,20 +194,21 @@ internal fun HomeArtworkCarouselCanvas(
     ) {
         val progress = progressProvider()
         val nativeCanvas = drawContext.canvas.nativeCanvas
-        val slotWidth = size.width
-        val slotHeight = size.width
+        val slotWidth = resolveHomeCanvasSlotSidePx(size.width, size.height)
+        val slotHeight = slotWidth
         val centerX = size.width * 0.5f
         val centerY = slotHeight * 0.5f
         val reflectionGap = 4f * density
         val cornerRadius = HOME_HORIZONTAL_CAROUSEL_CORNER_RADIUS_DP * density
+        val canvasWidthPx = size.width
 
         val lanes = buildList {
             for (index in laneSongs.indices) {
                 val song = laneSongs[index] ?: continue
                 val bitmap = laneBitmaps[index]
-                val logicalOffset = index - CanvasLaneRadius
+                val logicalOffset = index - laneRadius
                 val railOffset = logicalOffset - progress
-                if (abs(railOffset) > CanvasLaneRadius.toFloat()) continue
+                if (abs(railOffset) > laneRadius.toFloat()) continue
                 val hiddenCenter = hideCenterLane && abs(railOffset) < 0.001f
                 // During the final return segment the shared overlay still owns the cover itself,
                 // but the home Canvas may restore only its reflection underneath that moving lane.
@@ -193,7 +222,10 @@ internal fun HomeArtworkCarouselCanvas(
                         } else {
                             bitmap
                         },
-                        slotWidth = slotWidth
+                        slotWidth = slotWidth,
+                        evenlySpacedTabletLandscape = evenlySpacedTabletLandscape,
+                        viewportWidth = canvasWidthPx,
+                        edgePadding = 24f * density,
                     )
                 )
             }
@@ -238,7 +270,12 @@ internal fun HomeArtworkCarouselCanvas(
 }
 
 @Composable
-private fun rememberHomeCarouselBitmap(key: String): Bitmap? {
+private fun rememberHomeCarouselBitmap(
+    key: String, externalArtworkPath: String = "", defaultBitmap: Bitmap? = null,
+): Bitmap? {
+    var missingArtwork by remember(key, externalArtworkPath) {
+        mutableStateOf(key.isBlank() || BitmapProvider.isKnownNoArtwork(key))
+    }
     var handle by remember(key) {
         mutableStateOf(
             if (key.isBlank()) {
@@ -260,8 +297,9 @@ private fun rememberHomeCarouselBitmap(key: String): Bitmap? {
         )
     }
 
-    DisposableEffect(key) {
+    DisposableEffect(key, externalArtworkPath) {
         var active = true
+        val startedAt = android.os.SystemClock.elapsedRealtime()
         val request = if (key.isBlank()) {
             null
         } else {
@@ -272,11 +310,30 @@ private fun rememberHomeCarouselBitmap(key: String): Bitmap? {
                 priority = BitmapRequest.Priority.LOADING_WIDGET,
                 surface = ArtworkSurface.Playback,
                 aspectPolicy = ArtworkAspectPolicy.Crop,
+                externalArtworkPath = externalArtworkPath,
             ) { delivered ->
                 if (!active) {
                     delivered?.release()
                     return@loadHandle
                 }
+                if (delivered == null || !delivered.isValid) {
+                    AppLogger.i(
+                        "ArtworkRestore",
+                        "carousel_miss key=${key.hashCode()} " +
+                            "elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt} " +
+                            "retained=${handle?.isValid == true} " +
+                            "external=${externalArtworkPath.isNotBlank()} " +
+                            "noArt=${BitmapProvider.isKnownNoArtwork(key)}",
+                    )
+                }
+                // A transient cold-start miss must not erase accepted pixels for the same key.
+                // Key changes own a separate remember/effect, so this cannot show the old song.
+                if (delivered != null && !delivered.isValid) {
+                    delivered.release()
+                    return@loadHandle
+                }
+                missingArtwork = delivered == null && BitmapProvider.isKnownNoArtwork(key)
+                if (delivered == null && handle?.isValid == true) return@loadHandle
                 if (delivered !== handle) {
                     handle?.release()
                     handle = delivered
@@ -291,7 +348,12 @@ private fun rememberHomeCarouselBitmap(key: String): Bitmap? {
         }
     }
 
-    return handle?.takeIf { it.isValid }?.bitmap?.takeIf { !it.isRecycled }
+    val bitmap = handle?.takeIf { it.isValid }?.bitmap?.takeIf { !it.isRecycled }
+    return bitmap ?: defaultBitmap?.takeIf {
+        !it.isRecycled && homeCarouselUsesDefaultArtwork(
+            DefaultAlbumArtworkPolicy.enabled, bitmap != null, missingArtwork,
+        )
+    }
 }
 
 
@@ -336,9 +398,12 @@ private fun buildCanvasLane(
     logicalOffset: Int,
     railOffset: Float,
     bitmap: Bitmap?,
-    slotWidth: Float
+    slotWidth: Float,
+    evenlySpacedTabletLandscape: Boolean = false,
+    viewportWidth: Float = slotWidth,
+    edgePadding: Float = 0f,
 ): CanvasLane {
-    val distance = abs(railOffset).coerceIn(0f, 3f)
+    val distance = abs(railOffset).coerceIn(0f, if (evenlySpacedTabletLandscape) 5f else 3f)
     val sign = when {
         railOffset < 0f -> -1f
         railOffset > 0f -> 1f
@@ -384,16 +449,23 @@ private fun buildCanvasLane(
                 (CanvasEdgeCameraRotation - CanvasOuterCameraRotation) * t
         }
     }
-    val sizeScale = baseScale * extraScale
+    val sizeScale = if (evenlySpacedTabletLandscape) {
+        tabletCarouselPlaneScale(railOffset, HOME_CANVAS_CENTER_SCALE)
+    } else baseScale * extraScale
 
     return CanvasLane(
         logicalOffset = logicalOffset,
         railOffset = railOffset,
         bitmap = bitmap,
-        translationX = sign * slotWidth * translationFraction,
+        translationX = if (evenlySpacedTabletLandscape) {
+            tabletCarouselTranslationX(railOffset, viewportWidth, slotWidth, edgePadding)
+        } else sign * slotWidth * translationFraction,
         sizeScale = sizeScale,
         rotationY = sign * -rotationMagnitude,
-        pivotFractionX = pivotFractionX,
+        // Rotate about the visual centre on the evenly spaced rail. Edge pivots otherwise
+        // displace the left/right images differently despite identical slot positions.
+        pivotFractionX = if (evenlySpacedTabletLandscape) 0f else pivotFractionX,
+        alpha = if (evenlySpacedTabletLandscape) tabletCarouselLaneAlpha(railOffset) else 1f,
         zIndex = 30f - distance * 10f
     )
 }
@@ -429,10 +501,11 @@ private fun drawCanvasLane(
     reflectionAlpha: Float,
 ) {
     val bitmap = lane.bitmap ?: return
-    if (bitmap.isRecycled) return
+    if (bitmap.isRecycled || lane.alpha <= 0.001f) return
 
     val drawWidth = slotWidth * lane.sizeScale
     val drawHeight = slotHeight * lane.sizeScale
+    if (!drawWidth.isFinite() || !drawHeight.isFinite() || drawWidth <= 0f || drawHeight <= 0f) return
     val pivotX = drawWidth * lane.pivotFractionX
     val scaledCornerRadius = cornerRadius * lane.sizeScale.coerceAtLeast(HOME_CANVAS_MIN_CORNER_SCALE)
 
@@ -470,6 +543,7 @@ private fun drawCanvasLane(
         // perspective-mapped, so disabling filtering here makes every non-center lane look coarse or
         // smeared regardless of the requested source pixels.
         coverPaint.isFilterBitmap = true
+        coverPaint.alpha = (lane.alpha * 255f).toInt()
         canvas.drawBitmap(bitmap, sourceRect, coverRect, coverPaint)
         canvas.restore()
     }
@@ -488,7 +562,7 @@ private fun drawCanvasLane(
         reflectionRect = reflectionRect,
         reflectionDestination = reflectionDestination,
         clipPath = clipPath,
-        alpha = reflectionAlpha,
+        alpha = reflectionAlpha * lane.alpha,
     )
     canvas.restore()
 }
@@ -514,6 +588,7 @@ private fun drawCanvasReflection(
     val bottom = top + reflectionHeight
     reflectionRect.set(-slotWidth * 0.5f, top, slotWidth * 0.5f, bottom)
     centerCropSource(bitmap, slotWidth, slotHeight, reflectionSourceRect)
+    if (reflectionSourceRect.isEmpty) return
     val sourceSliceHeight =
         (reflectionSourceRect.height() * CanvasReflectionHeightFraction)
             .toInt()
@@ -568,26 +643,7 @@ private fun centerCropSource(
     destinationHeight: Float,
     output: Rect
 ) {
-    val bitmapWidth = bitmap.width
-    val bitmapHeight = bitmap.height
-    if (bitmapWidth <= 0 || bitmapHeight <= 0) {
-        output.set(0, 0, bitmapWidth, bitmapHeight)
-        return
-    }
-    val destinationRatio = destinationWidth / destinationHeight
-    val sourceRatio = bitmapWidth.toFloat() / bitmapHeight
-    if (sourceRatio > destinationRatio) {
-        val cropWidth = (bitmapHeight * destinationRatio).toInt().coerceAtMost(bitmapWidth)
-        val x = (bitmapWidth - cropWidth) / 2
-        output.set(x, 0, x + cropWidth, bitmapHeight)
-    } else {
-        val cropHeight = (bitmapWidth / destinationRatio).toInt().coerceAtMost(bitmapHeight)
-        val y = (bitmapHeight - cropHeight) / 2
-        output.set(0, y, bitmapWidth, y + cropHeight)
-    }
-}
-
-private fun wrapCanvasCarouselIndex(index: Int, size: Int): Int {
-    if (size <= 0) return 0
-    return ((index % size) + size) % size
+    val crop = resolveHomeCanvasBitmapCrop(bitmap.width, bitmap.height, destinationWidth, destinationHeight)
+    if (crop == null) output.setEmpty()
+    else output.set(crop.left, crop.top, crop.right, crop.bottom)
 }

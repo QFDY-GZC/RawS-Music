@@ -52,6 +52,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
@@ -60,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.core.content.FileProvider
+import androidx.annotation.StringRes
 import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.common.ui.AppNoticeIcon
 import com.rawsmusic.R
@@ -71,8 +73,10 @@ import com.rawsmusic.core.ui.widget.background.CustomMediaBackgroundState
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
+import com.rawsmusic.locale.localizedErrorMessage
 import com.rawsmusic.transcode.AudioTranscodeCapability
 import com.rawsmusic.transcode.AudioTranscodeDsdRate
+import com.rawsmusic.transcode.AudioTranscodeFailureReason
 import com.rawsmusic.transcode.AudioTranscodeForegroundService
 import com.rawsmusic.transcode.AudioTranscodeFormat
 import com.rawsmusic.transcode.AudioTranscodeManager
@@ -107,14 +111,18 @@ import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-private enum class TranscodeTab(val label: String) { SETTINGS("格式转换"), QUEUE("队列管理"), RESULTS("转换结果") }
+private enum class TranscodeTab(@StringRes val labelRes: Int) {
+    SETTINGS(R.string.transcode_tab_settings),
+    QUEUE(R.string.transcode_tab_queue),
+    RESULTS(R.string.transcode_tab_results),
+}
 
-private enum class LibraryPickerSort(val label: String) {
-    LOSSLESS("无损"),
-    LOSSY("有损"),
-    DSD("DSD 优先"),
-    BIT_DEPTH("位深"),
-    SAMPLE_RATE("采样率"),
+private enum class LibraryPickerSort(@StringRes val labelRes: Int) {
+    LOSSLESS(R.string.transcode_sort_lossless),
+    LOSSY(R.string.transcode_sort_lossy),
+    DSD(R.string.transcode_sort_dsd),
+    BIT_DEPTH(R.string.transcode_sort_bit_depth),
+    SAMPLE_RATE(R.string.transcode_sort_sample_rate),
 }
 
 private data class TranscodeUiOptions(
@@ -219,7 +227,7 @@ fun AudioTranscodeScreen(
             true
         } else {
             onRequestDirectOutputStorageAccess()
-            AppNoticeBus.error("转换结果需要写入音乐目录，请授权文件访问后重试")
+            AppNoticeBus.error(context.getString(R.string.transcode_storage_permission_required))
             false
         }
     }
@@ -276,6 +284,9 @@ fun AudioTranscodeScreen(
         if (globalOptions.format !in supported && supported.isNotEmpty()) {
             globalOptions = globalOptions.copy(format = supported.first())
         }
+        if (globalOptions.format == AudioTranscodeFormat.SACD_ISO && globalOptions.dsdRate != AudioTranscodeDsdRate.DSD64) {
+            globalOptions = globalOptions.copy(dsdRate = AudioTranscodeDsdRate.DSD64)
+        }
     }
 
     LaunchedEffect(globalOptions) {
@@ -303,7 +314,7 @@ fun AudioTranscodeScreen(
         resolved.forEach { item -> if (drafts.none { it.sourcePath == item.sourcePath }) drafts += item }
         onImportedPathsConsumed()
         if (missing.isNotEmpty() && resolved.isEmpty()) {
-            AppNoticeBus.error("所选文件没有可用的音频流")
+            AppNoticeBus.error(context.getString(R.string.transcode_no_usable_audio_stream))
         }
     }
 
@@ -321,7 +332,7 @@ fun AudioTranscodeScreen(
             .background(pageBackground),
     ) {
         SmallTopAppBar(
-            title = "音频转换",
+            title = stringResource(R.string.transcode_screen_title),
             color = pageBackground,
             titleColor = MiuixTheme.colorScheme.onBackground,
             navigationIcon = {
@@ -330,7 +341,7 @@ fun AudioTranscodeScreen(
                 }) {
                     Icon(
                         imageVector = MiuixIcons.Regular.Back,
-                        contentDescription = "返回",
+                        contentDescription = stringResource(R.string.common_back),
                         tint = MiuixTheme.colorScheme.onSurface,
                     )
                 }
@@ -376,7 +387,13 @@ fun AudioTranscodeScreen(
                                 }
                                 item {
                                     OptionsPanel(
-                                        title = if (selectedDrafts.size > 1) "批量转换设置" else "转换设置",
+                                        title = stringResource(
+                                            if (selectedDrafts.size > 1) {
+                                                R.string.transcode_batch_settings
+                                            } else {
+                                                R.string.transcode_settings
+                                            }
+                                        ),
                                         options = globalOptions,
                                         capabilities = capabilities,
                                         onOptions = { globalOptions = it },
@@ -405,19 +422,21 @@ fun AudioTranscodeScreen(
                                             importedOutputDir,
                                         )
                                         if (requests.isEmpty()) {
-                                            AppNoticeBus.error("请先选择要转换的音频")
+                                            AppNoticeBus.error(context.getString(R.string.transcode_select_audio_first))
                                         } else {
                                             AudioTranscodeForegroundService.enqueueAllNow(context, requests).fold(
                                                 onSuccess = {
                                                     drafts.removeAll { it.sourcePath in selectedPaths }
                                                     AppNoticeBus.post(
-                                                        message = "已开始 ${it.size} 个转换任务",
+                                                        message = context.getString(R.string.transcode_started_count, it.size),
                                                         icon = AppNoticeIcon.TRANSCODE,
                                                     )
                                                     openTab(TranscodeTab.QUEUE)
                                                 },
                                                 onFailure = {
-                                                    AppNoticeBus.error(it.message ?: "无法启动转换服务")
+                                                    AppNoticeBus.error(
+                                                        context.localizedErrorMessage(it, R.string.transcode_service_start_failed)
+                                                    )
                                                 },
                                             )
                                         }
@@ -460,12 +479,14 @@ fun AudioTranscodeScreen(
                                     onSuccess = {
                                         drafts.removeAll { it.sourcePath == path }
                                         AppNoticeBus.post(
-                                            message = "已优先开始转换",
+                                            message = context.getString(R.string.transcode_started_priority),
                                             icon = AppNoticeIcon.TRANSCODE,
                                         )
                                     },
                                     onFailure = {
-                                        AppNoticeBus.error(it.message ?: "无法启动转换服务")
+                                        AppNoticeBus.error(
+                                            context.localizedErrorMessage(it, R.string.transcode_service_start_failed)
+                                        )
                                     },
                                 )
                             },
@@ -482,12 +503,14 @@ fun AudioTranscodeScreen(
                                     onSuccess = {
                                         drafts.removeAll { it.sourcePath == path }
                                         AppNoticeBus.post(
-                                            message = "已加入真实队列",
+                                            message = context.getString(R.string.transcode_added_to_queue),
                                             icon = AppNoticeIcon.QUEUE,
                                         )
                                     },
                                     onFailure = {
-                                        AppNoticeBus.error(it.message ?: "无法加入转换队列")
+                                        AppNoticeBus.error(
+                                            context.localizedErrorMessage(it, R.string.transcode_queue_add_failed)
+                                        )
                                     },
                                 )
                             },
@@ -511,12 +534,14 @@ fun AudioTranscodeScreen(
                                         onSuccess = {
                                             drafts.removeAll { it.sourcePath in selectedPaths }
                                             AppNoticeBus.post(
-                                                message = "已加入 ${it.size} 个真实队列任务",
+                                                message = context.getString(R.string.transcode_added_to_queue_count, it.size),
                                                 icon = AppNoticeIcon.QUEUE,
                                             )
                                         },
                                         onFailure = {
-                                            AppNoticeBus.error(it.message ?: "无法加入转换队列")
+                                            AppNoticeBus.error(
+                                                context.localizedErrorMessage(it, R.string.transcode_queue_add_failed)
+                                            )
                                         },
                                     )
                                 }
@@ -536,12 +561,14 @@ fun AudioTranscodeScreen(
                                         onSuccess = {
                                             drafts.removeAll { it.sourcePath in selectedPaths }
                                             AppNoticeBus.post(
-                                                message = "已优先开始 ${it.size} 个转换任务",
+                                                message = context.getString(R.string.transcode_started_priority_count, it.size),
                                                 icon = AppNoticeIcon.TRANSCODE,
                                             )
                                         },
                                         onFailure = {
-                                            AppNoticeBus.error(it.message ?: "无法启动转换服务")
+                                            AppNoticeBus.error(
+                                                context.localizedErrorMessage(it, R.string.transcode_service_start_failed)
+                                            )
                                         },
                                     )
                                 }
@@ -640,7 +667,7 @@ private fun TranscodeNavigation(tab: TranscodeTab, onTab: (TranscodeTab) -> Unit
                         .padding(vertical = 15.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(destination.label, fontSize = 14.sp,
+                    Text(stringResource(destination.labelRes), fontSize = 14.sp,
                         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                         color = if (selected) colors.primary else colors.onSurfaceVariantSummary)
                 }
@@ -676,18 +703,29 @@ private fun SourceSummaryCard(
     onPickFiles: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 12.dp)) {
-        Text(if (drafts.isEmpty()) "让音乐，换一种格式" else "已选择 $selectedCount 首音频",
+        Text(
+            if (drafts.isEmpty()) {
+                stringResource(R.string.transcode_source_empty_title)
+            } else {
+                stringResource(R.string.transcode_source_selected_count, selectedCount)
+            },
             fontSize = 25.sp, fontWeight = FontWeight.SemiBold,
             color = MiuixTheme.colorScheme.onSurface)
         Spacer(Modifier.height(8.dp))
-        Text(if (drafts.isEmpty()) "从软件内或系统文件添加音频，轻松批量转换。"
-            else "${formatBytes(selectedBytes)} · 在队列管理中选择歌曲或单独调整",
+        Text(if (drafts.isEmpty()) stringResource(R.string.transcode_source_empty_summary)
+            else stringResource(R.string.transcode_source_selected_summary, formatBytes(selectedBytes)),
             fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
         Spacer(Modifier.height(20.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = onOpenLibrary, modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColorsPrimary()) { Text("软件内添加", fontSize = 14.sp) }
-            TextButton(text = "系统文件选择", onClick = onPickFiles, modifier = Modifier.weight(1f))
+                colors = ButtonDefaults.buttonColorsPrimary()) {
+                Text(stringResource(R.string.transcode_add_from_library), fontSize = 14.sp)
+            }
+            TextButton(
+                text = stringResource(R.string.transcode_add_from_system),
+                onClick = onPickFiles,
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
@@ -701,46 +739,63 @@ private fun OptionsPanel(
 ) {
     val capability = capabilityFor(options.format, capabilities)
     var advanced by remember { mutableStateOf(false) }
+    val followSource = stringResource(R.string.transcode_follow_source_auto)
+    val recommended = stringResource(R.string.transcode_recommended)
+    val followBitDepth = stringResource(R.string.transcode_follow_source)
+    val metadataStrictSummary = stringResource(R.string.transcode_metadata_strict_short)
+    val metadataBestEffortSummary = stringResource(R.string.transcode_metadata_best_effort_short)
+    val hardwareAccelerationSummary = stringResource(R.string.transcode_hardware_acceleration)
+    val deleteSourceSummary = stringResource(R.string.transcode_delete_source_after)
+    val autoScanSummary = stringResource(R.string.transcode_auto_scan)
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(title, modifier = Modifier.padding(start = 6.dp), fontSize = 13.sp,
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
         TranscodeCard {
-            ConversionOption("输出格式", formatDisplayName(options.format),
+            ConversionOption(stringResource(R.string.transcode_output_format), formatDisplayName(options.format),
                 supportedFormats(capabilities).map { it to formatDisplayName(it) }, options.format) {
-                onOptions(options.copy(format = it, sampleRateHz = null, bitDepth = null, bitRateKbps = null))
+                onOptions(options.copy(format = it, sampleRateHz = null, bitDepth = null, bitRateKbps = null,
+                    dsdRate = if (it == AudioTranscodeFormat.SACD_ISO) AudioTranscodeDsdRate.DSD64 else options.dsdRate,
+                    strictMetadata = options.strictMetadata))
             }
             // Key the whole target-parameter branch by output format. A DSD selector must be
             // disposed immediately when the target changes to PCM/lossy instead of retaining any
             // expanded state from the previous format slot.
             key(options.format) {
                 if (capability == null) {
-                    Text("正在加载可用格式…", fontSize = 12.sp,
+                    Text(stringResource(R.string.transcode_loading_formats), fontSize = 12.sp,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 } else if (options.format.isDsd) {
-                    ConversionOption("DSD 规格", options.dsdRate.name,
+                    ConversionOption(stringResource(R.string.transcode_dsd_rate), options.dsdRate.name,
                         capability.dsdRates.sortedBy { it.multiplier }.map { it to it.name }, options.dsdRate) {
                         onOptions(options.copy(dsdRate = it))
                     }
                 } else {
-                    ConversionOption<Int?>("采样率",
-                        options.sampleRateHz?.let(::formatSampleRate) ?: "自动 · 跟随源文件",
-                        listOf(null to "自动 · 跟随源文件") + capability.sampleRatesHz.sorted().map { it to formatSampleRate(it) },
+                    ConversionOption<Int?>(stringResource(R.string.transcode_sample_rate),
+                        options.sampleRateHz?.let(::formatSampleRate) ?: followSource,
+                        listOf(null to followSource) + capability.sampleRatesHz.sorted().map { it to formatSampleRate(it) },
                         options.sampleRateHz) { onOptions(options.copy(sampleRateHz = it, bitRateKbps = null)) }
                     if (options.format.isLossy) {
                         val rates = options.sampleRateHz?.let { capability.bitRatesFor(it).ifEmpty { capability.bitRatesKbps } }
                             ?: capability.bitRatesKbps
-                        ConversionOption<Int?>("码率", options.bitRateKbps?.let { "$it kbps" } ?: "推荐",
-                            listOf(null to "推荐") + rates.sorted().map { it to "$it kbps" }, options.bitRateKbps) {
+                        ConversionOption<Int?>(stringResource(R.string.transcode_bitrate), options.bitRateKbps?.let { "$it kbps" } ?: recommended,
+                            listOf(null to recommended) + rates.sorted().map { it to "$it kbps" }, options.bitRateKbps) {
                             onOptions(options.copy(bitRateKbps = it))
                         }
                     } else {
-                        ConversionOption<Int?>("位深", options.bitDepth?.let { "$it bit" } ?: "跟随源文件",
-                            listOf(null to "跟随源文件") + capability.bitDepths.sorted().map { it to "$it bit" },
+                        ConversionOption<Int?>(stringResource(R.string.transcode_bit_depth), options.bitDepth?.let { "$it bit" } ?: followBitDepth,
+                            listOf(null to followBitDepth) + capability.bitDepths.sorted().map { it to "$it bit" },
                             options.bitDepth) { onOptions(options.copy(bitDepth = it)) }
                     }
                     if (options.format == AudioTranscodeFormat.FLAC) {
-                        ConversionOption("压缩程度", when(options.flacCompressionLevel) { 5 -> "更快"; 12 -> "更小"; else -> "均衡" },
-                            listOf(5 to "更快 · 级别 5", 8 to "均衡 · 级别 8", 12 to "更小 · 级别 12"),
+                        val faster = stringResource(R.string.transcode_flac_faster)
+                        val balanced = stringResource(R.string.transcode_flac_balanced)
+                        val smaller = stringResource(R.string.transcode_flac_smaller)
+                        ConversionOption(stringResource(R.string.transcode_compression), when(options.flacCompressionLevel) { 5 -> faster; 12 -> smaller; else -> balanced },
+                            listOf(
+                                5 to stringResource(R.string.transcode_flac_level, faster, 5),
+                                8 to stringResource(R.string.transcode_flac_level, balanced, 8),
+                                12 to stringResource(R.string.transcode_flac_level, smaller, 12),
+                            ),
                             options.flacCompressionLevel) { onOptions(options.copy(flacCompressionLevel = it)) }
                     }
                 }
@@ -748,9 +803,10 @@ private fun OptionsPanel(
         }
         Text(
             when {
-                options.format.isDsd -> "适合支持 DSD 的播放设备；PCM→DSD 是调制转换，不会增加源文件的信息量，输出体积通常会明显增大。"
-                options.format.isLossy -> "体积更小，适合日常聆听；有损转换无法恢复原始音质。"
-                else -> "无损存储，适合收藏。转换不会提升源文件的音质。"
+                options.format == AudioTranscodeFormat.SACD_ISO -> stringResource(R.string.transcode_sacd_iso_note)
+                options.format.isDsd -> stringResource(R.string.transcode_dsd_note)
+                options.format.isLossy -> stringResource(R.string.transcode_lossy_note)
+                else -> stringResource(R.string.transcode_lossless_note)
             }, modifier = Modifier.padding(horizontal = 6.dp), fontSize = 12.sp,
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         )
@@ -759,30 +815,37 @@ private fun OptionsPanel(
                 .clickable { advanced = !advanced }.padding(vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("更多设置", fontSize = 15.sp)
+                    Text(stringResource(R.string.transcode_more_settings), fontSize = 15.sp)
                     Text(buildList {
-                        add(if (options.strictMetadata) "完整保留标签" else "尽量保留标签")
-                        if (options.hardwareAcceleration) add("硬件加速")
-                        if (options.deleteSourceOnSuccess) add("完成后删除源文件")
-                        if (options.autoScanOnSuccess) add("自动扫描")
+                        add(if (options.strictMetadata) metadataStrictSummary else metadataBestEffortSummary)
+                        if (options.hardwareAcceleration) add(hardwareAccelerationSummary)
+                        if (options.deleteSourceOnSuccess) add(deleteSourceSummary)
+                        if (options.autoScanOnSuccess) add(autoScanSummary)
                     }.joinToString(" · "), fontSize = 12.sp,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 }
-                Text(if (advanced) "收起" else "展开", color = MiuixTheme.colorScheme.primary, fontSize = 13.sp)
+                Text(
+                    stringResource(if (advanced) R.string.transcode_collapse else R.string.transcode_expand),
+                    color = MiuixTheme.colorScheme.primary,
+                    fontSize = 13.sp,
+                )
             }
             if (advanced) {
-                SettingSwitchRow("完整保留标签与封面", "无法完整保留时停止转换", options.strictMetadata) {
+                SettingSwitchRow(stringResource(R.string.transcode_metadata_strict), stringResource(R.string.transcode_metadata_strict_summary), options.strictMetadata) {
                     onOptions(options.copy(strictMetadata = it))
                 }
-                SettingSwitchRow("硬件加速", "设备不支持时自动使用软件编码", options.hardwareAcceleration) {
+                SettingSwitchRow(stringResource(R.string.transcode_hardware_acceleration), stringResource(R.string.transcode_hardware_acceleration_summary), options.hardwareAcceleration) {
                     onOptions(options.copy(hardwareAcceleration = it))
                 }
-                SettingSwitchRow("完成后删除源文件", "仅在转换和验证成功后删除", options.deleteSourceOnSuccess) {
+                SettingSwitchRow(stringResource(R.string.transcode_delete_source_after), stringResource(R.string.transcode_delete_source_after_summary), options.deleteSourceOnSuccess) {
                     onOptions(options.copy(deleteSourceOnSuccess = it))
                 }
                 SettingSwitchRow(
-                    "完成后加入音乐库",
-                    if (options.format.isDsd) "DSF 会自动扫描；开启后其他格式也在队列完成后扫描" else "所有任务完成后自动扫描",
+                    stringResource(R.string.transcode_add_to_library_after),
+                    stringResource(
+                        if (options.format.isDsd) R.string.transcode_add_to_library_dsd_summary
+                        else R.string.transcode_add_to_library_summary
+                    ),
                     options.autoScanOnSuccess,
                 ) {
                     onOptions(options.copy(autoScanOnSuccess = it))
@@ -820,13 +883,13 @@ private fun <T> ConversionOption(
 private fun BatchPreviewCard(selected: List<TranscodeDraftItem>, options: TranscodeUiOptions, overriddenCount: Int) {
     if (selected.isEmpty()) return
     Column(Modifier.padding(horizontal = 6.dp, vertical = 8.dp)) {
-        Text("保存位置", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text(stringResource(R.string.transcode_save_location), fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(6.dp))
-        Text("转换结果统一保存到 Music / RawSMusic / Converted。",
+        Text(stringResource(R.string.transcode_save_location_summary),
             fontSize = 12.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-        if (overriddenCount > 0) Text("$overriddenCount 首使用单独设置", fontSize = 12.sp,
+        if (overriddenCount > 0) Text(stringResource(R.string.transcode_override_count, overriddenCount), fontSize = 12.sp,
             color = MiuixTheme.colorScheme.primary)
-        if (options.deleteSourceOnSuccess) Text("转换成功后将删除源文件", fontSize = 12.sp,
+        if (options.deleteSourceOnSuccess) Text(stringResource(R.string.transcode_source_will_be_deleted), fontSize = 12.sp,
             color = MiuixTheme.colorScheme.error)
     }
 }
@@ -841,7 +904,11 @@ private fun BottomBatchActions(
         Button(onClick = onConvert, enabled = selectedCount > 0,
             modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
             colors = ButtonDefaults.buttonColorsPrimary()) {
-            Text(if (selectedCount > 0) "开始转换 · $selectedCount 首" else "先添加音频", fontSize = 16.sp)
+            Text(
+                if (selectedCount > 0) stringResource(R.string.transcode_start_count, selectedCount)
+                else stringResource(R.string.transcode_add_audio_first),
+                fontSize = 16.sp,
+            )
         }
     }
 }
@@ -899,15 +966,18 @@ private fun QueueManagementPage(
 
             item {
                 QueueSectionSummary(
-                    title = "待转换",
+                    title = stringResource(R.string.transcode_pending_title),
                     count = drafts.size,
                     summary = if (drafts.isEmpty()) {
-                        "还没有待处理项目"
+                        stringResource(R.string.transcode_pending_empty)
                     } else {
-                        "已选 $selectedCount 首 · 可单独覆盖参数或批量转换"
+                        stringResource(R.string.transcode_pending_selected_summary, selectedCount)
                     },
                     action = if (drafts.isNotEmpty()) {
-                        if (drafts.all { it.selected }) "取消全选" else "全选"
+                        stringResource(
+                            if (drafts.all { it.selected }) R.string.transcode_deselect_all
+                            else R.string.transcode_select_all
+                        )
                     } else {
                         null
                     },
@@ -916,7 +986,7 @@ private fun QueueManagementPage(
                 )
             }
             if (drafts.isEmpty()) {
-                item { EmptyQueueCard("可以从软件内多选音频，或通过系统文件选择一次加入多个文件。") }
+                item { EmptyQueueCard(stringResource(R.string.transcode_pending_add_hint)) }
             } else {
                 itemsIndexed(
                     items = drafts,
@@ -938,20 +1008,30 @@ private fun QueueManagementPage(
             }
             item {
                 QueueSectionSummary(
-                    title = if (resultsOnly) "转换结果" else "执行中",
+                    title = stringResource(
+                        if (resultsOnly) R.string.transcode_results_title else R.string.transcode_running_title
+                    ),
                     count = queueEntries.size,
                     summary = when {
-                        queueEntries.any { it.state == AudioTranscodeQueueState.RUNNING } -> "正在执行任务，完成后自动继续下一项"
-                        queueEntries.isNotEmpty() -> if (resultsOnly) "完成的文件与处理记录" else "按顺序自动转换"
-                        else -> "尚未开始转换"
+                        queueEntries.any { it.state == AudioTranscodeQueueState.RUNNING } -> stringResource(R.string.transcode_running_summary)
+                        queueEntries.isNotEmpty() -> stringResource(
+                            if (resultsOnly) R.string.transcode_results_summary else R.string.transcode_queue_summary
+                        )
+                        else -> stringResource(R.string.transcode_not_started)
                     },
-                    action = if (hasFinished) "清理已完成" else null,
+                    action = if (hasFinished) stringResource(R.string.transcode_clear_finished) else null,
                     actionIconRes = R.drawable.ic_delete_bin_6_fill,
                     onAction = onClearFinished,
                 )
             }
             if (queueEntries.isEmpty()) {
-                item { EmptyQueueCard(if (resultsOnly) "还没有转换结果\n任务完成后，会在这里保留结果和失败原因。" else "暂无执行中的任务") }
+                item {
+                    EmptyQueueCard(
+                        stringResource(
+                            if (resultsOnly) R.string.transcode_results_empty else R.string.transcode_running_empty
+                        )
+                    )
+                }
             } else {
                 itemsIndexed(
                     items = queueEntries,
@@ -996,12 +1076,12 @@ private fun QueueAddSourceRow(onAddLibrary: () -> Unit, onAddFiles: () -> Unit) 
     ) {
         QueueTextAction(
             iconRes = R.drawable.ic_music_2_fill,
-            text = "软件内添加",
+            text = stringResource(R.string.transcode_add_from_library),
             onClick = onAddLibrary,
         )
         QueueTextAction(
             iconRes = R.drawable.ic_folder_2_fill,
-            text = "系统文件选择",
+            text = stringResource(R.string.transcode_add_from_system),
             onClick = onAddFiles,
         )
     }
@@ -1087,9 +1167,9 @@ private fun QueueFloatingActions(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = if (selectedCount > 0) {
-                            "已选 $selectedCount / $totalCount 首"
+                            stringResource(R.string.transcode_selected_of_total, selectedCount, totalCount)
                         } else {
-                            "未选择待转换项目"
+                            stringResource(R.string.transcode_none_selected)
                         },
                         color = MiuixTheme.colorScheme.onSurface,
                         fontSize = 13.sp,
@@ -1098,9 +1178,9 @@ private fun QueueFloatingActions(
                     )
                     Text(
                         text = if (selectedCount > 0) {
-                            "批量操作只影响当前勾选的项目"
+                            stringResource(R.string.transcode_batch_affects_selected)
                         } else {
-                            "勾选项目后可批量移除或开始转换"
+                            stringResource(R.string.transcode_select_for_batch)
                         },
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         fontSize = 10.5.sp,
@@ -1111,14 +1191,14 @@ private fun QueueFloatingActions(
 
                 QueueTextAction(
                     iconRes = R.drawable.ic_delete_bin_6_fill,
-                    text = "移除",
+                    text = stringResource(R.string.transcode_remove),
                     onClick = onRemoveSelected,
                     enabled = selectedCount > 0,
                 )
 
                 QueueTextAction(
                     iconRes = R.drawable.ic_play_list_add_fill,
-                    text = "加入队列",
+                    text = stringResource(R.string.transcode_add_to_queue),
                     onClick = onQueueSelected,
                     enabled = selectedCount > 0,
                 )
@@ -1138,7 +1218,10 @@ private fun QueueFloatingActions(
                             modifier = Modifier.size(17.dp),
                             colorFilter = ColorFilter.tint(MiuixTheme.colorScheme.onPrimary),
                         )
-                        Text(if (selectedCount > 0) "立即开始 ($selectedCount)" else "立即开始")
+                        Text(
+                            if (selectedCount > 0) stringResource(R.string.transcode_start_now_count, selectedCount)
+                            else stringResource(R.string.transcode_start_now)
+                        )
                     }
                 }
             }
@@ -1197,27 +1280,27 @@ private fun TargetFormatBadge(
 private fun QueueStateBadge(entry: AudioTranscodeQueueEntry) {
     val (text, accent, iconRes) = when (entry.state) {
         AudioTranscodeQueueState.QUEUED -> Triple(
-            "等待",
+            stringResource(R.string.transcode_state_waiting_short),
             MiuixTheme.colorScheme.onSurfaceVariantSummary,
             R.drawable.ic_play_list_fill,
         )
         AudioTranscodeQueueState.RUNNING -> Triple(
-            "转换中",
+            stringResource(R.string.transcode_state_converting_short),
             MiuixTheme.colorScheme.primary,
             R.drawable.ic_play,
         )
         AudioTranscodeQueueState.COMPLETED -> Triple(
-            "完成",
+            stringResource(R.string.transcode_state_completed_short),
             Color(0xFF2AA66A),
             R.drawable.ic_check_line,
         )
         AudioTranscodeQueueState.FAILED -> Triple(
-            "失败",
+            stringResource(R.string.transcode_state_failed_short),
             MiuixTheme.colorScheme.error,
             R.drawable.ic_desktop_lyric_close,
         )
         AudioTranscodeQueueState.CANCELLED -> Triple(
-            "已取消",
+            stringResource(R.string.transcode_state_cancelled_short),
             MiuixTheme.colorScheme.onSurfaceVariantSummary,
             R.drawable.ic_desktop_lyric_close,
         )
@@ -1297,7 +1380,7 @@ private fun DraftQueueCard(
                 )
             }
             QueueActionIcon(
-                contentDescription = "立即开始转换",
+                contentDescription = stringResource(R.string.transcode_start_now),
                 onClick = onConvert,
             ) {
                 Image(
@@ -1309,7 +1392,7 @@ private fun DraftQueueCard(
             }
             Spacer(Modifier.width(4.dp))
             QueueActionIcon(
-                contentDescription = "加入真实队列",
+                contentDescription = stringResource(R.string.transcode_add_to_queue),
                 onClick = onQueue,
             ) {
                 Image(
@@ -1323,9 +1406,9 @@ private fun DraftQueueCard(
         Spacer(Modifier.height(8.dp))
         Text(
             if (item.overrideOptions != null) {
-                "单独参数 · ${optionsSummary(effectiveOptions)}"
+                stringResource(R.string.transcode_individual_parameters, optionsSummary(effectiveOptions))
             } else {
-                "跟随批量设置 · ${optionsSummary(effectiveOptions)}"
+                stringResource(R.string.transcode_follow_batch_settings, optionsSummary(effectiveOptions))
             },
             fontSize = 12.sp,
             color = if (item.overrideOptions != null) {
@@ -1342,13 +1425,13 @@ private fun DraftQueueCard(
         ) {
             QueueTextAction(
                 iconRes = R.drawable.ic_settings,
-                text = "单独设置",
+                text = stringResource(R.string.transcode_individual_settings),
                 onClick = onEdit,
             )
             Spacer(Modifier.weight(1f))
             QueueTextAction(
                 iconRes = R.drawable.ic_delete_bin_6_fill,
-                text = "移除",
+                text = stringResource(R.string.transcode_remove),
                 danger = true,
                 onClick = onRemove,
             )
@@ -1493,10 +1576,15 @@ private fun ExecutionQueueCard(
                 )
             }
         }
-        val failureDetail = (entry.result as? AudioTranscodeResult.Failure)?.detail
-            ?: entry.terminalSummary
-                ?.takeIf { entry.state == AudioTranscodeQueueState.FAILED }
-                ?.detail
+        val failure = entry.result as? AudioTranscodeResult.Failure
+        val failedSummary = entry.terminalSummary
+            ?.takeIf { entry.state == AudioTranscodeQueueState.FAILED }
+        val failureDetail = localizedTranscodeFailureDetail(
+            context = context,
+            reason = failure?.reason ?: failedSummary?.failureReason,
+            rawDetail = failure?.detail ?: failedSummary?.detail,
+            nativeCode = failure?.nativeCode ?: failedSummary?.nativeCode,
+        )
         if (!failureDetail.isNullOrBlank()) {
             Spacer(Modifier.height(6.dp))
             Text(
@@ -1508,12 +1596,15 @@ private fun ExecutionQueueCard(
             )
         }
         val terminalSummary = entry.terminalSummary
-        val postActionDetail = terminalSummary?.postActionDetail
+        val postActionDetail = localizedTranscodePostActionDetail(
+            context = context,
+            entry = entry,
+        )
         if (!postActionDetail.isNullOrBlank()) {
             Spacer(Modifier.height(6.dp))
             Text(
                 postActionDetail,
-                color = if (entry.request.deleteSourceOnSuccess && terminalSummary.sourceDeleted == false) {
+                color = if (entry.request.deleteSourceOnSuccess && terminalSummary?.sourceDeleted == false) {
                     MiuixTheme.colorScheme.error
                 } else {
                     MiuixTheme.colorScheme.onSurfaceVariantSummary
@@ -1528,7 +1619,7 @@ private fun ExecutionQueueCard(
             ?.let { outputPath ->
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "输出：$outputPath",
+                    text = stringResource(R.string.transcode_output_path, outputPath),
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     fontSize = 11.5.sp,
                     maxLines = 2,
@@ -1543,29 +1634,29 @@ private fun ExecutionQueueCard(
         ) {
             when (entry.state) {
                 AudioTranscodeQueueState.QUEUED -> {
-                    QueueTextAction(R.drawable.ic_arrow_up_line, "上移", onClick = onMoveUp)
-                    QueueTextAction(R.drawable.ic_arrow_down_line, "下移", onClick = onMoveDown)
-                    QueueTextAction(R.drawable.ic_desktop_lyric_close, "取消", onClick = onCancel)
+                    QueueTextAction(R.drawable.ic_arrow_up_line, stringResource(R.string.transcode_move_up), onClick = onMoveUp)
+                    QueueTextAction(R.drawable.ic_arrow_down_line, stringResource(R.string.transcode_move_down), onClick = onMoveDown)
+                    QueueTextAction(R.drawable.ic_desktop_lyric_close, stringResource(R.string.common_cancel), onClick = onCancel)
                     Spacer(Modifier.weight(1f))
                     QueueTextAction(
                         R.drawable.ic_delete_bin_6_fill,
-                        "移除",
+                        stringResource(R.string.transcode_remove),
                         danger = true,
                         onClick = onRemove,
                     )
                 }
                 AudioTranscodeQueueState.RUNNING -> QueueTextAction(
                     R.drawable.ic_desktop_lyric_close,
-                    "取消",
+                    stringResource(R.string.common_cancel),
                     onClick = onCancel,
                 )
                 AudioTranscodeQueueState.FAILED,
                 AudioTranscodeQueueState.CANCELLED -> {
-                    QueueTextAction(R.drawable.ic_repeat, "重试", onClick = onRetry)
+                    QueueTextAction(R.drawable.ic_repeat, stringResource(R.string.transcode_retry), onClick = onRetry)
                     Spacer(Modifier.weight(1f))
                     QueueTextAction(
                         R.drawable.ic_delete_bin_6_fill,
-                        "移除",
+                        stringResource(R.string.transcode_remove),
                         danger = true,
                         onClick = onRemove,
                     )
@@ -1576,21 +1667,21 @@ private fun ExecutionQueueCard(
                         ?.let { outputPath ->
                             QueueTextAction(
                                 R.drawable.ic_play,
-                                "打开",
+                                stringResource(R.string.transcode_open),
                                 onClick = { openTranscodeOutput(context, outputPath) },
                             )
                         }
                     if (terminalSummary?.sourceDeleteNeedsConsent == true) {
                         QueueTextAction(
                             R.drawable.ic_delete_bin_6_fill,
-                            "授权删除",
+                            stringResource(R.string.transcode_authorize_delete),
                             onClick = onAuthorizeSourceDelete,
                         )
                     }
                     Spacer(Modifier.weight(1f))
                     QueueTextAction(
                         R.drawable.ic_delete_bin_6_fill,
-                        "移除",
+                        stringResource(R.string.transcode_remove),
                         danger = true,
                         onClick = onRemove,
                     )
@@ -1613,8 +1704,8 @@ private fun IndividualOptionsDialog(
     var local by remember(initial) { mutableStateOf(initial) }
     RawMiuixOverlayDialog(
         show = true,
-        title = "单独设置 · $title",
-        summary = "仅覆盖这一首音频；其他项目继续跟随批量设置",
+        title = stringResource(R.string.transcode_individual_settings_title, title),
+        summary = stringResource(R.string.transcode_individual_settings_summary),
         backgroundColor = MiuixTheme.colorScheme.surfaceContainerHigh,
         onDismissRequest = onDismiss,
         renderInRootScaffold = true,
@@ -1631,7 +1722,7 @@ private fun IndividualOptionsDialog(
                     .verticalScroll(rememberScrollState()),
             ) {
                 OptionsPanel(
-                    title = "覆盖批量设置",
+                    title = stringResource(R.string.transcode_override_batch_settings),
                     options = local,
                     capabilities = capabilities,
                     onOptions = { local = it },
@@ -1646,13 +1737,13 @@ private fun IndividualOptionsDialog(
             ) {
                 if (isOverride) {
                     TextButton(
-                        text = "恢复批量设置",
+                        text = stringResource(R.string.transcode_restore_batch_settings),
                         onClick = onUseBatch,
                         modifier = Modifier.weight(1f),
                     )
                 } else {
                     TextButton(
-                        text = "取消",
+                        text = stringResource(R.string.common_cancel),
                         onClick = onDismiss,
                         modifier = Modifier.weight(1f),
                     )
@@ -1662,12 +1753,12 @@ private fun IndividualOptionsDialog(
                     colors = ButtonDefaults.buttonColorsPrimary(),
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text("保存")
+                    Text(stringResource(R.string.transcode_save))
                 }
             }
             if (isOverride) {
                 TextButton(
-                    text = "取消",
+                    text = stringResource(R.string.common_cancel),
                     onClick = onDismiss,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -1700,10 +1791,11 @@ private fun LibraryPickerDialog(
     val visible = remember(filtered, sortMode, descending) {
         sortLibraryPickerSongs(filtered, sortMode, descending)
     }
+    val sortLabel = stringResource(sortMode.labelRes)
     RawMiuixOverlayDialog(
         show = true,
-        title = "软件内添加",
-        summary = "从 RawSMusic 曲库中选择音频；已在草稿队列中的歌曲会保持选中并锁定",
+        title = stringResource(R.string.transcode_add_from_library),
+        summary = stringResource(R.string.transcode_library_picker_summary),
         backgroundColor = MiuixTheme.colorScheme.surfaceContainerHigh,
         onDismissRequest = onDismiss,
         // AudioTranscodeActivity now installs its own MIUIX root Scaffold, so keep every
@@ -1719,13 +1811,18 @@ private fun LibraryPickerDialog(
             TextField(
                 value = query,
                 onValueChange = { query = it },
-                label = "搜索歌曲 / 艺术家 / 专辑",
+                label = stringResource(R.string.transcode_library_search_hint),
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "已选 ${selectedPaths.size} · ${sortMode.label}${if (descending) " · 倒序" else ""}",
+                    stringResource(
+                        if (descending) R.string.transcode_library_selected_sort_desc
+                        else R.string.transcode_library_selected_sort,
+                        selectedPaths.size,
+                        sortLabel,
+                    ),
                     modifier = Modifier.weight(1f),
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     fontSize = 12.sp,
@@ -1735,7 +1832,7 @@ private fun LibraryPickerDialog(
                 IconButton(onClick = { showSortDialog = true }) {
                     Image(
                         painter = painterResource(R.drawable.ic_sort),
-                        contentDescription = "排序",
+                        contentDescription = stringResource(R.string.transcode_sort),
                         modifier = Modifier.size(20.dp),
                         colorFilter = ColorFilter.tint(MiuixTheme.colorScheme.onSurface),
                     )
@@ -1758,7 +1855,10 @@ private fun LibraryPickerDialog(
                 ) {
                     Image(
                         painter = painterResource(R.drawable.ic_select_all_line),
-                        contentDescription = if (allVisibleSelected) "取消全选当前结果" else "全选当前结果",
+                        contentDescription = stringResource(
+                            if (allVisibleSelected) R.string.transcode_deselect_visible
+                            else R.string.transcode_select_visible
+                        ),
                         modifier = Modifier.size(21.dp),
                         colorFilter = ColorFilter.tint(
                             if (allVisibleSelected) {
@@ -1789,9 +1889,9 @@ private fun LibraryPickerDialog(
                         item {
                             Text(
                                 if (songs.isEmpty()) {
-                                    "软件内曲库正在加载，或当前曲库为空。"
+                                    stringResource(R.string.transcode_library_loading_or_empty)
                                 } else {
-                                    "没有匹配的歌曲。"
+                                    stringResource(R.string.transcode_library_no_match)
                                 },
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 24.dp),
                                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
@@ -1854,7 +1954,7 @@ private fun LibraryPickerDialog(
                             }
                             if (alreadyAdded) {
                                 Text(
-                                    "已添加",
+                                    stringResource(R.string.transcode_already_added),
                                     color = MiuixTheme.colorScheme.primary,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Medium,
@@ -1871,7 +1971,7 @@ private fun LibraryPickerDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 TextButton(
-                    text = "取消",
+                    text = stringResource(R.string.common_cancel),
                     onClick = onDismiss,
                     modifier = Modifier.weight(1f),
                 )
@@ -1881,7 +1981,7 @@ private fun LibraryPickerDialog(
                     colors = ButtonDefaults.buttonColorsPrimary(),
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text("添加 (${selectedPaths.size})")
+                    Text(stringResource(R.string.transcode_add_count, selectedPaths.size))
                 }
             }
         }
@@ -1940,8 +2040,8 @@ private fun LibraryPickerSortDialog(
     val options = LibraryPickerSort.entries.filter { it != LibraryPickerSort.DSD || showDsd }
     RawMiuixOverlayDialog(
         show = true,
-        title = "排序",
-        summary = "排序方式与曲库列表一致；右侧可单独切换倒序",
+        title = stringResource(R.string.transcode_sort),
+        summary = stringResource(R.string.transcode_sort_summary),
         backgroundColor = MiuixTheme.colorScheme.surfaceContainerHigh,
         onDismissRequest = onDismiss,
         renderInRootScaffold = true,
@@ -1955,7 +2055,7 @@ private fun LibraryPickerSortDialog(
             options.forEach { option ->
                 val selected = current == option
                 LibraryPickerSortRow(
-                    title = option.label,
+                    title = stringResource(option.labelRes),
                     selected = selected,
                     reverseSelected = selected && descending,
                     onReverseClick = { onToggleDescending(option) },
@@ -2014,7 +2114,7 @@ private fun LibraryPickerSortDirectionToggle(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = "倒序",
+            text = stringResource(R.string.transcode_descending),
             color = if (checked) selectedColor else MiuixTheme.colorScheme.onSurfaceVariantSummary,
             fontSize = 13.sp,
             fontWeight = if (checked) FontWeight.SemiBold else FontWeight.Normal,
@@ -2235,7 +2335,7 @@ private fun artworkKeyForPath(path: String): String {
 private fun openTranscodeOutput(context: Context, outputPath: String) {
     val file = File(outputPath)
     if (!file.isFile) {
-        AppNoticeBus.error("输出文件已不存在")
+        AppNoticeBus.error(context.getString(R.string.transcode_output_missing))
         return
     }
     runCatching {
@@ -2247,9 +2347,11 @@ private fun openTranscodeOutput(context: Context, outputPath: String) {
         val openIntent = Intent(Intent.ACTION_VIEW)
             .setDataAndType(uri, "audio/*")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        context.startActivity(Intent.createChooser(openIntent, "打开转换结果"))
+        context.startActivity(
+            Intent.createChooser(openIntent, context.getString(R.string.transcode_open_result))
+        )
     }.onFailure {
-        AppNoticeBus.error("没有可用的应用打开此音频")
+        AppNoticeBus.error(context.getString(R.string.transcode_no_app_to_open))
     }
 }
 
@@ -2335,6 +2437,7 @@ private fun uniqueOutputPath(
 }
 
 private fun formatDisplayName(format: AudioTranscodeFormat): String = when (format) {
+    AudioTranscodeFormat.SACD_ISO -> "SACD ISO"
     AudioTranscodeFormat.OGG_FLAC -> "Ogg FLAC"
     AudioTranscodeFormat.ALAC -> "ALAC"
     AudioTranscodeFormat.WAVPACK -> "WavPack"
@@ -2345,18 +2448,25 @@ private fun formatDisplayName(format: AudioTranscodeFormat): String = when (form
     else -> format.name
 }
 
-private fun optionsSummary(options: TranscodeUiOptions): String = buildString {
+@Composable
+private fun optionsSummary(options: TranscodeUiOptions): String {
+    val compatibleSource = stringResource(R.string.transcode_follow_compatible_source)
+    val recommendedBitrate = stringResource(R.string.transcode_recommended_bitrate)
+    val keepSampleRate = stringResource(R.string.transcode_keep_sample_rate)
+    val keepBitDepth = stringResource(R.string.transcode_keep_bit_depth)
+    return buildString {
     append(formatDisplayName(options.format))
     when {
         options.format.isDsd -> append(" · ${options.dsdRate.name}")
         options.format.isLossy -> {
-            append(" · ${options.sampleRateHz?.let(::formatSampleRate) ?: "跟随/兼容源"}")
-            append(" · ${options.bitRateKbps?.let { "$it kbps" } ?: "推荐码率"}")
+            append(" · ${options.sampleRateHz?.let(::formatSampleRate) ?: compatibleSource}")
+            append(" · ${options.bitRateKbps?.let { "$it kbps" } ?: recommendedBitrate}")
         }
         else -> {
-            append(" · ${options.sampleRateHz?.let(::formatSampleRate) ?: "保持采样率"}")
-            append(" · ${options.bitDepth?.let { "$it bit" } ?: "保持位深"}")
+            append(" · ${options.sampleRateHz?.let(::formatSampleRate) ?: keepSampleRate}")
+            append(" · ${options.bitDepth?.let { "$it bit" } ?: keepBitDepth}")
         }
+    }
     }
 }
 
@@ -2385,17 +2495,86 @@ private fun formatBytes(bytes: Long): String {
     return if (unit == 0) "$bytes B" else String.format(Locale.US, "%.1f %s", value, units[unit])
 }
 
+@Composable
 private fun queueStateText(entry: AudioTranscodeQueueEntry): String = when (entry.state) {
-    AudioTranscodeQueueState.QUEUED -> "等待中"
+    AudioTranscodeQueueState.QUEUED -> stringResource(R.string.transcode_stage_queued)
     AudioTranscodeQueueState.RUNNING -> when (entry.progress.stage) {
-        AudioTranscodeStage.PROBING -> "检查源文件"
-        AudioTranscodeStage.ENCODING -> "正在编码"
-        AudioTranscodeStage.MIGRATING_METADATA -> "迁移元数据"
-        AudioTranscodeStage.VERIFYING -> "验证输出"
-        AudioTranscodeStage.COMMITTING -> "提交文件"
-        else -> "处理中"
+        AudioTranscodeStage.PROBING -> stringResource(R.string.transcode_stage_probing)
+        AudioTranscodeStage.ENCODING -> stringResource(R.string.transcode_stage_encoding)
+        AudioTranscodeStage.MIGRATING_METADATA -> stringResource(R.string.transcode_stage_metadata)
+        AudioTranscodeStage.VERIFYING -> stringResource(R.string.transcode_stage_verifying)
+        AudioTranscodeStage.COMMITTING -> stringResource(R.string.transcode_stage_committing)
+        else -> stringResource(R.string.transcode_processing)
     }
-    AudioTranscodeQueueState.COMPLETED -> "已完成"
-    AudioTranscodeQueueState.FAILED -> "失败"
-    AudioTranscodeQueueState.CANCELLED -> "已取消"
+    AudioTranscodeQueueState.COMPLETED -> stringResource(R.string.transcode_stage_completed)
+    AudioTranscodeQueueState.FAILED -> stringResource(R.string.transcode_stage_failed)
+    AudioTranscodeQueueState.CANCELLED -> stringResource(R.string.transcode_stage_cancelled)
+}
+
+private fun localizedTranscodeFailureDetail(
+    context: Context,
+    reason: AudioTranscodeFailureReason?,
+    rawDetail: String?,
+    nativeCode: Int?,
+): String? {
+    return com.rawsmusic.transcode.formatTranscodeFailureDetail(
+        language = context.resources.configuration.locales[0]?.language.orEmpty(),
+        reason = reason,
+        rawDetail = rawDetail,
+        nativeCode = nativeCode,
+        localizedReason = { failureReason -> when (failureReason) {
+        AudioTranscodeFailureReason.INVALID_REQUEST ->
+            context.getString(R.string.transcode_failure_invalid_request)
+        AudioTranscodeFailureReason.UNSUPPORTED_SOURCE ->
+            context.getString(R.string.transcode_failure_unsupported_source)
+        AudioTranscodeFailureReason.UNSUPPORTED_TARGET ->
+            context.getString(R.string.transcode_failure_unsupported_target)
+        AudioTranscodeFailureReason.OUTPUT_EXISTS ->
+            context.getString(R.string.transcode_failure_output_exists)
+        AudioTranscodeFailureReason.INSUFFICIENT_SPACE ->
+            context.getString(R.string.transcode_failure_insufficient_space)
+        AudioTranscodeFailureReason.ENCODE_FAILED ->
+            context.getString(R.string.transcode_failure_encode_failed)
+        AudioTranscodeFailureReason.METADATA_MIGRATION_FAILED ->
+            context.getString(R.string.transcode_failure_metadata_migration)
+        AudioTranscodeFailureReason.VERIFICATION_FAILED ->
+            context.getString(R.string.transcode_failure_verification)
+        AudioTranscodeFailureReason.COMMIT_FAILED ->
+            context.getString(R.string.transcode_failure_commit)
+        AudioTranscodeFailureReason.PROCESS_INTERRUPTED ->
+            context.getString(R.string.transcode_failure_process_interrupted)
+        AudioTranscodeFailureReason.INTERNAL_ERROR ->
+            context.getString(R.string.transcode_failure_internal)
+        } },
+        withNativeCode = { base, code ->
+            context.getString(R.string.transcode_failure_with_native_code, base, code)
+        },
+    )
+}
+
+private fun localizedTranscodePostActionDetail(
+    context: Context,
+    entry: AudioTranscodeQueueEntry,
+): String? {
+    val summary = entry.terminalSummary ?: return null
+    val raw = summary.postActionDetail?.trim().orEmpty()
+    if (raw.isBlank()) return null
+
+    val currentLanguage = context.resources.configuration.locales[0]?.language.orEmpty()
+    val rawContainsHan = raw.any { ch ->
+        Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN
+    }
+    if (currentLanguage == "zh" || !rawContainsHan) return raw
+
+    return when {
+        entry.request.deleteSourceOnSuccess && summary.sourceDeleteNeedsConsent ->
+            context.getString(R.string.transcode_post_source_delete_needs_consent)
+        entry.request.deleteSourceOnSuccess && summary.sourceDeleted == true ->
+            context.getString(R.string.transcode_post_source_deleted)
+        entry.request.deleteSourceOnSuccess && summary.sourceDeleted == false ->
+            context.getString(R.string.transcode_post_source_delete_failed)
+        summary.autoScanRequested ->
+            context.getString(R.string.transcode_post_library_refresh_requested)
+        else -> context.getString(R.string.transcode_post_action_notice)
+    }
 }

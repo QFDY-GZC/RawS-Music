@@ -26,16 +26,19 @@ fun FullCoverPredictiveBackHandler(
     onCancelled: () -> Unit,
     onCompleted: (wasPredictiveGesture: Boolean) -> Unit,
 ) {
+    // Scene and More handlers can live in another Compose root from the Activity picker.
+    // Disable every lower player handler rather than relying on registration/z-index order.
+    val acceptsBack = playerPopupCanHandleBack(enabled, PlayerPlaylistBackRuntime.mounted)
     val latestProgress by rememberUpdatedState(onProgress)
     val latestCancelled by rememberUpdatedState(onCancelled)
     val latestCompleted by rememberUpdatedState(onCompleted)
     var gestureActive by remember { mutableStateOf(false) }
-    var completionConsumed by remember(enabled) { mutableStateOf(false) }
+    var completionConsumed by remember(acceptsBack) { mutableStateOf(false) }
     val navigationEventState = rememberNavigationEventState(currentInfo = NavigationEventInfo.None)
 
     NavigationBackHandler(
         state = navigationEventState,
-        isBackEnabled = enabled,
+        isBackEnabled = acceptsBack,
         onBackCancelled = {
             gestureActive = false
             completionConsumed = false
@@ -50,10 +53,10 @@ fun FullCoverPredictiveBackHandler(
         },
     )
 
-    LaunchedEffect(navigationEventState, enabled) {
+    LaunchedEffect(navigationEventState, acceptsBack) {
         snapshotFlow { navigationEventState.transitionState }.collect { transitionState ->
             if (
-                enabled &&
+                acceptsBack &&
                 transitionState is NavigationEventTransitionState.InProgress &&
                 transitionState.direction == NavigationEventTransitionState.TRANSITIONING_BACK
             ) {

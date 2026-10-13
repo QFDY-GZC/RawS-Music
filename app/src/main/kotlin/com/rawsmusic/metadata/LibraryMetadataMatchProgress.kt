@@ -78,6 +78,13 @@ object LibraryMetadataMatchProgressBus {
     }
 
     @Synchronized
+    fun interrupted(jobId: String) {
+        val current = mutableState.value
+        if (current.jobId != jobId || current.phase != LibraryMetadataMatchPhase.RUNNING) return
+        mutableState.value = current.copy(jobId = "", phase = LibraryMetadataMatchPhase.IDLE)
+    }
+
+    @Synchronized
     fun completed(
         jobId: String,
         total: Int,

@@ -1,6 +1,39 @@
 cmake_minimum_required(VERSION 3.18.1)
 project("rawsmusic_native")
 
+add_subdirectory(third_party/dsd-nexus)
+
+set(EBUR128_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libebur128)
+add_library(rawsmusic_ebur128 STATIC ${EBUR128_DIR}/ebur128.c)
+target_include_directories(rawsmusic_ebur128 PUBLIC ${EBUR128_DIR})
+target_include_directories(rawsmusic_ebur128 SYSTEM PRIVATE ${EBUR128_DIR}/queue)
+set_target_properties(rawsmusic_ebur128 PROPERTIES
+    C_STANDARD 99 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
+target_compile_options(rawsmusic_ebur128 PRIVATE -O2 -fomit-frame-pointer -fvisibility=hidden)
+target_compile_definitions(rawsmusic_ebur128 PRIVATE _USE_MATH_DEFINES)
+if(NOT WIN32)
+    target_link_libraries(rawsmusic_ebur128 PUBLIC m)
+endif()
+
+# Standalone native verification/fixture tools; bypass all Android/JNI engines.
+option(RAW_FILE_SPECTRUM_HOST_TESTS "Build standalone file signal metrics tests and CLI" OFF)
+if(RAW_FILE_SPECTRUM_HOST_TESTS)
+    enable_testing()
+    add_library(raw_file_quality_test_core STATIC
+        raw_file_spectrum_analyzer.cpp raw_file_quality_metrics.cpp)
+    target_compile_features(raw_file_quality_test_core PUBLIC cxx_std_17)
+    target_compile_options(raw_file_quality_test_core PRIVATE -O2 -Wall -Wextra)
+    target_link_libraries(raw_file_quality_test_core PUBLIC rawsmusic_ebur128)
+    foreach(tool raw_file_spectrum_analyzer_quality_test raw_file_signal_metrics_test raw_file_spectrum_fixture_cli)
+        add_executable(${tool} ../../test/native/${tool}.cpp)
+        target_compile_options(${tool} PRIVATE -UNDEBUG)
+        target_link_libraries(${tool} PRIVATE raw_file_quality_test_core)
+    endforeach()
+    add_test(NAME raw_file_spectrum_analyzer_quality COMMAND raw_file_spectrum_analyzer_quality_test)
+    add_test(NAME raw_file_signal_metrics COMMAND raw_file_signal_metrics_test)
+    return()
+endif()
+
 set(FFMPEG_DIR ${CMAKE_SOURCE_DIR}/ffmpeg_include)
 
 # Lyrico-compatible JavaScript source runtime. Keep it isolated from the audio
@@ -42,6 +75,7 @@ add_library(
     rawsmusic_dsp
     OBJECT
     dsp_engine.cpp
+    raw_algorithmic_reverb.cpp
     android_dvc_processor.cpp
     auto_peak_limiter.cpp
     experimental_gain.cpp
@@ -243,6 +277,9 @@ add_library(
     SHARED
     ffmpeg_bridge.cpp
     raw_waveform_scan.cpp
+    raw_sacd_iso.cpp
+    raw_sacd_avio.cpp
+    raw_sacd_iso_jni.cpp
 )
 
 target_include_directories(
@@ -263,6 +300,7 @@ target_compile_options(
 target_link_libraries(
     rawsmusic_ffmpeg_live
     rawsmusic_ffmpeg
+    rawsmusic_sacd
     android
     log
 )
@@ -656,6 +694,7 @@ add_library(
     rawsmusic_file_spectrum
     OBJECT
     raw_file_spectrum_analyzer.cpp
+    raw_file_quality_metrics.cpp
     raw_file_spectrum_analyzer_jni.cpp
 )
 
@@ -666,7 +705,7 @@ target_include_directories(
 )
 
 target_compile_options(rawsmusic_file_spectrum PRIVATE -O3 -fomit-frame-pointer -std=c++17)
-target_link_libraries(rawsmusic_file_spectrum android log)
+target_link_libraries(rawsmusic_file_spectrum rawsmusic_ebur128 android log)
 
 # Keep application-owned JNI code in one service library. Object libraries preserve
 # per-engine compile flags while avoiding duplicate ELF metadata and load operations.
@@ -690,6 +729,7 @@ target_link_libraries(
     usb
     taglib_static
     rawsmusic_ffmpeg
+    rawsmusic_ebur128
     android
     log
     z

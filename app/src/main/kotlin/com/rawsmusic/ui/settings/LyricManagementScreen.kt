@@ -38,7 +38,9 @@ import com.rawsmusic.module.data.prefs.LyricLayoutPreferences
 import com.rawsmusic.module.data.prefs.LyricTopLayoutStyle
 import com.rawsmusic.module.player.LyriconProviderManager
 import com.rawsmusic.helper.LyricoIntegration
+import com.rawsmusic.helper.rememberSystemFileAccessGate
 import com.rawsmusic.lyrico.InstalledLyricoPlugin
+import com.rawsmusic.lyrico.LyricoPluginImportResult
 import com.rawsmusic.lyrico.LyricoPluginStore
 import com.rawsmusic.core.common.ui.AppNoticeBus
 import com.rawsmusic.core.common.ui.AppNoticeIcon
@@ -84,49 +86,52 @@ fun LiquidGlassLyricManagementScreen(
     }
     val lyricBottomPaddingDp by LyricLayoutPreferences.bottomPaddingDp.collectAsState()
     val lyricTopLayoutStyle by LyricLayoutPreferences.topLayoutStyle.collectAsState()
+    val withSystemFileAccess = rememberSystemFileAccessGate()
     var lyricoInstalled by remember { mutableStateOf(LyricoIntegration.isInstalled(context)) }
     var lyricoRuntimeReady by remember { mutableStateOf<Boolean?>(null) }
     var lyricoPlugins by remember { mutableStateOf<List<InstalledLyricoPlugin>>(emptyList()) }
-    val pluginImportLauncher = rememberLauncherForActivityResult(
+
+    fun presentPluginImportResult(result: LyricoPluginImportResult) {
+        if (result.isSuccess) {
+            lyricoPlugins = lyricoPluginStore.listInstalled()
+            val message = when {
+                result.failures.isNotEmpty() -> context.getString(
+                    R.string.settings_lyrico_plugins_imported_partial,
+                    result.plugins.size,
+                    result.failures.size,
+                    result.failures.joinToString("; ")
+                )
+                result.plugins.size == 1 -> context.getString(
+                    R.string.settings_lyrico_plugin_imported,
+                    result.plugins.single().manifest.name
+                )
+                else -> context.getString(
+                    R.string.settings_lyrico_plugins_imported,
+                    result.plugins.size
+                )
+            }
+            if (result.failures.isEmpty()) {
+                AppNoticeBus.post(message = message, icon = AppNoticeIcon.LYRICS)
+            } else {
+                AppNoticeBus.error(message)
+            }
+            return
+        }
+
+        val message = context.getString(
+            R.string.settings_lyrico_plugin_import_failed,
+            result.error.orEmpty(),
+        )
+        AppNoticeBus.error(message)
+    }
+
+    val pluginZipImportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             val result = withContext(Dispatchers.IO) { lyricoPluginStore.import(uri) }
-            if (result.isSuccess) {
-                lyricoPlugins = lyricoPluginStore.listInstalled()
-                val message = when {
-                    result.failures.isNotEmpty() -> context.getString(
-                        R.string.settings_lyrico_plugins_imported_partial,
-                        result.plugins.size,
-                        result.failures.size,
-                        result.failures.joinToString("; ")
-                    )
-                    result.plugins.size == 1 -> context.getString(
-                        R.string.settings_lyrico_plugin_imported,
-                        result.plugins.single().manifest.name
-                    )
-                    else -> context.getString(
-                        R.string.settings_lyrico_plugins_imported,
-                        result.plugins.size
-                    )
-                }
-                if (result.failures.isEmpty()) {
-                    AppNoticeBus.post(
-                        message = message,
-                        icon = AppNoticeIcon.LYRICS,
-                    )
-                } else {
-                    AppNoticeBus.error(message)
-                }
-            } else {
-                AppNoticeBus.error(
-                    context.getString(
-                        R.string.settings_lyrico_plugin_import_failed,
-                        result.error.orEmpty(),
-                    )
-                )
-            }
+            presentPluginImportResult(result)
         }
     }
     var lyriconStatus by remember {
@@ -303,7 +308,13 @@ fun LiquidGlassLyricManagementScreen(
             SettingsNavigationEntry(
                 title = stringResource(R.string.settings_lyrico_import_plugin),
                 description = stringResource(R.string.settings_lyrico_import_plugin_summary),
-                onClick = { pluginImportLauncher.launch(arrayOf("application/zip", "application/octet-stream")) }
+                onClick = {
+                    withSystemFileAccess {
+                        // Do not MIME-filter here. OEM DocumentsUI implementations may report ZIPs
+                        // as application/x-zip-compressed, application/x-zip, or even a vendor MIME.
+                        pluginZipImportLauncher.launch(arrayOf("*/*"))
+                    }
+                }
             )
             if (lyricoPlugins.isEmpty()) {
                 SettingsInfoEntry(

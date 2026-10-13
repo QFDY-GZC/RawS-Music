@@ -9,6 +9,8 @@ import java.util.Locale
  * are not destroyed; real syllable/word timings continue to pass through unchanged.
  */
 internal fun subdivideCjkTimedWord(word: LyricWord): List<LyricWord> {
+    // A pronunciation belongs to this source token, not to inferred per-character slices.
+    if (word.ruby.isNotEmpty()) return listOf(word)
     val text = word.text
     if (text.isBlank() || text != text.trim() || text.any { it.isWhitespace() }) return listOf(word)
 

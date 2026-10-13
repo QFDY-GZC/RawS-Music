@@ -30,6 +30,13 @@ internal class DecoderPathResolver(
         val sanitizedPath = WebDavPlaybackCredentialResolver.sanitizeUrlIfConfigured(path) ?: path
         val registeredTransport = RemoteHttpStreamRegistry.lookup(sanitizedPath)?.resolveUrl(sanitizedPath)
         val transportPath = registeredTransport ?: sanitizedPath
+        com.rawsmusic.core.common.sacd.SacdIsoSourceRegistry.area(sanitizedPath)?.let { area ->
+            if (transportPath.startsWith("content://")) {
+                // FFmpegBridge scopes the original FD to native open; the SACD reader owns
+                // its reopened file. Repeated ISO/CUE switching must not retain more PFDs.
+                return com.rawsmusic.core.common.sacd.SacdIsoBridge.nativeAreaPath(area, transportPath)
+            }
+        }
         val resolvedPath = if (transportPath.startsWith("content://")) {
             resolveContentUri(transportPath)
         } else {

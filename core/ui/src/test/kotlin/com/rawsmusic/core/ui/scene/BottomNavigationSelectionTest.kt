@@ -5,6 +5,28 @@ import org.junit.Test
 
 class BottomNavigationSelectionTest {
     @Test
+    fun fourItemEffectsSearchSettingsConfigurationKeepsExactSceneIndexes() {
+        val tabs = listOf(
+            NavScene.HOME,
+            NavScene.AUDIO_EFFECTS,
+            NavScene.SEARCH,
+            NavScene.SETTINGS,
+        )
+
+        tabs.forEachIndexed { expectedIndex, scene ->
+            assertEquals(
+                expectedIndex,
+                resolveBottomNavigationSelectedIndex(
+                    tabScenes = tabs,
+                    currentScene = scene,
+                    backPreviewScene = null,
+                    backStack = listOf(NavScene.HOME, scene).distinct(),
+                ),
+            )
+        }
+    }
+
+    @Test
     fun searchKeepsSongsOwnerWhenSearchTabIsNotConfigured() {
         val tabs = listOf(NavScene.HOME, NavScene.SONGS, NavScene.AUDIO_EFFECTS)
 

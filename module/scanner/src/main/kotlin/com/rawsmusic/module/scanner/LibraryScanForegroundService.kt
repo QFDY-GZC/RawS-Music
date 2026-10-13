@@ -53,14 +53,22 @@ class LibraryScanForegroundService : Service() {
     }
 
     private fun startScanIfNeeded(reason: String) {
+        val displayReason = localizedReason(reason)
         if (scanJob?.isActive == true) {
             pendingScanReason = reason
             LibraryScanEventBus.updateState(
-                LibraryScanEventBus.scanState.value.copy(pendingScan = true, message = "扫描正在进行，已记录新的扫描请求")
+                LibraryScanEventBus.scanState.value.copy(
+                    pendingScan = true,
+                    message = getString(R.string.library_scan_pending_request),
+                )
             )
             return
         }
-        val startingState = ScanUiState.starting(reason)
+        val startingState = ScanUiState.starting(
+            reason = displayReason,
+            stage = getString(R.string.library_scan_stage_start),
+            message = getString(R.string.library_scan_preparing, displayReason),
+        )
         LibraryScanEventBus.updateState(startingState)
         startForeground(NOTIFICATION_ID, buildNotification(startingState))
         scanJob = serviceScope.launch { runScan(reason) }
@@ -97,12 +105,12 @@ class LibraryScanForegroundService : Service() {
                     is LibraryScanCoordinator.Event.VisibleCompleted -> {
                         // Project-style: publish the fast MediaStore list as soon as it is
                         // visible in Room. Enrichment continues, but the library can be used now.
-                        LibraryScanEventBus.tryEmitSongs(event.songs)
+                        if (event.hasChanges) LibraryScanEventBus.tryEmitSongs(event.songs)
                         ScanStateBus.notifyCompleted(event.found, event.timeMs)
                         AppLogger.d(TAG, "quick visible completed: found=${event.found} time=${event.timeMs}ms; enrichment continues")
                     }
                     is LibraryScanCoordinator.Event.Completed -> {
-                        LibraryScanEventBus.tryEmitSongs(event.songs)
+                        if (event.hasChanges) LibraryScanEventBus.tryEmitSongs(event.songs)
                         val stats = finalSync
                         LibraryScanToast.show(
                             applicationContext,
@@ -128,7 +136,7 @@ class LibraryScanForegroundService : Service() {
 
             val doneState = LibraryScanEventBus.scanState.value.copy(
                 isScanning = false, canCancel = false, pendingScan = false,
-                stage = "完成", progress = 1f
+                stage = getString(R.string.library_scan_stage_complete), progress = 1f
             )
             LibraryScanEventBus.updateState(doneState)
             updateNotification(doneState)
@@ -142,14 +150,21 @@ class LibraryScanForegroundService : Service() {
             }
             stopSelf()
         } catch (e: CancellationException) {
-            LibraryScanEventBus.updateState(ScanUiState.cancelled())
-            updateNotification(ScanUiState.cancelled())
+            val cancelledState = cancelledState()
+            LibraryScanEventBus.updateState(cancelledState)
+            updateNotification(cancelledState)
             AppLogger.d(TAG, "Foreground scan cancelled")
             stopSelf()
         } catch (e: Exception) {
             val errorState = LibraryScanEventBus.scanState.value.copy(
-                isScanning = false, canCancel = false, stage = "错误",
-                error = e.message, message = "扫描失败：${e.message}"
+                isScanning = false,
+                canCancel = false,
+                stage = getString(R.string.library_scan_stage_error),
+                error = e.message,
+                message = getString(
+                    R.string.library_scan_failed_detail,
+                    localizedErrorDetail(e.message),
+                ),
             )
             LibraryScanEventBus.updateState(errorState)
             updateNotification(errorState)
@@ -162,51 +177,86 @@ class LibraryScanForegroundService : Service() {
         pendingScanReason = null
         scanJob?.cancel(CancellationException("User cancelled"))
         scanJob = null
-        LibraryScanEventBus.updateState(ScanUiState.cancelled())
+        LibraryScanEventBus.updateState(cancelledState())
         stopSelf()
     }
 
     private fun reduceEventToState(reason: String, current: ScanUiState, event: LibraryScanCoordinator.Event): ScanUiState {
+        val displayReason = localizedReason(reason)
         return when (event) {
-            is LibraryScanCoordinator.Event.ScannerEvent -> reduceScannerEvent(reason, current, event.event)
+            is LibraryScanCoordinator.Event.ScannerEvent -> reduceScannerEvent(displayReason, current, event.event)
             is LibraryScanCoordinator.Event.DatabaseSyncStarted -> {
                 val stageText = when (event.phase) {
-                    LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> "快速写入"
-                    LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> "后台补全"
-                    LibraryScanCoordinator.SyncPhase.FINAL -> "最终同步"
+                    LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> getString(R.string.library_scan_stage_quick_write)
+                    LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> getString(R.string.library_scan_stage_background_enrich)
+                    LibraryScanCoordinator.SyncPhase.FINAL -> getString(R.string.library_scan_stage_final_sync)
                 }
                 current.copy(
                     isScanning = true, canCancel = true, stage = stageText,
                     progress = if (event.phase == LibraryScanCoordinator.SyncPhase.FINAL) 0.90f else current.progress,
-                    message = "$reason：$stageText ${event.newCount} 首"
+                    message = getString(
+                        R.string.library_scan_sync_started,
+                        displayReason,
+                        stageText,
+                        event.newCount,
+                    )
                 )
             }
             is LibraryScanCoordinator.Event.DatabaseSyncCompleted -> {
                 val message = when (event.phase) {
-                    LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> "$reason：快速结果已显示，新增/变更 ${event.upserted} 首"
-                    LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> "$reason：后台补全已写入 ${event.upserted} 首"
-                    LibraryScanCoordinator.SyncPhase.FINAL -> "$reason：数据库同步完成，新增 ${event.added}，更新 ${event.updated}，删除 ${event.deleted}，未变 ${event.unchanged}"
+                    LibraryScanCoordinator.SyncPhase.QUICK_VISIBLE -> getString(
+                        R.string.library_scan_quick_visible,
+                        displayReason,
+                        event.upserted,
+                    )
+                    LibraryScanCoordinator.SyncPhase.ENRICHED_BATCH -> getString(
+                        R.string.library_scan_enriched_written,
+                        displayReason,
+                        event.upserted,
+                    )
+                    LibraryScanCoordinator.SyncPhase.FINAL -> getString(
+                        R.string.library_scan_database_synced,
+                        displayReason,
+                        event.added,
+                        event.updated,
+                        event.deleted,
+                        event.unchanged,
+                    )
                 }
                 current.copy(
-                    isScanning = true, canCancel = true, stage = "数据库完成",
+                    isScanning = true, canCancel = true,
+                    stage = getString(R.string.library_scan_stage_database_complete),
                     progress = if (event.phase == LibraryScanCoordinator.SyncPhase.FINAL) 0.96f else current.progress,
                     dbUpserted = event.upserted, dbDeleted = event.deleted, dbUnchanged = event.unchanged,
                     message = message
                 )
             }
             is LibraryScanCoordinator.Event.VisibleCompleted -> current.copy(
-                isScanning = true, canCancel = true, pendingScan = false, stage = "可浏览",
+                isScanning = true, canCancel = true, pendingScan = false,
+                stage = getString(R.string.library_scan_stage_visible),
                 progress = current.progress.coerceAtLeast(0.40f), found = event.found, timeMs = event.timeMs,
-                message = "$reason：${event.found} 首已可浏览，后台继续补全音频信息"
+                message = getString(R.string.library_scan_visible_message, displayReason, event.found)
             )
             is LibraryScanCoordinator.Event.Completed -> current.copy(
-                isScanning = false, canCancel = false, pendingScan = false, stage = "完成",
+                isScanning = false, canCancel = false, pendingScan = false,
+                stage = getString(R.string.library_scan_stage_complete),
                 progress = 1f, found = event.songs.size, timeMs = event.timeMs,
-                message = "$reason：完成 ${event.songs.size} 首，用时 ${event.timeMs}ms"
+                message = getString(
+                    R.string.library_scan_completed_message,
+                    displayReason,
+                    event.songs.size,
+                    event.timeMs,
+                )
             )
             is LibraryScanCoordinator.Event.Error -> current.copy(
-                isScanning = false, canCancel = false, stage = "错误",
-                error = event.message, message = "$reason：失败 ${event.message}"
+                isScanning = false, canCancel = false,
+                stage = getString(R.string.library_scan_stage_error),
+                error = event.message,
+                message = getString(
+                    R.string.library_scan_reason_failed,
+                    displayReason,
+                    localizedErrorDetail(event.message),
+                )
             )
         }
     }
@@ -214,42 +264,72 @@ class LibraryScanForegroundService : Service() {
     private fun reduceScannerEvent(reason: String, current: ScanUiState, event: TwoStageMediaScanner.Event): ScanUiState {
         return when (event) {
             is TwoStageMediaScanner.Event.Started -> current.copy(
-                isScanning = true, canCancel = true, reason = reason, stage = "开始",
+                isScanning = true, canCancel = true, reason = reason,
+                stage = getString(R.string.library_scan_stage_start),
                 total = event.totalEstimated, scanned = 0, progress = 0f,
-                message = "$reason：开始扫描 ${event.totalEstimated} 个媒体项"
+                message = getString(R.string.library_scan_started_message, reason, event.totalEstimated)
             )
             is TwoStageMediaScanner.Event.CacheLoaded -> current.copy(
-                stage = "读取缓存", message = "$reason：已加载缓存 ${event.cachedCount} 条"
+                stage = getString(R.string.library_scan_stage_cache),
+                message = getString(R.string.library_scan_cache_loaded, reason, event.cachedCount)
             )
             is TwoStageMediaScanner.Event.QuickProgress -> {
                 val p = if (event.total > 0) event.scanned.toFloat() / event.total * 0.35f else 0f
-                current.copy(isScanning = true, canCancel = true, stage = "快速扫描",
+                current.copy(isScanning = true, canCancel = true,
+                    stage = getString(R.string.library_scan_stage_quick),
                     scanned = event.scanned, total = event.total, progress = p.coerceIn(0f, 0.35f),
-                    message = "$reason：${event.message} ${event.scanned}/${event.total}")
+                    message = getString(
+                        R.string.library_scan_quick_progress,
+                        reason,
+                        event.scanned,
+                        event.total,
+                    ))
             }
             is TwoStageMediaScanner.Event.QuickCompleted -> current.copy(
-                isScanning = true, canCancel = true, stage = "快速扫描完成",
+                isScanning = true, canCancel = true,
+                stage = getString(R.string.library_scan_stage_quick_complete),
                 found = event.found, progress = 0.35f,
-                message = "$reason：已找到 ${event.found} 首，正在写入快速结果"
+                message = getString(R.string.library_scan_quick_completed, reason, event.found)
             )
             is TwoStageMediaScanner.Event.EnrichProgress -> {
                 val ep = if (event.total > 0) event.processed.toFloat() / event.total else 0f
-                current.copy(isScanning = true, canCancel = true, stage = "补全信息",
+                current.copy(isScanning = true, canCancel = true,
+                    stage = getString(R.string.library_scan_stage_enrich),
                     scanned = event.processed, total = event.total,
                     progress = (0.35f + ep * 0.55f).coerceIn(0.35f, 0.90f),
                     cacheHits = event.cacheHits, enrichedCount = event.enrichedCount,
-                    message = "$reason：${event.message} ${event.processed}/${event.total}，缓存 ${event.cacheHits}，新读 ${event.enrichedCount}")
+                    message = getString(
+                        R.string.library_scan_enrich_progress,
+                        reason,
+                        event.processed,
+                        event.total,
+                        event.cacheHits,
+                        event.enrichedCount,
+                    ))
             }
             is TwoStageMediaScanner.Event.SongEnriched -> current
             is TwoStageMediaScanner.Event.EnrichBatchCompleted -> current
             is TwoStageMediaScanner.Event.FullyCompleted -> current.copy(
-                isScanning = true, canCancel = true, stage = "准备同步数据库", progress = 0.90f,
+                isScanning = true, canCancel = true,
+                stage = getString(R.string.library_scan_stage_prepare_sync), progress = 0.90f,
                 found = event.found, cacheHits = event.cacheHits, enrichedCount = event.enrichedCount,
-                message = "$reason：补全完成，${event.found} 首，缓存 ${event.cacheHits}，新读 ${event.enrichedCount}"
+                message = getString(
+                    R.string.library_scan_enrich_completed,
+                    reason,
+                    event.found,
+                    event.cacheHits,
+                    event.enrichedCount,
+                )
             )
             is TwoStageMediaScanner.Event.Error -> current.copy(
-                isScanning = false, canCancel = false, stage = "错误",
-                error = event.message, message = "$reason：扫描失败 ${event.message}"
+                isScanning = false, canCancel = false,
+                stage = getString(R.string.library_scan_stage_error),
+                error = event.message,
+                message = getString(
+                    R.string.library_scan_reason_failed,
+                    reason,
+                    localizedErrorDetail(event.message),
+                )
             )
         }
     }
@@ -292,12 +372,37 @@ class LibraryScanForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val channel = NotificationChannel(CHANNEL_ID, "音乐库扫描", NotificationManager.IMPORTANCE_LOW).apply {
-            description = "显示 RawSMusic 音乐库扫描进度"
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            getString(R.string.library_scan_channel_name),
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description = getString(R.string.library_scan_channel_description)
             setSound(null, null)
             enableVibration(false)
         }
         notificationManager.createNotificationChannel(channel)
+    }
+
+    private fun cancelledState(): ScanUiState = ScanUiState.cancelled(
+        stage = getString(R.string.library_scan_stage_cancelled),
+        message = getString(R.string.library_scan_cancelled),
+    )
+
+    private fun localizedReason(reason: String): String = when (reason) {
+        LibraryScanServiceActions.REASON_MANUAL -> getString(R.string.library_scan_reason_manual)
+        LibraryScanServiceActions.REASON_AUTO -> getString(R.string.library_scan_reason_auto)
+        else -> reason
+    }
+
+    private fun localizedErrorDetail(rawMessage: String?): String {
+        val raw = rawMessage?.trim().orEmpty()
+        if (raw.isBlank()) return getString(R.string.library_scan_unknown_error)
+        if (resources.configuration.locales[0].language == "zh") return raw
+        val containsHan = raw.any { ch ->
+            Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN
+        }
+        return if (containsHan) getString(R.string.library_scan_unknown_error) else raw
     }
 
     companion object {

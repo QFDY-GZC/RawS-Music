@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="player_action_playback_mode">再生モード</string>
+    <string name="player_notification_ready">再生準備完了</string>
+    <string name="player_action_previous">前の曲</string>
+    <string name="player_action_pause">一時停止</string>
+    <string name="player_action_play">再生</string>
+    <string name="player_action_next">次の曲</string>
+    <string name="player_mode_shuffle">シャッフル</string>
+    <string name="player_mode_repeat_one">1 曲リピート</string>
+    <string name="player_mode_repeat_all">全曲リピート</string>
+    <string name="player_mode_sequential">順番再生</string>
+    <string name="player_action_desktop_lyric">デスクトップ歌詞</string>
+</resources>

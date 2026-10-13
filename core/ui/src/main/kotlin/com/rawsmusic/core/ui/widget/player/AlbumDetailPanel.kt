@@ -47,8 +47,10 @@ fun AlbumDetailPanel(
     modifier: Modifier = Modifier
 ) {
     val colors = themeColors()
-    val albumName = currentSong?.album?.ifBlank { "未知专辑" } ?: "未知专辑"
-    val artist = currentSong?.albumArtist?.ifBlank { currentSong.artist }?.ifBlank { "未知艺术家" } ?: "未知艺术家"
+    val unknownAlbum = stringResource(R.string.player_unknown_album)
+    val unknownArtist = stringResource(R.string.common_unknown_artist)
+    val albumName = currentSong?.album?.ifBlank { unknownAlbum } ?: unknownAlbum
+    val artist = currentSong?.albumArtist?.ifBlank { currentSong.artist }?.ifBlank { unknownArtist } ?: unknownArtist
     val hasHiRes = songs.any { it.isHiRes }
     val resolvedCoverPath = currentSong.resolvePlaybackArtworkKey(coverPath)
 
@@ -69,7 +71,7 @@ fun AlbumDetailPanel(
                 Text("← ${stringResource(R.string.common_back)}", color = colors.primary, fontSize = 14.sp)
             }
             Text(
-                "专辑详情",
+                stringResource(R.string.player_album_detail_title),
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Medium,
                 color = colors.onSurface
@@ -128,7 +130,7 @@ fun AlbumDetailPanel(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    "${songs.size} 首",
+                    stringResource(R.string.player_album_detail_summary, songs.size),
                     fontSize = 12.sp,
                     color = colors.secondaryText
                 )
@@ -157,6 +159,7 @@ private fun AlbumSongRow(
     onClick: () -> Unit
 ) {
     val colors = themeColors()
+    val unknownArtist = stringResource(R.string.common_unknown_artist)
     Row(
         Modifier
             .fillMaxWidth()
@@ -180,7 +183,7 @@ private fun AlbumSongRow(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                song.artist.ifBlank { "未知艺术家" },
+                song.artist.ifBlank { unknownArtist },
                 fontSize = 12.sp,
                 color = colors.secondaryText,
                 maxLines = 1,

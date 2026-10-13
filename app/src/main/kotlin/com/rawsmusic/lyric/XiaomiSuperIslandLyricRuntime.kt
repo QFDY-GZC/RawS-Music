@@ -3,13 +3,11 @@ package com.rawsmusic.lyric
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.media.MediaMetadataRetriever
-import com.rawsmusic.core.common.ffmpeg.FFmpegBridge
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.LyricLine
 import com.rawsmusic.core.common.model.LyricWord
-import com.rawsmusic.core.common.net.RemoteHttpStreamRegistry
+import com.rawsmusic.core.ui.widget.bitmaps.BitmapProvider
+import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.XiaomiSuperIslandSettings
 import kotlinx.coroutines.CoroutineScope
@@ -17,15 +15,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.json.JSONArray
-import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 
 /** Converts the bounded player event into the app-owned vendor bridge. */
 internal object XiaomiSuperIslandLyricRuntime {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var bridge: XiaomiSuperIslandLyricBridge? = null
-    private var artworkPath: String = ""
-    private var artworkBitmap: Bitmap? = null
+    private data class ArtworkEntry(val key: String, val bitmap: Bitmap)
+    @Volatile private var artworkEntry: ArtworkEntry? = null
     private val eventGeneration = AtomicLong(0L)
     private var enabled = false
     private var playbackCleared = true
@@ -68,15 +65,17 @@ internal object XiaomiSuperIslandLyricRuntime {
         playbackCleared = false
 
         val path = intent.getStringExtra("path").orEmpty()
-        val artworkKey = intent.getStringExtra("albumArtPath").orEmpty().ifBlank { path }
         val song = AudioFile(
             title = intent.getStringExtra("title").orEmpty(),
             artist = intent.getStringExtra("artist").orEmpty(),
             album = intent.getStringExtra("album").orEmpty(),
             path = path,
             albumArtPath = intent.getStringExtra("albumArtPath").orEmpty(),
+            fileSize = intent.getLongExtra("fileSize", 0L),
+            dateModified = intent.getLongExtra("dateModified", 0L),
             duration = intent.getLongExtra("duration", 0L)
         )
+        val artworkKey = song.resolvePlaybackArtworkKey().orEmpty()
         val line = LyricLine(
             timeStamp = intent.getLongExtra("lineTime", 0L),
             endTime = intent.getLongExtra("lineEnd", 0L),
@@ -97,7 +96,7 @@ internal object XiaomiSuperIslandLyricRuntime {
         val position = intent.getLongExtra("position", 0L)
         scope.launch(Dispatchers.IO) {
             XiaomiSuperIslandCapabilities.logOnce(appContext)
-            val artwork = loadArtwork(appContext, artworkKey)
+            val artwork = loadArtwork(artworkKey)
             if (generation != eventGeneration.get()) return@launch
             currentBridge.sendLyric(song, line, position, song.duration, artwork)
         }
@@ -119,56 +118,18 @@ internal object XiaomiSuperIslandLyricRuntime {
         }.getOrDefault(emptyList())
     }
 
-    private fun loadArtwork(context: Context, path: String): Bitmap? {
+    private fun loadArtwork(path: String): Bitmap? {
         if (path.isBlank()) return null
-        if (path == artworkPath) return artworkBitmap
-        val remoteHttp = path.startsWith("http://", true) || path.startsWith("https://", true)
-        val bitmap = runCatching {
-            if (remoteHttp) {
-                val remote = RemoteHttpStreamRegistry.lookup(path) ?: return@runCatching null
-                val cacheFile = File(context.cacheDir, "superisland/${path.hashCode()}.cover")
-                cacheFile.parentFile?.mkdirs()
-                if (!cacheFile.exists() || cacheFile.length() <= 1024L) {
-                    cacheFile.delete()
-                    val resolvedUrl = remote.resolveUrl(path)
-                    val result = FFmpegBridge.extractCover(
-                        inputPath = resolvedUrl,
-                        outputPath = cacheFile.absolutePath,
-                        headers = remote.resolveHeaders(path),
-                        userAgent = remote.userAgent,
-                    )
-                    if (result != 0 || cacheFile.length() <= 1024L) {
-                        cacheFile.delete()
-                        return@runCatching null
-                    }
-                }
-                BitmapFactory.decodeFile(cacheFile.absolutePath)
-            } else {
-                val retriever = MediaMetadataRetriever()
-                try {
-                    retriever.setDataSource(path)
-                    retriever.embeddedPicture?.let { bytes ->
-                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    }
-                } finally {
-                    retriever.release()
-                }
-            }
-        }.getOrNull() ?: BitmapFactory.decodeFile(path)
-        val scaled = bitmap?.let { source ->
-            val size = maxOf(source.width, source.height)
-            if (size <= 480) source else {
-                val ratio = 480f / size.toFloat()
-                Bitmap.createScaledBitmap(
-                    source,
-                    (source.width * ratio).toInt().coerceAtLeast(1),
-                    (source.height * ratio).toInt().coerceAtLeast(1),
-                    true
-                )
-            }
-        }
-        artworkPath = path
-        artworkBitmap = scaled
+        artworkEntry?.takeIf { it.key == path && !it.bitmap.isRecycled }?.let { return it.bitmap }
+        // Share the player's embedded/external/content/remote artwork resolver and file-version key.
+        // Do not memoize null: a cover arriving after the lyric event must be able to appear later.
+        val scaled = runCatching {
+            // The island also runs CPU Palette and creates RemoteViews bitmaps. Decode its
+            // small raster from the shared encoded source, rather than reading a HARDWARE bitmap.
+            BitmapProvider.executePixelAnalysis(path, 256)
+        }.getOrNull()?.takeUnless { it.isRecycled } ?: return null
+        // IO events can overlap; publish identity and pixels together, never as two assignments.
+        artworkEntry = ArtworkEntry(path, scaled)
         return scaled
     }
 }

@@ -3,7 +3,6 @@ package com.rawsmusic
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.PlayMode
 import com.rawsmusic.core.common.model.PlayState
-import com.rawsmusic.core.common.utils.PlayerSwitchTrace
 import com.rawsmusic.module.player.PlayerController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,28 +33,13 @@ internal class MainActivityPlaybackObserverCoordinator(
         boundController = target
         jobs += scope.launch(Dispatchers.Main) {
             target.playState.collect { state ->
-                val startedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
-                if (startedNs != 0L) PlayerSwitchTrace.mark("observer_play_state", "state=$state")
                 onPlaybackState(state)
-                if (startedNs != 0L) {
-                    PlayerSwitchTrace.duration("observer_play_state_callback", System.nanoTime() - startedNs)
-                }
             }
         }
         jobs += scope.launch(Dispatchers.Main) {
             target.currentSong.collect { song ->
                 if (song != null) {
-                    val startedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
-                    if (startedNs != 0L) {
-                        PlayerSwitchTrace.mark(
-                            "observer_current_song",
-                            "songId=${song.id} title=${song.title} pathHash=${song.path.hashCode().toString(16)}",
-                        )
-                    }
                     onCurrentSong(song)
-                    if (startedNs != 0L) {
-                        PlayerSwitchTrace.duration("observer_current_song_callback", System.nanoTime() - startedNs)
-                    }
                 }
             }
         }
@@ -73,17 +57,7 @@ internal class MainActivityPlaybackObserverCoordinator(
             ) { _, durationMs, _ ->
                 boundController.position.value to durationMs
             }.collect { (positionMs, durationMs) ->
-                val startedNs = if (PlayerSwitchTrace.isActive()) System.nanoTime() else 0L
-                if (startedNs != 0L) {
-                    PlayerSwitchTrace.mark(
-                        "observer_timeline",
-                        "position=$positionMs duration=$durationMs",
-                    )
-                }
                 onPosition(positionMs, durationMs)
-                if (startedNs != 0L) {
-                    PlayerSwitchTrace.duration("observer_timeline_callback", System.nanoTime() - startedNs)
-                }
             }
         }
         jobs += scope.launch(Dispatchers.Main) {

@@ -24,6 +24,7 @@
 #include <sstream>
 #include <vector>
 #include <unistd.h>
+#include "id3_mp4_compat.h"
 
 // TagLib headers - 按格式专用
 #include "mpegfile.h"
@@ -69,6 +70,8 @@ static std::string getExtension(const char *path) {
     for (auto &c : ext) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
+    // AAC is a codec, not a reliable container extension. Do not prepend MPEG/ID3 to MP4.
+    if (ext == "aac" && rawmedia::mp4InputPrefix(path) == -1) return "m4a";
     return ext;
 }
 
@@ -191,6 +194,7 @@ static bool writeMetadataToFile(FileType &file,
 
 static bool writeMetadata(const char *filePath,
                           const std::map<std::string, std::string> &metadata) {
+    if (rawmedia::mp4InputPrefix(filePath) > 0) return false;
     const std::string ext = getExtension(filePath);
     if (ext == "mp3" || ext == "mp2" || ext == "mpga" || ext == "aac") {
         TagLib::MPEG::File file(filePath, false); return writeMetadataToFile(file, metadata);
@@ -1252,6 +1256,22 @@ static void appendUnsupportedKey(MetadataSourceInfoNative &info, const TagLib::S
     if (!value.empty() && info.unsupported_keys.size() < 32) info.unsupported_keys.push_back(value);
 }
 
+/**
+ * TagLib exposes container-native cover fields twice by design: as unsupported PropertyMap data
+ * and as the standard complex PICTURE property. MP4 uses covr, while ID3v2 uses APIC (PIC for
+ * v2.2). Once the cover payload has actually been decoded through PICTURE, those keys are no
+ * longer opaque metadata and must not make STRICT preflight/migration fail. Keep the unsupported
+ * marker when picture decoding failed so malformed/unknown cover data is never dropped silently.
+ */
+static bool unsupportedKeyConsumedByPictureLane(
+    const TagLib::String &key,
+    bool hasMappedPictures
+) {
+    if (!hasMappedPictures) return false;
+    const std::string raw = key.to8Bit(true);
+    return raw == "covr" || raw == "APIC" || raw == "PIC";
+}
+
 template <typename SourceFile>
 static MetadataSourceInfoNative inspectTypedMetadataSource(const char *sourcePath) {
     MetadataSourceInfoNative info;
@@ -1261,8 +1281,10 @@ static MetadataSourceInfoNative inspectTypedMetadataSource(const char *sourcePat
     info.supported = true;
     info.text_fields = static_cast<int>(properties.size());
     info.text_values = propertyValueCount(properties);
-    info.picture_count = static_cast<int>(complexPicturesForFile(source).size());
+    const auto pictures = complexPicturesForFile(source);
+    info.picture_count = static_cast<int>(pictures.size());
     for (const auto &key : properties.unsupportedData()) {
+        if (unsupportedKeyConsumedByPictureLane(key, !pictures.isEmpty())) continue;
         ++info.unsupported_opaque_items;
         appendUnsupportedKey(info, key);
     }
@@ -1509,7 +1531,9 @@ static MetadataMigrationReportNative migrateTypedSourceToDsfMetadata(
     const TagLib::PropertyMap desired = desiredTranscodeProperties(sourceProperties, encoderLabel);
     report.source_text_fields = static_cast<int>(sourceProperties.size());
     report.source_text_values = propertyValueCount(sourceProperties);
+    const auto sourcePictures = complexPicturesForFile(source);
     for (const auto &key : sourceProperties.unsupportedData()) {
+        if (unsupportedKeyConsumedByPictureLane(key, !sourcePictures.isEmpty())) continue;
         ++report.unsupported_binary_items;
         appendMismatchKey(report, key);
     }
@@ -1522,7 +1546,6 @@ static MetadataMigrationReportNative migrateTypedSourceToDsfMetadata(
         appendMismatchKey(report, key);
     }
 
-    const auto sourcePictures = complexPicturesForFile(source);
     if (!sourcePictures.isEmpty()) {
         if (!targetTag.setComplexProperties("PICTURE", sourcePictures)) {
             report.picture_mismatches += static_cast<int>(sourcePictures.size());
@@ -1587,12 +1610,13 @@ static MetadataMigrationReportNative migrateTypedSourceToTarget(
     }
     report.source_text_fields = static_cast<int>(sourceProperties.size());
     report.source_text_values = propertyValueCount(sourceProperties);
+    const auto sourcePictures = complexPicturesForFile(source);
     for (const auto &key : sourceProperties.unsupportedData()) {
+        if (unsupportedKeyConsumedByPictureLane(key, !sourcePictures.isEmpty())) continue;
         ++report.unsupported_binary_items;
         appendMismatchKey(report, key);
     }
 
-    const auto sourcePictures = complexPicturesForFile(source);
     const bool pictureSemanticsStored = useMp4TargetNormalization &&
         appendMp4PictureSemanticPropertiesFromVariant(sourcePictures, desired);
 
@@ -1865,6 +1889,8 @@ static bool writeEmbeddedArtwork(
     const char *artworkPath,
     const char *mimeType
 ) {
+    // Existing foreign ID3 prefixes need a deliberate repair/migration, not another MPEG save.
+    if (rawmedia::mp4InputPrefix(filePath) > 0) return false;
     const auto data = readByteVectorFromFile(artworkPath);
     if (data.isEmpty()) return false;
     const std::string ext = getExtension(filePath);
@@ -1948,6 +1974,246 @@ static TagLib::ByteVector readAttachedPicture(TagLib::ID3v2::Tag *tag) {
     return selected ? selected->picture() : TagLib::ByteVector();
 }
 
+namespace {
+
+static uint32_t artworkReadLe32(const uint8_t *p) {
+    return static_cast<uint32_t>(p[0]) |
+        (static_cast<uint32_t>(p[1]) << 8) |
+        (static_cast<uint32_t>(p[2]) << 16) |
+        (static_cast<uint32_t>(p[3]) << 24);
+}
+
+static uint32_t artworkReadBe32(const uint8_t *p) {
+    return (static_cast<uint32_t>(p[0]) << 24) |
+        (static_cast<uint32_t>(p[1]) << 16) |
+        (static_cast<uint32_t>(p[2]) << 8) |
+        static_cast<uint32_t>(p[3]);
+}
+
+static uint32_t artworkReadSyncsafe32(const uint8_t *p) {
+    return (static_cast<uint32_t>(p[0] & 0x7f) << 21) |
+        (static_cast<uint32_t>(p[1] & 0x7f) << 14) |
+        (static_cast<uint32_t>(p[2] & 0x7f) << 7) |
+        static_cast<uint32_t>(p[3] & 0x7f);
+}
+
+static std::vector<uint8_t> artworkDeUnsync(const uint8_t *data, size_t size) {
+    std::vector<uint8_t> result;
+    result.reserve(size);
+    for (size_t i = 0; i < size; ++i) {
+        result.push_back(data[i]);
+        if (data[i] == 0xff && i + 1 < size && data[i + 1] == 0x00) {
+            ++i;
+        }
+    }
+    return result;
+}
+
+static TagLib::ByteVector artworkBytesFromApicPayload(
+    const uint8_t *payload,
+    size_t payloadSize,
+    bool id3v22,
+    bool unsynchronised,
+    uint8_t *pictureTypeOut
+) {
+    if (!payload || payloadSize < (id3v22 ? 6u : 5u)) return TagLib::ByteVector();
+
+    std::vector<uint8_t> cleaned;
+    if (unsynchronised) {
+        cleaned = artworkDeUnsync(payload, payloadSize);
+        payload = cleaned.data();
+        payloadSize = cleaned.size();
+    }
+    if (payloadSize < (id3v22 ? 6u : 5u)) return TagLib::ByteVector();
+
+    const uint8_t encoding = payload[0];
+    size_t pos = 1;
+    if (id3v22) {
+        // ID3v2.2 PIC: text encoding + 3-byte image format + picture type.
+        pos += 3;
+    } else {
+        // ID3v2.3/2.4 APIC: text encoding + zero-terminated MIME + picture type.
+        while (pos < payloadSize && payload[pos] != 0) ++pos;
+        if (pos >= payloadSize) return TagLib::ByteVector();
+        ++pos;
+    }
+    if (pos >= payloadSize) return TagLib::ByteVector();
+    const uint8_t pictureType = payload[pos++];
+
+    // Skip the encoded description. UTF-16 descriptions terminate with two zero bytes; all other
+    // APIC encodings use one. The image payload starts immediately afterwards.
+    if (encoding == 1 || encoding == 2) {
+        bool terminated = false;
+        while (pos + 1 < payloadSize) {
+            if (payload[pos] == 0 && payload[pos + 1] == 0) {
+                pos += 2;
+                terminated = true;
+                break;
+            }
+            pos += 2;
+        }
+        if (!terminated) return TagLib::ByteVector();
+    } else {
+        while (pos < payloadSize && payload[pos] != 0) ++pos;
+        if (pos >= payloadSize) return TagLib::ByteVector();
+        ++pos;
+    }
+
+    if (pos >= payloadSize) return TagLib::ByteVector();
+    if (pictureTypeOut) *pictureTypeOut = pictureType;
+    return TagLib::ByteVector(
+        reinterpret_cast<const char *>(payload + pos),
+        static_cast<unsigned int>(payloadSize - pos)
+    );
+}
+
+static TagLib::ByteVector extractArtworkFromId3Chunk(const std::vector<uint8_t> &id3) {
+    if (id3.size() < 10 || id3[0] != 'I' || id3[1] != 'D' || id3[2] != '3') {
+        return TagLib::ByteVector();
+    }
+    const uint8_t version = id3[3];
+    if (version < 2 || version > 4) return TagLib::ByteVector();
+
+    const uint32_t declaredSize = artworkReadSyncsafe32(id3.data() + 6);
+    const size_t tagEnd = std::min(id3.size(), static_cast<size_t>(10) + declaredSize);
+    if (tagEnd <= 10) return TagLib::ByteVector();
+
+    const bool tagUnsync = (id3[5] & 0x80) != 0;
+    size_t pos = 10;
+    if ((id3[5] & 0x40) != 0 && version >= 3 && pos + 4 <= tagEnd) {
+        const uint32_t extendedSize = version == 4
+            ? artworkReadSyncsafe32(id3.data() + pos)
+            : artworkReadBe32(id3.data() + pos);
+        const size_t skip = version == 3
+            ? static_cast<size_t>(extendedSize) + 4u
+            : static_cast<size_t>(extendedSize);
+        if (skip == 0 || pos + skip > tagEnd) return TagLib::ByteVector();
+        pos += skip;
+    }
+
+    TagLib::ByteVector fallback;
+    while (pos < tagEnd) {
+        bool isPicture = false;
+        size_t headerSize = 0;
+        uint32_t frameSize = 0;
+        bool frameUnsync = false;
+
+        if (version == 2) {
+            if (pos + 6 > tagEnd) break;
+            if (id3[pos] == 0 && id3[pos + 1] == 0 && id3[pos + 2] == 0) break;
+            isPicture = id3[pos] == 'P' && id3[pos + 1] == 'I' && id3[pos + 2] == 'C';
+            frameSize = (static_cast<uint32_t>(id3[pos + 3]) << 16) |
+                (static_cast<uint32_t>(id3[pos + 4]) << 8) |
+                static_cast<uint32_t>(id3[pos + 5]);
+            headerSize = 6;
+        } else {
+            if (pos + 10 > tagEnd) break;
+            if (id3[pos] == 0 && id3[pos + 1] == 0 && id3[pos + 2] == 0 && id3[pos + 3] == 0) break;
+            isPicture = id3[pos] == 'A' && id3[pos + 1] == 'P' &&
+                id3[pos + 2] == 'I' && id3[pos + 3] == 'C';
+            frameSize = version == 4
+                ? artworkReadSyncsafe32(id3.data() + pos + 4)
+                : artworkReadBe32(id3.data() + pos + 4);
+            // ID3v2.4 per-frame unsynchronisation flag (format flags, low byte bit 1).
+            frameUnsync = version == 4 && (id3[pos + 9] & 0x02) != 0;
+            // Compressed/encrypted APIC frames are deliberately left to TagLib/FFmpeg.
+            if ((version == 3 && (id3[pos + 9] & 0xC0) != 0) ||
+                (version == 4 && (id3[pos + 9] & 0x0C) != 0)) {
+                isPicture = false;
+            }
+            headerSize = 10;
+        }
+
+        if (frameSize == 0) break;
+        const size_t payloadPos = pos + headerSize;
+        if (payloadPos > tagEnd || frameSize > tagEnd - payloadPos) break;
+
+        if (isPicture) {
+            uint8_t pictureType = 0;
+            const auto picture = artworkBytesFromApicPayload(
+                id3.data() + payloadPos,
+                frameSize,
+                version == 2,
+                tagUnsync || frameUnsync,
+                &pictureType
+            );
+            if (!picture.isEmpty()) {
+                if (pictureType == 3) return picture; // Front cover.
+                if (fallback.isEmpty()) fallback = picture;
+            }
+        }
+        pos = payloadPos + frameSize;
+    }
+    return fallback;
+}
+
+/**
+ * Some WAV writers store a perfectly valid ID3/APIC RIFF chunk that TagLib's WAV facade does not
+ * expose through ID3v2Tag(). Scan the RIFF chunk table directly as a narrow fallback so those files
+ * still use the normal embedded-artwork authority rather than incorrectly falling through to a
+ * folder cover.
+ */
+static TagLib::ByteVector extractWavRiffId3Artwork(const char *filePath) {
+    if (!filePath) return TagLib::ByteVector();
+    std::ifstream input(filePath, std::ios::binary | std::ios::ate);
+    if (!input.good()) return TagLib::ByteVector();
+    const std::streamoff fileSize = input.tellg();
+    if (fileSize < 20) return TagLib::ByteVector();
+    input.seekg(0, std::ios::beg);
+
+    std::array<uint8_t, 12> riff{};
+    input.read(reinterpret_cast<char *>(riff.data()), riff.size());
+    if (!input.good()) return TagLib::ByteVector();
+    const bool riffContainer =
+        riff[0] == 'R' && riff[1] == 'I' && riff[2] == 'F' && riff[3] == 'F';
+    const bool wave = riff[8] == 'W' && riff[9] == 'A' && riff[10] == 'V' && riff[11] == 'E';
+    if (!riffContainer || !wave) return TagLib::ByteVector();
+
+    while (input.good() && input.tellg() >= 0 && input.tellg() + std::streamoff(8) <= fileSize) {
+        std::array<uint8_t, 8> header{};
+        input.read(reinterpret_cast<char *>(header.data()), header.size());
+        if (!input.good()) break;
+        const uint32_t chunkSize = artworkReadLe32(header.data() + 4);
+        const bool id3Chunk =
+            (header[0] == 'I' && header[1] == 'D' && header[2] == '3') ||
+            (header[0] == 'i' && header[1] == 'd' && header[2] == '3');
+        const std::streamoff payloadStart = input.tellg();
+        if (payloadStart < 0 || chunkSize > static_cast<uint64_t>(fileSize - payloadStart)) break;
+
+        if (id3Chunk && chunkSize >= 10 && chunkSize <= 32u * 1024u * 1024u) {
+            std::vector<uint8_t> id3(chunkSize);
+            input.read(reinterpret_cast<char *>(id3.data()), chunkSize);
+            if (!input.good() && !input.eof()) return TagLib::ByteVector();
+            const auto picture = extractArtworkFromId3Chunk(id3);
+            if (!picture.isEmpty()) return picture;
+        }
+
+        const std::streamoff padded = static_cast<std::streamoff>(chunkSize) + (chunkSize & 1u);
+        const std::streamoff next = payloadStart + padded;
+        if (next <= payloadStart || next > fileSize) break;
+        input.clear();
+        input.seekg(next, std::ios::beg);
+    }
+    return TagLib::ByteVector();
+}
+
+} // namespace
+
+template <typename FileType>
+static TagLib::ByteVector readComplexFrontCover(const char *filePath) {
+    FileType file(filePath, false);
+    if (!file.isValid()) return TagLib::ByteVector();
+    TagLib::ByteVector fallback;
+    for (const auto &picture : complexPicturesForFile(file)) {
+        const auto data = picture.value("data").template value<TagLib::ByteVector>();
+        if (data.isEmpty()) continue;
+        if (fallback.isEmpty()) fallback = data;
+        const auto type = picture.value("pictureType").template value<TagLib::String>();
+        if (type == TagLib::FLAC::Picture::typeToString(TagLib::FLAC::Picture::FrontCover)) return data;
+    }
+    return fallback;
+}
+
 static TagLib::ByteVector extractArtworkBytes(const char *filePath) {
     std::string ext = getExtension(filePath);
 
@@ -1978,7 +2244,9 @@ static TagLib::ByteVector extractArtworkBytes(const char *filePath) {
     if (ext == "wav") {
         TagLib::RIFF::WAV::File file(filePath, false);
         if (!file.isValid()) return TagLib::ByteVector();
-        return readAttachedPicture(file.ID3v2Tag());
+        const auto tagLibPicture = readAttachedPicture(file.ID3v2Tag());
+        if (!tagLibPicture.isEmpty()) return tagLibPicture;
+        return extractWavRiffId3Artwork(filePath);
     }
 
     if (ext == "m4a" || ext == "m4b" || ext == "m4p" || ext == "mp4") {
@@ -2024,7 +2292,13 @@ static TagLib::ByteVector extractArtworkBytes(const char *filePath) {
         return readAttachedPicture(file.ID3v2Tag(false));
     }
 
-    // Other formats remain on FFmpeg/MMR fallback until their native picture APIs are verified.
+    if (ext == "aiff" || ext == "aif") return readComplexFrontCover<TagLib::RIFF::AIFF::File>(filePath);
+    if (ext == "wv") return readComplexFrontCover<TagLib::WavPack::File>(filePath);
+    if (ext == "tta") return readComplexFrontCover<TagLib::TrueAudio::File>(filePath);
+    if (ext == "oga") return readComplexFrontCover<TagLib::Ogg::FLAC::File>(filePath);
+    if (ext == "ogg") return readComplexFrontCover<TagLib::Ogg::Vorbis::File>(filePath);
+    if (ext == "opus") return readComplexFrontCover<TagLib::Ogg::Opus::File>(filePath);
+    if (ext == "wma" || ext == "asf") return readComplexFrontCover<TagLib::ASF::File>(filePath);
     return TagLib::ByteVector();
 }
 

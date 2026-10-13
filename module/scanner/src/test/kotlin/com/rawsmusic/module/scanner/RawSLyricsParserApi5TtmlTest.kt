@@ -8,6 +8,44 @@ import org.junit.Test
 
 class RawSLyricsParserApi5TtmlTest {
     @Test
+    fun singleSpanCoveringWholeLineDoesNotInventWordTiming() {
+        val data = RawSLyricsParser.parse(
+            """
+                <tt xmlns="http://www.w3.org/ns/ttml"><body><div>
+                  <p begin="00:20.149" end="00:21.370">
+                    <span begin="00:20.149" end="00:21.370">视线所及如同</span>
+                  </p>
+                  <p begin="00:21.380" end="00:23.194">
+                    <span begin="00:21.380" end="00:23.194">荒诞的谎言</span>
+                  </p>
+                </div></body></tt>
+            """.trimIndent()
+        )
+
+        assertEquals(listOf("视线所及如同", "荒诞的谎言"), data.lines.map { it.text })
+        assertEquals(listOf(20_149L, 21_380L), data.lines.map { it.timeStamp })
+        assertTrue(data.lines.all { it.words.isEmpty() && !it.hasWordTiming })
+    }
+
+    @Test
+    fun independentlyTimedSpansStillProvideWordTiming() {
+        val data = RawSLyricsParser.parse(
+            """
+                <tt xmlns="http://www.w3.org/ns/ttml"><body><div>
+                  <p begin="00:20.000" end="00:22.000">
+                    <span begin="00:20.000" end="00:21.000">逐</span>
+                    <span begin="00:21.000" end="00:22.000">字</span>
+                  </p>
+                </div></body></tt>
+            """.trimIndent()
+        )
+
+        assertEquals("逐字", data.lines.single().text)
+        assertEquals(listOf("逐", "字"), data.lines.single().words.map { it.text })
+        assertTrue(data.lines.single().hasWordTiming)
+    }
+
+    @Test
     fun rawTtmlPreservesApi5RubyMetadataLanguagesAndExtensions() {
         val ttml = """
             <?xml version="1.0" encoding="UTF-8"?>

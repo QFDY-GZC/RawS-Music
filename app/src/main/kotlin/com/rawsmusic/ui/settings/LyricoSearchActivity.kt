@@ -19,6 +19,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -60,6 +62,7 @@ import com.rawsmusic.core.common.model.LyricData
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.bitmaps.BitmapRequest
+import com.rawsmusic.locale.localizedErrorMessage
 import com.rawsmusic.lyrico.LyricoAudioWriteAccess
 import com.rawsmusic.lyrico.LyricoPluginStore
 import com.rawsmusic.lyrico.LyricoCoverCandidate
@@ -261,7 +264,7 @@ private fun LyricoSearchScreen(
                 Log.e("LyricoSearch", "Lyric search failed", error)
                 status = context.getString(
                     R.string.lyrico_search_failed,
-                    error.message.orEmpty().ifBlank { error.javaClass.simpleName }
+                    context.localizedErrorMessage(error, R.string.ui_unknown_error),
                 )
             } finally {
                 searching = false
@@ -297,7 +300,7 @@ private fun LyricoSearchScreen(
             Log.e("LyricoSearch", "Unable to enumerate lyric sources", error)
             status = context.getString(
                 R.string.lyrico_search_failed,
-                error.message.orEmpty().ifBlank { error.javaClass.simpleName }
+                context.localizedErrorMessage(error, R.string.ui_unknown_error),
             )
         }
     }
@@ -430,7 +433,7 @@ private fun LyricoSearchScreen(
                     }.onFailure { error ->
                         failures += context.getString(
                             R.string.lyrico_search_lyrics_failed,
-                            error.message.orEmpty()
+                            context.localizedErrorMessage(error, R.string.ui_unknown_error),
                         )
                     }
                 }
@@ -450,7 +453,7 @@ private fun LyricoSearchScreen(
                         }.onFailure { error ->
                             failures += context.getString(
                                 R.string.lyrico_search_cover_failed,
-                                error.message.orEmpty()
+                                context.localizedErrorMessage(error, R.string.ui_unknown_error),
                             )
                         }
                     }
@@ -520,6 +523,7 @@ private fun LyricData.hasWordTiming(): Boolean = lines.any { line ->
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun LyricoApplyPreviewDialog(
     candidate: LyricoSongCandidate,
     lyrics: LyricData?,
@@ -599,114 +603,121 @@ private fun LyricoApplyPreviewDialog(
                         modifier = Modifier.padding(top = 4.dp, bottom = 14.dp)
                     )
 
-                    if (covers.isNotEmpty()) {
+                    // Measure the actions first; only this body may consume the remaining height.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        if (covers.isNotEmpty()) {
+                            Text(
+                                text = stringResource(R.string.lyrico_preview_cover),
+                                color = MiuixTheme.colorScheme.onBackground,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.sp
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(top = 8.dp, bottom = 10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                covers.forEach { cover ->
+                                    LyricoCoverPreview(
+                                        cover = cover,
+                                        selected = selectedCoverUrl == cover.url,
+                                        onClick = { onCoverSelected(cover.url) }
+                                    )
+                                }
+                            }
+                            LyricoTogglePill(
+                                text = stringResource(R.string.lyrico_preview_write_cover),
+                                selected = applyCover,
+                                enabled = selectedCoverUrl != null,
+                                onClick = { onApplyCoverChange(!applyCover) }
+                            )
+                            Spacer(Modifier.height(12.dp))
+                        }
+
                         Text(
-                            text = stringResource(R.string.lyrico_preview_cover),
+                            text = stringResource(R.string.lyrico_preview_lyric_type),
                             color = MiuixTheme.colorScheme.onBackground,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 15.sp
                         )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState())
-                                .padding(top = 8.dp, bottom = 10.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        LyricoTogglePill(
+                            text = stringResource(R.string.lyrico_preview_write_lyrics),
+                            selected = applyLyrics,
+                            enabled = lyrics != null && !lyrics.isEmpty,
+                            onClick = { onApplyLyricsChange(!applyLyrics) }
+                        )
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(7.dp)
                         ) {
-                            covers.forEach { cover ->
-                                LyricoCoverPreview(
-                                    cover = cover,
-                                    selected = selectedCoverUrl == cover.url,
-                                    onClick = { onCoverSelected(cover.url) }
+                            LyricoTogglePill(
+                                text = stringResource(R.string.lyrico_preview_word_by_word),
+                                selected = timing == LyricoLyricTiming.WORD_BY_WORD,
+                                enabled = applyLyrics && hasWordTiming,
+                                onClick = { onTimingChange(LyricoLyricTiming.WORD_BY_WORD) }
+                            )
+                            LyricoTogglePill(
+                                text = stringResource(R.string.lyrico_preview_line_by_line),
+                                selected = timing == LyricoLyricTiming.LINE_BY_LINE,
+                                enabled = applyLyrics && lyrics != null,
+                                onClick = { onTimingChange(LyricoLyricTiming.LINE_BY_LINE) }
+                            )
+                            if (hasTranslation) {
+                                LyricoTogglePill(
+                                    text = stringResource(R.string.lyrico_preview_translation),
+                                    selected = includeTranslation,
+                                    enabled = applyLyrics,
+                                    onClick = { onTranslationChange(!includeTranslation) }
+                                )
+                            }
+                            if (hasRomanization) {
+                                LyricoTogglePill(
+                                    text = stringResource(R.string.lyrico_preview_romanization),
+                                    selected = includeRomanization,
+                                    enabled = applyLyrics,
+                                    onClick = { onRomanizationChange(!includeRomanization) }
                                 )
                             }
                         }
-                        LyricoTogglePill(
-                            text = stringResource(R.string.lyrico_preview_write_cover),
-                            selected = applyCover,
-                            enabled = selectedCoverUrl != null,
-                            onClick = { onApplyCoverChange(!applyCover) }
-                        )
-                        Spacer(Modifier.height(12.dp))
-                    }
 
-                    Text(
-                        text = stringResource(R.string.lyrico_preview_lyric_type),
-                        color = MiuixTheme.colorScheme.onBackground,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp
-                    )
-                    LyricoTogglePill(
-                        text = stringResource(R.string.lyrico_preview_write_lyrics),
-                        selected = applyLyrics,
-                        enabled = lyrics != null && !lyrics.isEmpty,
-                        onClick = { onApplyLyricsChange(!applyLyrics) }
-                    )
-                    Row(
-                        modifier = Modifier.padding(top = 8.dp, bottom = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(7.dp)
-                    ) {
-                        LyricoTogglePill(
-                            text = stringResource(R.string.lyrico_preview_word_by_word),
-                            selected = timing == LyricoLyricTiming.WORD_BY_WORD,
-                            enabled = applyLyrics && hasWordTiming,
-                            onClick = { onTimingChange(LyricoLyricTiming.WORD_BY_WORD) }
-                        )
-                        LyricoTogglePill(
-                            text = stringResource(R.string.lyrico_preview_line_by_line),
-                            selected = timing == LyricoLyricTiming.LINE_BY_LINE,
-                            enabled = applyLyrics && lyrics != null,
-                            onClick = { onTimingChange(LyricoLyricTiming.LINE_BY_LINE) }
-                        )
-                        if (hasTranslation) {
-                            LyricoTogglePill(
-                                text = stringResource(R.string.lyrico_preview_translation),
-                                selected = includeTranslation,
-                                enabled = applyLyrics,
-                                onClick = { onTranslationChange(!includeTranslation) }
-                            )
-                        }
-                        if (hasRomanization) {
-                            LyricoTogglePill(
-                                text = stringResource(R.string.lyrico_preview_romanization),
-                                selected = includeRomanization,
-                                enabled = applyLyrics,
-                                onClick = { onRomanizationChange(!includeRomanization) }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(230.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(MiuixTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f))
+                                .padding(14.dp)
+                        ) {
+                            Text(
+                                text = when {
+                                    loading -> stringResource(R.string.lyrico_preview_loading)
+                                    lyrics != null -> previewText.ifBlank { stringResource(R.string.lyrico_search_empty) }
+                                    else -> error.orEmpty().ifBlank { stringResource(R.string.lyrico_search_empty) }
+                                },
+                                color = if (lyrics == null && !loading) {
+                                    MiuixTheme.colorScheme.error
+                                } else {
+                                    MiuixTheme.colorScheme.onBackground
+                                },
+                                fontSize = 14.sp,
+                                lineHeight = 21.sp,
+                                modifier = Modifier.verticalScroll(rememberScrollState())
                             )
                         }
                     }
 
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(230.dp)
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(MiuixTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f))
-                            .padding(14.dp)
-                    ) {
-                        Text(
-                            text = when {
-                                loading -> stringResource(R.string.lyrico_preview_loading)
-                                lyrics != null -> previewText.ifBlank { stringResource(R.string.lyrico_search_empty) }
-                                else -> error.orEmpty().ifBlank { stringResource(R.string.lyrico_search_empty) }
-                            },
-                            color = if (lyrics == null && !loading) {
-                                MiuixTheme.colorScheme.error
-                            } else {
-                                MiuixTheme.colorScheme.onBackground
-                            },
-                            fontSize = 14.sp,
-                            lineHeight = 21.sp,
-                            modifier = Modifier.verticalScroll(rememberScrollState())
-                        )
-                    }
-
-                    Row(
+                    FlowRow(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(top = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End)
                     ) {
                         val canApplyLyrics = applyLyrics && lyrics != null && !lyrics.isEmpty
                         val canApplyCover = applyCover && selectedCoverUrl != null
@@ -716,20 +727,17 @@ private fun LyricoApplyPreviewDialog(
                         ) {
                             Text(stringResource(R.string.lyrico_preview_cover_only))
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(onClick = onDismiss, enabled = !applying) {
-                                Text(stringResource(R.string.lyrico_preview_cancel))
-                            }
-                            Spacer(Modifier.width(6.dp))
-                            TextButton(
-                                onClick = onApply,
-                                enabled = (canApplyLyrics || canApplyCover) && !loading && !applying
-                            ) {
-                                Text(
-                                    if (applying) stringResource(R.string.lyrico_search_applying)
-                                    else stringResource(R.string.lyrico_preview_apply)
-                                )
-                            }
+                        TextButton(onClick = onDismiss, enabled = !applying) {
+                            Text(stringResource(R.string.lyrico_preview_cancel))
+                        }
+                        TextButton(
+                            onClick = onApply,
+                            enabled = (canApplyLyrics || canApplyCover) && !loading && !applying
+                        ) {
+                            Text(
+                                if (applying) stringResource(R.string.lyrico_search_applying)
+                                else stringResource(R.string.lyrico_preview_apply)
+                            )
                         }
                     }
                 }

@@ -72,10 +72,9 @@ class SizeSlotCache(
     }
 
     private val lock = Any()
-    // baseline implementation keeps separate low/high insertion-order wrapper chains. The exact-key map stays
-    // insertion-ordered as a compact backing store; trim filters that order per lane. A cache hit
-    // increments only the wrapper refCount and never promotes the entry to MRU.
+    // Exact lookup and lane eviction are separate indexes. Hits do not promote wrappers to MRU.
     private val map = object : LinkedHashMap<String, Entry>(32, 0.75f, false) {}
+    private val evictionIndex = ProviderLaneEvictionIndex<Entry>()
     /** baseline implementation type+long identity aliases -> one P-equivalent source record. */
     private val sourceRecords = HashMap<String, ProviderSourceRecordSlots<Entry>>()
     /** baseline implementation decoder source-string map -> one P-equivalent source record. */
@@ -294,6 +293,7 @@ class SizeSlotCache(
 
     fun clear() = synchronized(lock) {
         map.clear()
+        evictionIndex.clear()
         sourceRecords.clear()
         sourceStringRecords.clear()
         currentBytes = 0
@@ -531,21 +531,14 @@ class SizeSlotCache(
     }
 
     private fun evictOldestInLaneLocked(lane: SourceLane): Boolean {
-        val iter = map.entries.iterator()
-        while (iter.hasNext()) {
-            val entry = iter.next().value
-            if (entry.lane != lane || !entry.evictable()) continue
-            currentBytes -= entry.byteCount
-            detachFromSourceRecordLocked(entry)
-            entry.authoritative = false
-            iter.remove()
-            return true
-        }
-        return false
+        val entry = evictionIndex.removeOldest(lane == SourceLane.HIGH) { it.evictable() } ?: return false
+        removeLocked(entry.key)
+        return true
     }
 
     private fun removeLocked(key: String) {
         val removed = map.remove(key) ?: return
+        evictionIndex.remove(key, removed.lane == SourceLane.HIGH)
         detachFromSourceRecordLocked(removed)
         removed.authoritative = false
         currentBytes -= removed.byteCount
@@ -568,6 +561,7 @@ class SizeSlotCache(
             lane = laneForBucket(bucket),
         )
         map[key] = entry
+        evictionIndex.put(key, entry, entry.lane == SourceLane.HIGH)
         currentBytes += byteCount
         return entry
     }

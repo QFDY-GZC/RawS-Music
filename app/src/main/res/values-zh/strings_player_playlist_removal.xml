@@ -1,0 +1,7 @@
+<resources>
+    <string name="ui_playlist_remove_title">从歌单移出歌曲</string>
+    <string name="ui_playlist_remove_selected_summary">选择需要移出的歌单 · 已选 %1$d 个</string>
+    <string name="ui_playlist_remove_selected">移出（%1$d）</string>
+    <string name="ui_playlist_remove_success">已从 %1$d 个歌单移出当前歌曲</string>
+    <string name="ui_playlist_remove_failed">部分移出操作未成功，请检查所选歌单后重试</string>
+</resources>

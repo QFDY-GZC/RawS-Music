@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_player_more_favorite_visible">その他メニューにお気に入りを表示</string>
+    <string name="settings_player_more_favorite_visible_summary">プレーヤーのその他メニューでタイトルの横にボタンを表示し、現在の曲をプレイリストに追加します。</string>
+</resources>

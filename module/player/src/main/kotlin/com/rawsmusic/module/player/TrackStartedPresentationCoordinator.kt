@@ -31,6 +31,8 @@ internal class TrackStartedPresentationCoordinator(private val tag: String) : Au
         val nativeArmed: Boolean,
         val fallbackPositionFrames: Long = 0L,
         val started: Boolean = false,
+        val published: Boolean = false,
+        val sourceStartMs: Long = 0L,
     )
 
     private val nativeTimeline = NativeTrackRenderTimeline.createOrNull(tag)
@@ -60,6 +62,7 @@ internal class TrackStartedPresentationCoordinator(private val tag: String) : Au
         generation: Int,
         sampleRate: Int,
         durationMs: Long,
+        sourceStartMs: Long = 0L,
     ): Boolean {
         if (path.isBlank() || decoderSerial <= 0L || generation < 0 || sampleRate <= 0) return false
         val nativeArmed = nativeTimeline?.armPending(decoderSerial, generation, sampleRate) ?: false
@@ -70,6 +73,7 @@ internal class TrackStartedPresentationCoordinator(private val tag: String) : Au
             sampleRate = sampleRate,
             durationMs = durationMs.coerceAtLeast(0L),
             nativeArmed = nativeArmed,
+            sourceStartMs = sourceStartMs.coerceAtLeast(0L),
         )
         AppLogger.d(
             tag,
@@ -84,6 +88,7 @@ internal class TrackStartedPresentationCoordinator(private val tag: String) : Au
         decoderSerial: Long,
         generation: Int,
         renderedFrames: Long,
+        allowPresentation: Boolean = true,
     ): Presentation? {
         if (renderedFrames <= 0L) return activePresentation
         val state = pending ?: return activePresentation
@@ -105,8 +110,9 @@ internal class TrackStartedPresentationCoordinator(private val tag: String) : Au
             return activePresentation
         }
         val positionFrames = nativeUpdate?.positionFrames?.takeIf { it > 0L } ?: fallbackFrames
-        val startedNow = !state.started && (nativeStarted || !state.nativeArmed)
-        val positionMs = positionFrames * 1000L / state.sampleRate.toLong()
+        val visible = allowPresentation || state.published
+        val startedNow = visible && !state.published
+        val positionMs = state.sourceStartMs + positionFrames * 1000L / state.sampleRate.toLong()
         val presentation = Presentation(
             path = state.path,
             decoderSerial = state.decoderSerial,
@@ -116,7 +122,8 @@ internal class TrackStartedPresentationCoordinator(private val tag: String) : Au
             positionMs = if (state.durationMs > 0L) positionMs.coerceAtMost(state.durationMs) else positionMs,
             startedNow = startedNow,
         )
-        pending = state.copy(fallbackPositionFrames = positionFrames, started = true)
+        pending = state.copy(fallbackPositionFrames = positionFrames, started = true, published = visible)
+        if (!visible) return null
         activePresentation = presentation
         return presentation
     }

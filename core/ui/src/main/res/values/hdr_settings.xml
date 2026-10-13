@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_hdr_headroom_title">HDR 高光余量</string>
+    <string name="settings_hdr_expected">期望倍率</string>
+    <string name="settings_hdr_actual">实际倍率（当前屏幕）</string>
+    <string name="settings_hdr_automatic">系统自动</string>
+    <string name="settings_hdr_ratio_unavailable">系统未提供，无法读取</string>
+    <string name="settings_hdr_current_window">当前设置窗口</string>
+    <string name="settings_hdr_window_active">HDR 模式</string>
+    <string name="settings_hdr_window_normal">普通模式（未启用或未勾选设置界面）</string>
+    <string name="settings_hdr_headroom_help">自定义范围为 1.0–8.0×，松手后应用到已勾选的 HDR 界面。1.0× 表示不使用额外的 HDR 高光余量，不会关闭 HDR 窗口。倍率不是整屏亮度倍数，也不是图片已使用的高光强度；实际倍率由系统和屏幕决定，可能低于期望值。这里显示的是当前屏幕返回的倍率，不代表其他界面的状态。</string>
+    <string name="settings_hdr_headroom_old_api">Android 14 可读取系统提供的实际倍率，但不能手动调节窗口高光余量；Android 15 及以上支持调节。当前设备使用系统自动值。</string>
+    <string name="settings_hdr_title">HDR 显示</string>
+    <string name="settings_hdr_summary">按界面保持 HDR 窗口模式</string>
+    <string name="settings_hdr_master">启用 HDR 窗口</string>
+    <string name="settings_hdr_scenes">使用 HDR 的界面</string>
+    <string name="settings_hdr_home">主界面</string>
+    <string name="settings_hdr_library">曲库、分类与详情界面</string>
+    <string name="settings_hdr_player">播放界面（含沉浸与横屏）</string>
+    <string name="settings_hdr_lyrics">歌词界面</string>
+    <string name="settings_hdr_settings">设置界面及其子页面</string>
+    <string name="settings_hdr_supported">当前屏幕支持 HDR，系统 API %1$d</string>
+    <string name="settings_hdr_unsupported">当前屏幕或系统不支持此 HDR 窗口功能，需要 Android 14 及以上和 HDR 屏幕。已保存的选择会保留。</string>
+    <string name="settings_hdr_impacts_title">开启后的影响</string>
+    <string name="settings_hdr_impacts">勾选的界面在前台时保持 HDR 窗口模式，即使当前封面是普通图片。可能增加耗电、发热，部分设备可能出现亮度或色彩变化；实际效果受系统、屏幕和省电设置影响。普通内容不会自动变成 HDR，原生 HDR 封面才具备额外的高光信息。转场期间保持请求，离开勾选界面或进入后台后恢复原窗口模式。不支持时自动使用普通显示。</string>
+    <string name="settings_hdr_enabled_notice">HDR 已开启：可能增加耗电与发热，普通内容不会自动变成 HDR。</string>
+</resources>

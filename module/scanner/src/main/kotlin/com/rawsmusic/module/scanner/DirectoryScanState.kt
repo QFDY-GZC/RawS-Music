@@ -17,6 +17,7 @@ internal object DirectoryScanState {
     fun safKey(uri: String): String = "saf:" + uri.trim()
 
     fun index(): Index = Index(load())
+    fun index(snapshots: Map<String, Long>): Index = Index(snapshots)
 
     class Index internal constructor(private val snapshots: Map<String, Long>) {
         fun canSkip(key: String, modifiedAt: Long, hasBaseline: Boolean): Boolean {

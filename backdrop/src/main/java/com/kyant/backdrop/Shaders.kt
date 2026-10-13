@@ -39,7 +39,9 @@ float sdRoundedRect(float2 coord, float2 halfSize, float radius) {
 
 float2 gradSdRoundedRect(float2 coord, float2 halfSize, float radius) {
     float2 cornerCoord = abs(coord) - (halfSize - float2(radius));
-    if (cornerCoord.x >= 0.0 || cornerCoord.y >= 0.0) {
+    // On the inner straight edges both clamped components can be zero.
+    // Use the inside normal there instead of normalizing a zero vector.
+    if (cornerCoord.x > 0.0 || cornerCoord.y > 0.0) {
         return sign(coord) * normalize(max(cornerCoord, 0.0));
     } else {
         float gradX = step(cornerCoord.y, cornerCoord.x);

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="lyric_font_size_small">小</string>
+    <string name="lyric_font_size_standard">标准</string>
+    <string name="lyric_font_size_large">大</string>
+    <string name="lyric_font_size_extra_large">特大</string>
+    <string name="lyric_font_size_huge">超大</string>
+    <string name="library_unknown_genre">未知流派</string>
+    <string name="library_unknown_year">未知年份</string>
+    <string name="library_unknown_composer">未知作曲家</string>
+    <string name="common_cancel_selection">取消选择</string>
+    <string name="artist_biography_language_zh_cn">简体中文</string>
+    <string name="artist_biography_language_en">英语</string>
+    <string name="artist_biography_language_ja">日语</string>
+    <string name="artist_biography_language_ko">韩语</string>
+    <string name="artist_biography_language_zh_tw">繁体中文（台湾）</string>
+    <string name="artist_biography_language_zh_hk">繁体中文（香港）</string>
+    <string name="artist_biography_source_netease_short">网易云</string>
+    <string name="artist_biography_source_netease">网易云音乐</string>
+</resources>

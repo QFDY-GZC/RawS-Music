@@ -3,6 +3,12 @@ package com.rawsmusic.module.player.dsp
 import android.util.Log
 
 class NativeDSPEngine {
+    fun setReverbEnabled(enabled: Boolean) { if(nativeHandle!=0L) nativeSetReverbEnabled(nativeHandle,enabled) }
+    fun setReverbParams(params: ReverbSettings) { if(nativeHandle!=0L) nativeSetReverbParams(nativeHandle,params.sanitized().nativeValues()) }
+    fun resetReverb() { if(nativeHandle!=0L) nativeResetReverb(nativeHandle) }
+    private external fun nativeSetReverbEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetReverbParams(handle: Long, params: FloatArray)
+    private external fun nativeResetReverb(handle: Long)
     private var nativeHandle: Long = 0
     var sampleRate: Int = 44100
         private set

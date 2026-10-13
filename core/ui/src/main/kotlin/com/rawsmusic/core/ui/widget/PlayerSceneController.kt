@@ -3,6 +3,7 @@ package com.rawsmusic.core.ui.widget
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.util.Log
+import android.view.Choreographer
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.Interpolator
 import androidx.compose.runtime.getValue
@@ -52,6 +53,29 @@ class PlayerSceneController {
     var composeTransitionProgress by mutableFloatStateOf(0f)
         private set
 
+    /**
+     * Stable progress owner for render-time consumers.
+     *
+     * Immersive/player scene motion must not carry the animated Float through MainActivity and the
+     * complete Compose player tree on every frame. Consumers that only need transform/alpha should
+     * retain this State object and read it from graphicsLayer/draw instead.
+     */
+    val sceneTransitionProgressState: State<Float> = derivedStateOf {
+        when {
+            composeIsTransitioning -> composeTransitionProgress.coerceIn(0f, 1f)
+            // Keep the visual endpoint latched until the Compose tree observes the committed
+            // scene. onAnimationEnd clears composeTransitionProgress back to 0 in the same UI
+            // turn that it commits currentScene/composeCurrentScene. A graphicsLayer can be
+            // invalidated by that raw progress write before composition has replaced its old
+            // `isTransitioning=true, from -> to` closure; exposing 0 for that one RenderNode frame
+            // makes the immersive pager jump back to the previous scene and produces a visible
+            // flash. The next transition explicitly seeds its own start progress, so retaining the
+            // completed endpoint here has no effect on later gestures/settles.
+            composeFromScene != composeToScene && composeCurrentScene == composeToScene -> 1f
+            else -> 0f
+        }
+    }
+
     /** Outer immersive dismiss progress used only to reveal retained MAIN underneath PLAYER. */
     private var externalMainDismissProgress by mutableFloatStateOf(0f)
 
@@ -97,6 +121,7 @@ class PlayerSceneController {
     var onSceneChanged: ((newScene: Scene, oldScene: Scene) -> Unit)? = null
     var onTransitionProgress: ((Scene, Float) -> Unit)? = null
     var onPreparePlayerToMain: ((onReady: () -> Unit) -> Unit)? = null
+    var onPrepareInteractivePlayerToMain: (() -> Unit)? = null
     var onPreparePlayerToLyric: (() -> Unit)? = null
     var onPreparePlayerToQueue: (() -> Unit)? = null
     var onPreparePlayerToAlbumDetail: (() -> Unit)? = null
@@ -113,6 +138,9 @@ class PlayerSceneController {
     private var toScene = Scene.MAIN
     private var sceneAnimator: ValueAnimator? = null
     private var sceneAnimGeneration = 0
+    private val entryPreparation = PlayerEntryPreparation()
+    var standardPlayerLayoutRequestId by mutableStateOf<Int?>(null)
+        private set
     private var playerReturnPreparationToken = 0
     private var playerReturnPreparationActive = false
     private var mainPlayerSheetDragActive = false
@@ -131,6 +159,8 @@ class PlayerSceneController {
         isMiniCoverEnabled = enabled
     }
 
+    var standaloneLyricsEnabled: Boolean = true
+
     fun updateImmersiveSettings(isImmersive: Boolean, isDark: Boolean) {
         isImmersiveEnabled = isImmersive
     }
@@ -140,6 +170,7 @@ class PlayerSceneController {
     }
 
     fun transitionToScene(targetScene: Scene, duration: Long = SCENE_ANIM_DURATION) {
+        if (!standaloneLyricsEnabled && targetScene == Scene.LYRIC) return
         if (isTransitioning || composeIsTransitioning) return
         if (currentScene == targetScene) return
         val oldScene = currentScene
@@ -154,6 +185,9 @@ class PlayerSceneController {
     }
 
     fun switchToSceneSilent(targetScene: Scene) {
+        if (!standaloneLyricsEnabled && targetScene == Scene.LYRIC) return
+        entryPreparation.cancel()
+        standardPlayerLayoutRequestId = null
         playerReturnPreparationToken++
         playerReturnPreparationActive = false
         sceneAnimator?.cancel()
@@ -256,6 +290,7 @@ class PlayerSceneController {
     }
 
     fun startCoverSwipeUpDrag(from: Scene = Scene.PLAYER, to: Scene = Scene.LYRIC) {
+        if (!standaloneLyricsEnabled && to == Scene.LYRIC && from != Scene.MAIN) return
         if (isMainPlayerVisualTransition()) {
             beginMainPlayerSheetDrag()
             return
@@ -279,6 +314,7 @@ class PlayerSceneController {
     }
 
     fun updateCoverSwipeUpDrag(ratio: Float) {
+        if (!standaloneLyricsEnabled && !mainPlayerSheetDragActive) return
         if (mainPlayerSheetDragActive) {
             updateMainPlayerSheetExpansion(mainPlayerSheetDragStartExpansion + ratio)
             return
@@ -287,6 +323,7 @@ class PlayerSceneController {
     }
 
     fun endCoverSwipeUpDrag(shouldOpen: Boolean, duration: Long = SCENE_ANIM_DURATION, velocity: Float = 0f) {
+        if (!standaloneLyricsEnabled && !mainPlayerSheetDragActive) return
         if (mainPlayerSheetDragActive) {
             settleMainPlayerSheet(expanded = shouldOpen, velocity = velocity)
             return
@@ -330,6 +367,7 @@ class PlayerSceneController {
         when (currentScene) {
             Scene.PLAYER -> {
                 if (directionLeft) {
+                    if (!standaloneLyricsEnabled) return
                     onPreparePlayerToLyric?.invoke()
                     startInteractiveDrag(Scene.PLAYER, Scene.LYRIC)
                 } else {
@@ -453,11 +491,89 @@ class PlayerSceneController {
         if (currentScene != Scene.MAIN) return
         onPrepareMainToPlayer?.invoke()
         if (animated) {
-            transitionToScene(Scene.PLAYER, duration = PLAYER_SCENE_ANIM_DURATION)
+            prepareProgrammaticMainToPlayer()
         } else {
             switchToSceneSilent(Scene.PLAYER)
         }
     }
+
+    /**
+     * Mount and measure the heavy PLAYER surface before the first moving frame.
+     *
+     * The old programmatic path changed composeToScene=PLAYER and started ValueAnimator in the same
+     * frame. After the one-shot offstage prewarm had been consumed, that made the first animation
+     * deadline also pay for rebuilding PlayerMainPage/backdrop/artwork. Standard mode keeps the
+     * pair at progress=0 until its placed content acknowledges readiness; immersive mode retains
+     * its existing frame-based preparation. Both start the existing sheet animator unchanged.
+     * Interactive MAIN -> PLAYER drags deliberately bypass this delay because the finger already
+     * owns direct manipulation.
+     */
+    private fun prepareProgrammaticMainToPlayer() {
+        if (isTransitioning || composeIsTransitioning || currentScene != Scene.MAIN) return
+        sceneAnimator?.cancel()
+        playerLyricsTransitionCoordinator.finish()
+        fromScene = Scene.MAIN
+        toScene = Scene.PLAYER
+        composeFromScene = Scene.MAIN
+        composeToScene = Scene.PLAYER
+        transitionRatio = 0f
+        composeTransitionProgress = 0f
+        isTransitioning = true
+        composeIsTransitioning = true
+        composeIsInteractiveGesture = false
+        mainPlayerSheetDragActive = false
+        mainPlayerSheetDragStartExpansion = 0f
+        mainPlayerSheetCommittedScene = Scene.MAIN
+
+        val prepareGeneration = ++sceneAnimGeneration
+        if (!isImmersiveEnabled) {
+            entryPreparation.begin(prepareGeneration)
+            standardPlayerLayoutRequestId = prepareGeneration
+            return
+        }
+        val choreographer = Choreographer.getInstance()
+        choreographer.postFrameCallback {
+            if (!canFinishMainToPlayerPreflight(prepareGeneration)) return@postFrameCallback
+            // The first callback makes the progress=0 tree eligible for this frame. Wait for the
+            // next vsync so Compose measure/layout/draw has actually completed before motion starts.
+            choreographer.postFrameCallback {
+                if (!canFinishMainToPlayerPreflight(prepareGeneration)) return@postFrameCallback
+                settleScene(
+                    oldScene = Scene.MAIN,
+                    targetScene = Scene.PLAYER,
+                    duration = PLAYER_SCENE_ANIM_DURATION,
+                    startRatio = 0f,
+                    endRatio = 1f,
+                    visualToScene = Scene.PLAYER,
+                )
+            }
+        }
+    }
+
+    /** Called after the standard content has been placed and its preparation frame has finished. */
+    fun onStandardPlayerLayoutReady(generation: Int) {
+        if (!canFinishMainToPlayerPreflight(generation)) return
+        entryPreparation.onLayout(generation)
+        if (!entryPreparation.consumeReady(generation)) return
+        standardPlayerLayoutRequestId = null
+        settleScene(
+            oldScene = Scene.MAIN,
+            targetScene = Scene.PLAYER,
+            duration = PLAYER_SCENE_ANIM_DURATION,
+            startRatio = 0f,
+            endRatio = 1f,
+            visualToScene = Scene.PLAYER,
+        )
+    }
+
+    private fun canFinishMainToPlayerPreflight(generation: Int): Boolean =
+        sceneAnimGeneration == generation &&
+            currentScene == Scene.MAIN &&
+            composeIsTransitioning &&
+            composeFromScene == Scene.MAIN &&
+            composeToScene == Scene.PLAYER &&
+            composeTransitionProgress == 0f &&
+            !composeIsInteractiveGesture
 
     /**
      * Starts the main-to-player bottom-sheet gesture.
@@ -479,6 +595,7 @@ class PlayerSceneController {
 
     fun startMainPlayerPredictiveBack(): Boolean {
         if (!hasMainPlayerSheetBackTarget()) return false
+        onPrepareInteractivePlayerToMain?.invoke()
         beginMainPlayerSheetDrag()
         return true
     }
@@ -672,6 +789,7 @@ class PlayerSceneController {
     }
 
     fun openLyricPage(animated: Boolean = true) {
+        if (!standaloneLyricsEnabled) return
         if (currentScene != Scene.PLAYER) return
         onPreparePlayerToLyric?.invoke()
         if (animated) transitionToScene(Scene.LYRIC) else switchToSceneSilent(Scene.LYRIC)
@@ -712,6 +830,7 @@ class PlayerSceneController {
     fun cancelAllStateAnims() = Unit
 
     private fun startInteractiveDrag(from: Scene, to: Scene) {
+        if (!standaloneLyricsEnabled && to == Scene.LYRIC) return
         if (isTransitioning || composeIsTransitioning) return
         sceneAnimGeneration++
         sceneAnimator?.cancel()
@@ -751,6 +870,12 @@ class PlayerSceneController {
         visualToScene: Scene = targetScene,
         velocityIsRatioPerSecond: Boolean = false,
     ) {
+        if (!standaloneLyricsEnabled && (targetScene == Scene.LYRIC || visualToScene == Scene.LYRIC)) {
+            resetInteractionState()
+            return
+        }
+        entryPreparation.cancel()
+        standardPlayerLayoutRequestId = null
         sceneAnimator?.cancel()
         fromScene = oldScene
         // Keep the original visual pair while an interactive gesture settles back to its source.

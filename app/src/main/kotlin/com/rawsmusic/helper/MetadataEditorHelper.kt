@@ -63,6 +63,7 @@ import com.rawsmusic.core.common.model.AudioOutputMode
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkKeyContinuity
 import com.rawsmusic.core.ui.widget.bitmaps.fileArtworkKeyOrNull
+import com.rawsmusic.locale.localizedErrorMessage
 import com.rawsmusic.module.data.repository.MusicRepository
 import com.rawsmusic.module.player.AudioOutputManager
 import com.rawsmusic.module.player.PlayerController
@@ -312,7 +313,10 @@ class MetadataEditorHelper(
                 AppLogger.e("EditMetadata", "createWriteRequest failed", e)
                 clearPendingMetadataWrite()
                 AppNoticeBus.error(
-                    activity.getString(R.string.ui_metadata_permission_failed, e.message.orEmpty())
+                    activity.getString(
+                        R.string.ui_metadata_permission_failed,
+                        activity.localizedErrorMessage(e, R.string.ui_unknown_error),
+                    )
                 )
                 isMetadataSaving = false
             }
@@ -407,7 +411,12 @@ class MetadataEditorHelper(
             }
         } catch (e: Exception) {
             AppLogger.e("EditMetadata", "Update failed", e)
-            AppNoticeBus.error(activity.getString(R.string.ui_save_failed, e.message.orEmpty()))
+            AppNoticeBus.error(
+                activity.getString(
+                    R.string.ui_save_failed,
+                    activity.localizedErrorMessage(e, R.string.ui_unknown_error),
+                )
+            )
             isMetadataSaving = false
         }
     }
@@ -445,11 +454,15 @@ class MetadataEditorHelper(
 
                 val originalFile = File(filePath)
                 val parentDir = originalFile.parentFile
-                    ?: throw IllegalStateException("音频文件没有可写父目录")
+                    ?: throw IllegalStateException(
+                        activity.getString(R.string.ui_metadata_no_writable_parent)
+                    )
                 val extension = originalFile.extension.lowercase()
                 val tempFile = File(parentDir, "rawsmeta_tmp${if (extension.isBlank()) "" else ".$extension"}")
                 if (tempFile.exists() && !tempFile.delete()) {
-                    throw IllegalStateException("无法清理旧的元数据临时文件")
+                    throw IllegalStateException(
+                        activity.getString(R.string.ui_metadata_temp_cleanup_failed)
+                    )
                 }
 
                 // TagLib edits a same-filesystem copy and never remuxes the encoded audio frames.
@@ -575,7 +588,12 @@ class MetadataEditorHelper(
             } catch (e: Exception) {
                 AppLogger.e("EditMetadata", "doFfmpegWrite failed", e)
                 withContext(Dispatchers.Main) {
-                    AppNoticeBus.error(activity.getString(R.string.ui_save_failed, e.message.orEmpty()))
+                    AppNoticeBus.error(
+                        activity.getString(
+                            R.string.ui_save_failed,
+                            activity.localizedErrorMessage(e, R.string.ui_unknown_error),
+                        )
+                    )
                     isMetadataSaving = false
                 }
             } finally {

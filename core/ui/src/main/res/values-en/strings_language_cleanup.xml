@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="lyric_font_size_small">Small</string>
+    <string name="lyric_font_size_standard">Standard</string>
+    <string name="lyric_font_size_large">Large</string>
+    <string name="lyric_font_size_extra_large">Extra large</string>
+    <string name="lyric_font_size_huge">Huge</string>
+    <string name="library_unknown_genre">Unknown genre</string>
+    <string name="library_unknown_year">Unknown year</string>
+    <string name="library_unknown_composer">Unknown composer</string>
+    <string name="common_cancel_selection">Cancel selection</string>
+    <string name="artist_biography_language_zh_cn">Simplified Chinese</string>
+    <string name="artist_biography_language_en">English</string>
+    <string name="artist_biography_language_ja">Japanese</string>
+    <string name="artist_biography_language_ko">Korean</string>
+    <string name="artist_biography_language_zh_tw">Traditional Chinese (Taiwan)</string>
+    <string name="artist_biography_language_zh_hk">Traditional Chinese (Hong Kong)</string>
+    <string name="artist_biography_source_netease_short">NetEase Cloud Music</string>
+    <string name="artist_biography_source_netease">NetEase Cloud Music</string>
+</resources>

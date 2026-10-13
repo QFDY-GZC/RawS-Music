@@ -52,7 +52,6 @@ internal class XiaomiSuperIslandLyricBridge(
         const val NOTIFICATION_ID = 0x454c4c53
         private const val DEFAULT_ACCENT = 0xFF3482FF.toInt()
         private const val MIN_RENDER_INTERVAL_MS = 1_500L
-        private const val XMSF_RETRY_INTERVAL_MS = 60_000L
         private const val FOCUS_TIMEOUT_MINUTES = 120
         private const val ISLAND_TIMEOUT_SECONDS = 15
     }
@@ -72,7 +71,19 @@ internal class XiaomiSuperIslandLyricBridge(
     private var networkJob: Job? = null
     private var dispatchGeneration = 0L
     private var xmsfNetworkingBlocked = false
-    private var xmsfRetryAfterElapsed = 0L
+    private var aggressiveNetworkCutActive = false
+
+    init {
+        scope.launch(Dispatchers.IO) {
+            networkMutex.withLock {
+                if (XiaomiXmsfNetworkHelper.isMarkedBlocked(appContext)) {
+                    xmsfNetworkingBlocked = true
+                    AppLogger.i(TAG, "XMSF_RECOVERY restoring previous process network restriction")
+                    restoreXmsfNetworking()
+                }
+            }
+        }
+    }
 
     private data class ArtworkCache(
         val source: Bitmap,
@@ -105,7 +116,6 @@ internal class XiaomiSuperIslandLyricBridge(
         val previousMode = settings.xmsfBypassMode
         settings = sanitized
         lastKey = null
-        if (previousMode != settings.xmsfBypassMode) xmsfRetryAfterElapsed = 0L
         if (
             previousMode == XiaomiSuperIslandSettings.XMSF_MODE_AGGRESSIVE &&
             settings.xmsfBypassMode != XiaomiSuperIslandSettings.XMSF_MODE_AGGRESSIVE
@@ -143,7 +153,9 @@ internal class XiaomiSuperIslandLyricBridge(
             line.timeStamp,
             displayLyric,
             active.encode(),
-            accent
+            accent,
+            song.coverKey,
+            artworkBitmap?.takeUnless { it.isRecycled }?.generationId
         ).joinToString("|")
         if (key == lastKey) return
         lastKey = key
@@ -226,12 +238,8 @@ internal class XiaomiSuperIslandLyricBridge(
         val generation = synchronized(this) { ++dispatchGeneration }
         networkJob?.cancel()
         if (mode == XiaomiSuperIslandSettings.XMSF_MODE_DISABLED) {
+            AppLogger.i(TAG, "XMSF_BYPASS mode=disabled publishing_directly")
             restoreXmsfNetworkingAsync(expectedGeneration = generation)
-            XiaomiSuperIslandLyricService.publish(appContext, notification)
-            return
-        }
-
-        if (SystemClock.elapsedRealtime() < xmsfRetryAfterElapsed) {
             XiaomiSuperIslandLyricService.publish(appContext, notification)
             return
         }
@@ -239,8 +247,12 @@ internal class XiaomiSuperIslandLyricBridge(
         networkJob = scope.launch(Dispatchers.IO) {
             networkMutex.withLock {
                 if (generation != dispatchGeneration || !enabled) return@withLock
-                if (!xmsfNetworkingBlocked) blockXmsfNetworking()
+                if (mode != XiaomiSuperIslandSettings.XMSF_MODE_AGGRESSIVE || !aggressiveNetworkCutActive) {
+                    val applied = blockXmsfNetworking()
+                    aggressiveNetworkCutActive = mode == XiaomiSuperIslandSettings.XMSF_MODE_AGGRESSIVE && applied
+                }
                 if (generation != dispatchGeneration || !enabled) return@withLock
+                AppLogger.i(TAG, "XMSF_BYPASS mode=$mode blocked=$xmsfNetworkingBlocked generation=$generation")
                 XiaomiSuperIslandLyricService.publish(appContext, notification)
                 if (mode == XiaomiSuperIslandSettings.XMSF_MODE_AGGRESSIVE) return@withLock
                 val duration = if (mode == XiaomiSuperIslandSettings.XMSF_MODE_CUSTOM) {
@@ -258,17 +270,15 @@ internal class XiaomiSuperIslandLyricBridge(
         }
     }
 
-    private suspend fun blockXmsfNetworking() {
+    private suspend fun blockXmsfNetworking(): Boolean {
         val blocked = withContext(NonCancellable) {
             XiaomiXmsfNetworkHelper.setNetworkingEnabled(appContext, false)
         }
-        xmsfNetworkingBlocked = blocked
+        xmsfNetworkingBlocked = blocked || XiaomiXmsfNetworkHelper.isMarkedBlocked(appContext)
         if (!blocked) {
-            xmsfRetryAfterElapsed = SystemClock.elapsedRealtime() + XMSF_RETRY_INTERVAL_MS
-            AppLogger.w(TAG, "XMSF bypass unavailable; direct Focus fallback for 60 seconds")
-        } else {
-            xmsfRetryAfterElapsed = 0L
+            AppLogger.w(TAG, "XMSF bypass unavailable; sending Focus directly and retrying next update")
         }
+        return blocked
     }
 
     private fun restoreXmsfNetworkingAsync(expectedGeneration: Long? = null) {
@@ -281,11 +291,14 @@ internal class XiaomiSuperIslandLyricBridge(
     }
 
     private suspend fun restoreXmsfNetworking() {
-        if (!xmsfNetworkingBlocked) return
-        withContext(NonCancellable) {
+        aggressiveNetworkCutActive = false
+        if (!xmsfNetworkingBlocked && !XiaomiXmsfNetworkHelper.isMarkedBlocked(appContext)) return
+        val restored = withContext(NonCancellable) {
             XiaomiXmsfNetworkHelper.setNetworkingEnabled(appContext, true)
         }
-        xmsfNetworkingBlocked = false
+        xmsfNetworkingBlocked = !restored
+        AppLogger.i(TAG, "XMSF_RESTORE success=$restored")
+        if (!restored) AppLogger.w(TAG, "XMSF_RESTORE_FAILED retaining restore state for retry")
     }
 
     private fun buildNotification(request: RenderRequest): Notification {

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_scan_pending_request">扫描正在进行，已记录新的扫描请求</string>
+    <string name="library_scan_stage_start">开始</string>
+    <string name="library_scan_stage_complete">完成</string>
+    <string name="library_scan_stage_error">错误</string>
+    <string name="library_scan_stage_quick_write">快速写入</string>
+    <string name="library_scan_stage_background_enrich">后台补全</string>
+    <string name="library_scan_stage_final_sync">最终同步</string>
+    <string name="library_scan_stage_database_complete">数据库完成</string>
+    <string name="library_scan_stage_visible">可浏览</string>
+    <string name="library_scan_stage_cache">读取缓存</string>
+    <string name="library_scan_stage_quick">快速扫描</string>
+    <string name="library_scan_stage_quick_complete">快速扫描完成</string>
+    <string name="library_scan_stage_enrich">补全信息</string>
+    <string name="library_scan_stage_prepare_sync">准备同步数据库</string>
+    <string name="library_scan_stage_cancelled">已取消</string>
+    <string name="library_scan_preparing">%1$s：准备扫描</string>
+    <string name="library_scan_failed_detail">扫描失败：%1$s</string>
+    <string name="library_scan_sync_started">%1$s：%2$s %3$d 首</string>
+    <string name="library_scan_quick_visible">%1$s：快速结果已显示，新增/变更 %2$d 首</string>
+    <string name="library_scan_enriched_written">%1$s：后台补全已写入 %2$d 首</string>
+    <string name="library_scan_database_synced">%1$s：数据库同步完成，新增 %2$d，更新 %3$d，删除 %4$d，未变 %5$d</string>
+    <string name="library_scan_visible_message">%1$s：%2$d 首已可浏览，后台继续补全音频信息</string>
+    <string name="library_scan_completed_message">%1$s：完成 %2$d 首，用时 %3$d ms</string>
+    <string name="library_scan_reason_failed">%1$s：失败 · %2$s</string>
+    <string name="library_scan_started_message">%1$s：开始扫描 %2$d 个媒体项</string>
+    <string name="library_scan_cache_loaded">%1$s：已加载缓存 %2$d 条</string>
+    <string name="library_scan_quick_progress">%1$s：快速扫描 %2$d/%3$d</string>
+    <string name="library_scan_quick_completed">%1$s：已找到 %2$d 首，正在写入快速结果</string>
+    <string name="library_scan_enrich_progress">%1$s：补全 %2$d/%3$d，缓存 %4$d，新读 %5$d</string>
+    <string name="library_scan_enrich_completed">%1$s：补全完成，%2$d 首，缓存 %3$d，新读 %4$d</string>
+    <string name="library_scan_channel_name">音乐库扫描</string>
+    <string name="library_scan_channel_description">显示 RawSMusic 音乐库扫描进度</string>
+    <string name="library_scan_cancelled">扫描已取消</string>
+    <string name="library_scan_reason_manual">手动扫描</string>
+    <string name="library_scan_reason_auto">媒体库变化</string>
+    <string name="library_scan_unknown_error">未知扫描错误</string>
+</resources>

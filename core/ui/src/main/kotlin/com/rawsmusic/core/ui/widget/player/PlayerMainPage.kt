@@ -1,5 +1,6 @@
 package com.rawsmusic.core.ui.widget.player
 
+import android.graphics.Bitmap
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.CubicBezierEasing
@@ -31,16 +32,19 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
@@ -71,23 +75,29 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.palette.graphics.Palette
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.ui.R
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.rawsmusic.core.ui.scene.LocalAppBackdrop
+import com.rawsmusic.core.ui.scene.LocalRawWindowLayoutProfile
 import com.rawsmusic.core.ui.widget.PlayerLyricsArtworkAnchor
 import com.rawsmusic.core.ui.widget.PlayerLyricsArtworkSource
 import com.rawsmusic.core.ui.widget.PlayerLyricsArtworkVisibility
@@ -111,8 +121,6 @@ import com.rawsmusic.core.ui.widget.bitmaps.BitmapImage
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkBitmapRuntime
 import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkTransition
 import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkTransitionState
-import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkPerfEvent
-import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkPerfTrace
 import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkAnimationStyle
 import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkDirection
 import com.rawsmusic.core.ui.widget.bitmaps.PlayerArtworkItemRole
@@ -228,6 +236,8 @@ fun PlayerMainPage(
     onAudioQuality: () -> Unit,
     onAudioQualityLongPress: () -> Unit = onAudioQuality,
     onOpenLyric: () -> Unit,
+    onInlineLyricSeek: ((Long) -> Unit)? = null,
+    inlineLyricActions: InlinePlayerLyricActions? = null,
     onArtworkLongPress: () -> Unit = {},
     queueVisible: Boolean,
     queueSongs: List<AudioFile>,
@@ -248,6 +258,7 @@ fun PlayerMainPage(
     rootOwnsPlayerSheetDownGesture: Boolean = false,
     rootOwnsPlayerLyricUpGesture: Boolean = false,
     onArtworkAnchorChanged: (PlayerLyricsArtworkAnchor?) -> Unit = {},
+    onArtworkLayoutBoundsChanged: (Rect?) -> Unit = {},
     onLyricSwipeTitleBoundsChanged: (Rect?) -> Unit = {},
     artworkCornerRadiusDp: Float = STANDARD_PLAYER_ARTWORK_CORNER_RADIUS_DP,
     showAlbumArt: Boolean = true,
@@ -256,21 +267,24 @@ fun PlayerMainPage(
     sleepTimerSelection: Int = 0,
     onSleepTimerSelectionChange: (Int) -> Unit = {},
     overlaySuspended: Boolean = false,
+    hdrArtworkVisible: Boolean = true,
     modifier: Modifier = Modifier
 ) {
-    SideEffect {
-        if (PlaybackArtworkPerfTrace.isActive()) {
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.PLAYER_MAIN_COMPOSE_COMMIT)
-        }
-    }
-    val configuration = LocalConfiguration.current
-    val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
+    val windowLayoutProfile = LocalRawWindowLayoutProfile.current
+    val useWidePlayerLayout = windowLayoutProfile.useWidePlayerLayout
+    val tabletPlayerChrome = useWidePlayerLayout
+    val isTabletWindow = androidx.compose.ui.platform.LocalConfiguration.current.smallestScreenWidthDp >= 600
+    var playerLayoutCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     val visualizerStyle = LocalAudioVisualizerStyle.current
     val standardArtworkCornerRadiusDp = artworkCornerRadiusDp.coerceIn(0f, 48f)
     val baseColor = rememberCoverAccentColor(coverPath)
     val videoCoverState by com.rawsmusic.module.data.prefs.VideoCoverPreferences.state.collectAsState()
     val videoCoverSongKey = currentSong?.path.orEmpty()
     val videoCoverUri = videoCoverState.resolve(videoCoverSongKey)
+    com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkHdr(
+        state = artworkTransitionState,
+        visible = hdrArtworkVisible && videoCoverUri.isNullOrBlank(),
+    )
     LaunchedEffect(videoCoverSongKey) {
         com.rawsmusic.module.data.prefs.VideoCoverPreferences.onSongChanged(videoCoverSongKey)
     }
@@ -310,13 +324,19 @@ fun PlayerMainPage(
     )
     var playerRootBoundsInWindow by remember { mutableStateOf<Rect?>(null) }
     var playerArtworkBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    var playerMoreAnchorBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    // The sheet request precedes its first composed frame. Keep the physical artwork visible
+    // until the overlay has both a live bitmap and a measured source to take over from it.
+    val moreArtworkHandoffActive = playerMoreOverlayMounted &&
+        artworkTransitionState.foregroundArtworkBitmap()?.let { !it.isRecycled } == true &&
+        playerArtworkBoundsInRoot?.let { it.width > 1f && it.height > 1f } == true
     var queueAnchorBoundsInWindow by remember { mutableStateOf<Rect?>(null) }
     val density = LocalDensity.current
     val fullscreenQueueTopPx = with(density) {
         rawStableStatusBarTopPadding().toPx() + 8.dp.toPx()
     }
     val initialHalfQueueTopPx = with(density) {
-        (LocalConfiguration.current.screenHeightDp.dp * 0.48f).toPx()
+        (windowLayoutProfile.windowHeight * 0.48f).toPx()
     }
     val queueAnchorInPlayer = remember(playerRootBoundsInWindow, queueAnchorBoundsInWindow) {
         val root = playerRootBoundsInWindow
@@ -374,6 +394,7 @@ fun PlayerMainPage(
     fun closeUnifiedMoreSheet() {
         showMoreSheetRequested = false
     }
+    val addSongToPlaylist = rememberPlayerPlaylistAction()
 
     fun openUnifiedMoreSheet() {
         showMoreSheetRequested = true
@@ -405,9 +426,18 @@ fun PlayerMainPage(
         }
     }
 
+    val playerContentBackdrop = rememberLayerBackdrop()
+    val inheritedBackdrop = LocalAppBackdrop.current
+    val popupBackdrop = if (inheritedBackdrop != null) {
+        rememberCombinedBackdrop(inheritedBackdrop, playerContentBackdrop)
+    } else {
+        playerContentBackdrop
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
+            .onPlaced { playerLayoutCoordinates = it }
             // The LYRIC scene stays composed behind PLAYER so its layout/anchor can be reused for
             // the vertical scene transition. Make the visible PLAYER root a full-size pointer
             // target even in visually empty regions (notably below the progress control). This
@@ -437,16 +467,53 @@ fun PlayerMainPage(
             )
         }
 
-        if (isLandscape) {
+        if (useWidePlayerLayout) {
             Row(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .widthIn(max = windowLayoutProfile.playerContentMaxWidth)
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+                    .align(Alignment.Center)
                     .rawStableStatusBarsPadding()
                     .rawStableNavigationBarsPadding()
                     .graphicsLayer { alpha = contentAlpha.coerceIn(0f, 1f) }
-                    .padding(horizontal = 34.dp, vertical = 22.dp),
+                    .padding(horizontal = if (isTabletWindow) 34.dp else 18.dp,
+                        vertical = if (isTabletWindow) 22.dp else 0.dp)
+                    .layerBackdrop(playerContentBackdrop),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                Column(
+                    modifier = Modifier.weight(0.46f).fillMaxHeight(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (tabletPlayerChrome) {
+                        ArtworkTitleInfoPager(
+                            artworkTransitionState = artworkTransitionState,
+                            artworkAnimationStyle = artworkAnimationStyle,
+                            currentSong = currentSong,
+                            queueSongs = queueSongs,
+                            queueCurrentIndex = queueCurrentIndex,
+                            moreIconRes = moreIconRes,
+                            onMore = ::openUnifiedMoreSheet,
+                            onMoreBoundsChanged = { playerMoreAnchorBoundsInRoot = it },
+                            onSwipeUpStart = onCoverSwipeUpStart,
+                            onSwipeUpProgress = onCoverSwipeUpProgress,
+                            onSwipeUpEnd = onCoverSwipeUpEnd,
+                            rootOwnsPlayerLyricUpGesture = rootOwnsPlayerLyricUpGesture,
+                            onBoundsChanged = onLyricSwipeTitleBoundsChanged,
+                            onLongPressGestureActiveChange = { active ->
+                                songInfoLongPressGestureActive = active
+                                onModalVisibleChange(active || playerMoreSheetActive || showAudioChain)
+                            },
+                            textPosition = LyricTextPosition.from(AppPreferences.UI.playerTitleAlignment),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(if (isTabletWindow) 12.dp else 0.dp))
+                    }
+                    BoxWithConstraints(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
                 AlbumArtCard(
                     coverPath = coverPath,
                     currentSong = currentSong,
@@ -479,6 +546,8 @@ fun PlayerMainPage(
                     onArtworkBoundsChanged = { bounds ->
                         if (playerArtworkBoundsInRoot != bounds) playerArtworkBoundsInRoot = bounds
                     },
+                    layoutCoordinates = playerLayoutCoordinates,
+                    onArtworkLocalBoundsChanged = onArtworkLayoutBoundsChanged,
                     audioVisualizerEnabled =
                         audioVisualizerEnabled && visualizerStyle == AudioVisualizerStyle.Spectrum,
                     audioSpectrum = audioSpectrum,
@@ -487,14 +556,36 @@ fun PlayerMainPage(
                     onAudioVisualizerDismiss = onAudioVisualizerDismiss,
                     isPlaying = isPlaying,
                     artworkPlaybackActive = artworkPlaybackActive,
-                    showArt = showAlbumArt && !playerMoreSheetActive,
+                    showArt = showAlbumArt && !moreArtworkHandoffActive,
                     modifier = Modifier
-                        .weight(0.46f)
-                        .aspectRatio(1f)
+                        .size(minOf(maxWidth, maxHeight))
                         .graphicsLayer {
                             alpha = queueArtworkAlpha
                         }
                 )
+                    }
+                    if (tabletPlayerChrome) {
+                        Spacer(Modifier.height(if (isTabletWindow) 12.dp else 0.dp))
+                        StandardTransportButtons(
+                            compactHeight = !isTabletWindow,
+                            isPlaying = isPlaying,
+                            previousIconRes = previousIconRes,
+                            playIconRes = playIconRes,
+                            pauseIconRes = pauseIconRes,
+                            nextIconRes = nextIconRes,
+                            playModeIconRes = playModeIconRes,
+                            queueVisible = queueVisible,
+                            onPrevious = onPrevious,
+                            onPlayPause = onPlayPause,
+                            onNext = onNext,
+                            onPlayMode = onPlayMode,
+                            onQueuePlaceholder = {
+                                if (!queueVisible) queueFullscreen = false
+                                onToggleQueue()
+                            },
+                        )
+                    }
+                }
                 Spacer(Modifier.width(28.dp))
                 StandardPlayerBody(
                     currentSong = currentSong,
@@ -530,6 +621,7 @@ fun PlayerMainPage(
                     onPlayMode = onPlayMode,
                     onPlayModeLongPress = onPlayModeLongPress,
                     onMore = ::openUnifiedMoreSheet,
+                    onMoreBoundsChanged = { playerMoreAnchorBoundsInRoot = it },
                     progressStyle = progressStyle,
                     climaxEnabled = climaxEnabled,
                     waveformBarCount = waveformBarCount,
@@ -539,6 +631,7 @@ fun PlayerMainPage(
                     onAudioQuality = onAudioQuality,
                     onAudioQualityLongPress = onAudioQualityLongPress,
                     onOpenLyric = onOpenLyric,
+                    onInlineLyricSeek = onInlineLyricSeek,
                     coverPath = coverPath,
                     queueVisible = queueVisible,
                     queueSongs = queueSongs,
@@ -562,6 +655,8 @@ fun PlayerMainPage(
                         onModalVisibleChange(active || playerMoreSheetActive || showAudioChain)
                     },
                     alignLeftTitleToArtwork = false,
+                    showTitle = !tabletPlayerChrome,
+                    showTransport = !tabletPlayerChrome,
                     mainPlayerSheetTransitionActive = mainPlayerSheetTransitionActive,
                     mainPlayerContentOffsetProvider = mainPlayerContentOffsetProvider,
                     modifier = Modifier.weight(0.54f)
@@ -574,7 +669,8 @@ fun PlayerMainPage(
                     .rawStableStatusBarsPadding()
                     .rawStableNavigationBarsPadding()
                     .graphicsLayer { alpha = contentAlpha.coerceIn(0f, 1f) }
-                    .padding(start = 0.dp, end = 0.dp, top = 0.dp, bottom = 12.dp),
+                    .padding(start = 0.dp, end = 0.dp, top = 0.dp, bottom = 12.dp)
+                    .layerBackdrop(playerContentBackdrop),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 AlbumArtCard(
@@ -608,6 +704,7 @@ fun PlayerMainPage(
                     onArtworkAnchorChanged = onArtworkAnchorChanged,
                     onArtworkBoundsChanged = { bounds ->
                         if (playerArtworkBoundsInRoot != bounds) playerArtworkBoundsInRoot = bounds
+                        onArtworkLayoutBoundsChanged(bounds)
                     },
                     audioVisualizerEnabled =
                         audioVisualizerEnabled && visualizerStyle == AudioVisualizerStyle.Spectrum,
@@ -617,7 +714,7 @@ fun PlayerMainPage(
                     onAudioVisualizerDismiss = onAudioVisualizerDismiss,
                     isPlaying = isPlaying,
                     artworkPlaybackActive = artworkPlaybackActive,
-                    showArt = showAlbumArt && !playerMoreSheetActive,
+                    showArt = showAlbumArt && !moreArtworkHandoffActive,
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(1f)
@@ -663,6 +760,7 @@ fun PlayerMainPage(
                     onPlayMode = onPlayMode,
                     onPlayModeLongPress = onPlayModeLongPress,
                     onMore = ::openUnifiedMoreSheet,
+                    onMoreBoundsChanged = { playerMoreAnchorBoundsInRoot = it },
                     progressStyle = progressStyle,
                     climaxEnabled = climaxEnabled,
                     waveformBarCount = waveformBarCount,
@@ -747,16 +845,21 @@ fun PlayerMainPage(
             }
         }
 
-        PlayerMoreViewOverlay(
+        CompositionLocalProvider(LocalAppBackdrop provides popupBackdrop) {
+        PlayerAnchoredGlassPopup(
             show = showMoreSheet,
+            anchorBounds = playerMoreAnchorBoundsInRoot,
             sourceArtworkBounds = playerArtworkBoundsInRoot,
             artwork = artworkTransitionState.foregroundArtworkBitmap(),
             sourceArtworkRadiusDp = standardArtworkCornerRadiusDp,
             onDismiss = ::closeUnifiedMoreSheet,
+            onReopen = ::openUnifiedMoreSheet,
+            fallbackTint = baseColor,
             onMountedChange = { playerMoreOverlayMounted = it },
         ) { artworkAlpha, onArtworkBoundsChanged ->
             ImmersiveMoreSheet(
                 currentSong = currentSong,
+                onAddSongToPlaylist = addSongToPlaylist,
                 coverPath = coverPath,
                 artworkTransitionState = artworkTransitionState,
                 artworkAlpha = artworkAlpha,
@@ -790,7 +893,12 @@ fun PlayerMainPage(
                 onArtworkAnimationStyleChange = ::saveArtworkAnimationStyle,
                 sleepTimerSelection = selectedSleepTimer,
                 onSleepTimerSelectionChange = ::saveSleepTimerSelection,
+                inlineLyricsOptions = if (onInlineLyricSeek != null && inlineLyricActions != null) {
+                    { InlinePlayerLyricOptions(currentSong, coverPath, lyricSong, displayTranslation,
+                        displayRoma, inlineLyricActions, ::closeUnifiedMoreSheet) }
+                } else null,
             )
+        }
         }
     }
 }
@@ -803,11 +911,6 @@ fun StandardPlayerBackdrop(
     motionEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
-    SideEffect {
-        if (PlaybackArtworkPerfTrace.isActive()) {
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.PLAYER_BACKDROP_COMPOSE_COMMIT)
-        }
-    }
     val context = LocalContext.current
     CustomMediaBackgroundState.ensureInitialized(context)
     @Suppress("UNUSED_VARIABLE")
@@ -833,7 +936,9 @@ fun StandardPlayerBackdrop(
     val transitionMotionActive = artworkTransitionState?.isGestureActive == true ||
         artworkTransitionState?.isSettling == true
     val effectiveMotionEnabled =
-        RawFlowTuningState.style == RawBackgroundStyle.FLOW || motionEnabled || transitionMotionActive
+        RawFlowTuningState.style == RawBackgroundStyle.FLOW ||
+            RawFlowTuningState.style == RawBackgroundStyle.ALBUM_COLOR ||
+            motionEnabled || transitionMotionActive
     val currentBackgroundLayer = layers.firstOrNull {
         it.role == com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkBackgroundRole.Current
     }
@@ -853,12 +958,6 @@ fun StandardPlayerBackdrop(
         targetBackgroundLayer?.key,
         transitionMotionActive,
     ) {
-        PlaybackArtworkPerfTrace.backgroundIdentity(
-            style = RawFlowTuningState.style.name,
-            currentKey = currentBackgroundLayer?.key ?: currentLayerKey ?: coverPath,
-            targetKey = targetBackgroundLayer?.key,
-            moving = transitionMotionActive,
-        )
     }
 
     Box(modifier = modifier.fillMaxSize().clipToBounds()) {
@@ -867,7 +966,7 @@ fun StandardPlayerBackdrop(
                 RawFlowBackground(
                     mode = flowMode,
                     sourceCoverKey = coverPath,
-                    sourceArtwork = currentLayerArtwork,
+                    sourceArtwork = currentLayerArtwork.takeIf { currentLayerKey == coverPath },
                     motionEnabled = effectiveMotionEnabled,
                     modifier = Modifier.fillMaxSize().clipToBounds(),
                     surface = com.rawsmusic.core.ui.widget.flow.RawBackgroundSurface.PLAYER
@@ -886,8 +985,11 @@ fun StandardPlayerBackdrop(
                     currentCoverKey = outgoingLayer.key,
                     targetCoverKey = incomingLayer?.key ?: outgoingLayer.key,
                     currentArtwork = transitionState.backgroundArtwork(outgoingLayer.token),
-                    targetArtwork = incomingLayer?.let { transitionState.backgroundArtwork(it.token) }
-                        ?: transitionState.backgroundArtwork(outgoingLayer.token),
+                    targetArtwork = if (incomingLayer != null) {
+                        transitionState.backgroundArtwork(incomingLayer.token)
+                    } else {
+                        transitionState.backgroundArtwork(outgoingLayer.token)
+                    },
                     progressProvider = {
                         if (incomingLayer == null) {
                             0f
@@ -984,14 +1086,13 @@ private fun AlbumArtCard(
     isPlaying: Boolean,
     artworkPlaybackActive: Boolean,
     showArt: Boolean,
+    layoutCoordinates: LayoutCoordinates? = null,
+    onArtworkLocalBoundsChanged: (Rect?) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    SideEffect {
-        if (PlaybackArtworkPerfTrace.isActive()) {
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.PLAYER_ART_CARD_COMPOSE_COMMIT)
-        }
-    }
     val resolvedAudioSpectrum = audioSpectrumState?.value ?: audioSpectrum
+    val surfaceFrameActive = com.rawsmusic.core.ui.scene.LocalUiFrameAnimationActive.current
+    val visualizerRenderEnabled = audioVisualizerEnabled && surfaceFrameActive
     var cardSize by remember { mutableStateOf(IntSize.Zero) }
     var unscaledArtworkBoundsInRoot by remember { mutableStateOf<PlayerLyricsRect?>(null) }
     var cardBoundsInRoot by remember { mutableStateOf<PlayerLyricsRect?>(null) }
@@ -1129,12 +1230,11 @@ private fun AlbumArtCard(
         modifier = modifier
             .onSizeChanged { cardSize = it }
             .onGloballyPositioned { coordinates ->
-                val bounds = coordinates.boundsInRoot()
                 val envelope = resolvePlayerArtworkContentRect(
-                    outerLeft = bounds.left,
-                    outerTop = bounds.top,
-                    outerWidth = bounds.width,
-                    outerHeight = bounds.height,
+                    outerLeft = 0f,
+                    outerTop = 0f,
+                    outerWidth = coordinates.size.width.toFloat(),
+                    outerHeight = coordinates.size.height.toFloat(),
                     contentInsetPx = artworkContentInsetPx,
                     contentScale = STANDARD_PLAYER_ARTWORK_CONTENT_SCALE,
                 )
@@ -1143,14 +1243,35 @@ private fun AlbumArtCard(
                     sourceWidth = visibleArtworkWidth,
                     sourceHeight = visibleArtworkHeight,
                 )
+                // boundsInRoot clips against the expanding sheet and includes population scale.
+                // Resolve the bitmap locally first, then map its full corners into root space.
+                val topLeft = coordinates.localToRoot(Offset(visible.left, visible.top))
+                val bottomRight = coordinates.localToRoot(
+                    Offset(visible.left + visible.width, visible.top + visible.height),
+                )
+                // Measure in PLAYER's own layout space: ancestor population scale and clipping
+                // must never become the retained shared-element destination.
+                layoutCoordinates?.takeIf { it.isAttached }?.let { playerCoordinates ->
+                    val localTopLeft = playerCoordinates.localPositionOf(
+                        coordinates, Offset(visible.left, visible.top))
+                    val localBottomRight = playerCoordinates.localPositionOf(
+                        coordinates, Offset(visible.left + visible.width, visible.top + visible.height))
+                    val local = scalePlayerArtworkHandoffRectAroundCenter(
+                        PlayerArtworkHandoffRect(localTopLeft.x, localTopLeft.y,
+                            localBottomRight.x - localTopLeft.x, localBottomRight.y - localTopLeft.y),
+                        playbackHolderScale,
+                    )
+                    onArtworkLocalBoundsChanged(Rect(local.left, local.top,
+                        local.left + local.width, local.top + local.height))
+                }
                 // Layout owns the unscaled artwork image view rect. A separate state effect applies the
                 // animated AASmall holder scale so graphics-layer-only frames still publish exact
                 // shared-element geometry without forcing this layout node to resize.
                 unscaledArtworkBoundsInRoot = PlayerLyricsRect(
-                    left = visible.left,
-                    top = visible.top,
-                    right = visible.left + visible.width,
-                    bottom = visible.top + visible.height,
+                    left = topLeft.x,
+                    top = topLeft.y,
+                    right = bottomRight.x,
+                    bottom = bottomRight.y,
                 )
             }
             .observeArtworkLongPress(onLongPress)
@@ -1432,8 +1553,8 @@ private fun AlbumArtCard(
             }
     ) {
         if (hasArtworkVisual) {
-            val behindVisible = audioVisualizerEnabled && showArt && !audioVisualizerForeground
-            val foregroundVisible = audioVisualizerEnabled && showArt && audioVisualizerForeground
+            val behindVisible = visualizerRenderEnabled && showArt && !audioVisualizerForeground
+            val foregroundVisible = visualizerRenderEnabled && showArt && audioVisualizerForeground
             val visualizerArtworkAlpha by animateFloatAsState(
                 targetValue = if (behindVisible) 0.78f else 1f,
                 animationSpec = tween(durationMillis = 320),
@@ -1488,7 +1609,7 @@ private fun AlbumArtCard(
             if (!videoCoverUri.isNullOrBlank() && videoAlpha > 0f) {
                 FfmpegVideoCover(
                     uri = videoCoverUri,
-                    active = videoVisible,
+                    active = videoVisible && surfaceFrameActive,
                     cornerRadiusDp = artworkCornerRadiusDp,
                     modifier = Modifier
                         .fillMaxSize()
@@ -1564,6 +1685,7 @@ private fun StandardPlayerBody(
     onPlayMode: () -> Unit,
     onPlayModeLongPress: () -> Unit,
     onMore: () -> Unit,
+    onMoreBoundsChanged: (Rect) -> Unit,
     progressStyle: ImmersiveProgressStyle,
     climaxEnabled: Boolean,
     waveformBarCount: Int,
@@ -1574,6 +1696,7 @@ private fun StandardPlayerBody(
     onAudioQualityLongPress: () -> Unit,
     onOpenLyric: () -> Unit,
     coverPath: String?,
+    onInlineLyricSeek: ((Long) -> Unit)? = null,
     queueVisible: Boolean,
     queueSongs: List<AudioFile>,
     queueCurrentIndex: Int,
@@ -1588,15 +1711,12 @@ private fun StandardPlayerBody(
     onLyricSwipeTitleBoundsChanged: (Rect?) -> Unit,
     onSongInfoLongPressGestureActiveChange: (Boolean) -> Unit,
     alignLeftTitleToArtwork: Boolean = false,
+    showTitle: Boolean = true,
+    showTransport: Boolean = true,
     mainPlayerSheetTransitionActive: Boolean = false,
     mainPlayerContentOffsetProvider: (() -> Float)? = null,
     modifier: Modifier = Modifier
 ) {
-    SideEffect {
-        if (PlaybackArtworkPerfTrace.isActive()) {
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.PLAYER_BODY_COMPOSE_COMMIT)
-        }
-    }
     val tone = rememberStandardPlayerTone()
     val playerTitlePosition = LyricTextPosition.from(AppPreferences.UI.playerTitleAlignment)
     val miniLyricPosition = LyricTextPosition.from(AppPreferences.UI.miniLyricAlignment)
@@ -1640,6 +1760,7 @@ private fun StandardPlayerBody(
                 Column(
                     modifier = Modifier.fillMaxSize()
                 ) {
+                    if (showTitle) {
                     BoxWithConstraints(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1666,6 +1787,7 @@ private fun StandardPlayerBody(
                             queueCurrentIndex = queueCurrentIndex,
                             moreIconRes = moreIconRes,
                             onMore = onMore,
+                            onMoreBoundsChanged = onMoreBoundsChanged,
                             onSwipeUpStart = onSwipeUpStart,
                             onSwipeUpProgress = onSwipeUpProgress,
                             onSwipeUpEnd = onSwipeUpEnd,
@@ -1679,8 +1801,10 @@ private fun StandardPlayerBody(
                         )
                     }
                     Spacer(Modifier.height(4.dp))
+                    }
                     StandardPlayerTimelineLane(
                         currentSong = currentSong,
+                        coverPath = coverPath,
                         currentPositionMs = currentPositionMs,
                         currentPositionState = currentPositionState,
                         totalDurationMs = totalDurationMs,
@@ -1703,6 +1827,7 @@ private fun StandardPlayerBody(
                         onOpenLyric = onOpenLyric,
                         onSeekStart = onSeekStart,
                         onSeekStop = onSeekStop,
+                        onInlineLyricSeek = onInlineLyricSeek,
                     )
                 }
             }
@@ -1753,6 +1878,7 @@ private fun StandardPlayerBody(
                 }
             }
         }
+        if (showTransport) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -1773,6 +1899,7 @@ private fun StandardPlayerBody(
                 onQueuePlaceholder = onToggleQueue
             )
         }
+        }
     }
 }
 
@@ -1784,6 +1911,7 @@ private fun StandardPlayerBody(
 @Composable
 private fun ColumnScope.StandardPlayerTimelineLane(
     currentSong: AudioFile?,
+    coverPath: String?,
     currentPositionMs: Long,
     currentPositionState: State<Long>?,
     totalDurationMs: Long,
@@ -1806,12 +1934,8 @@ private fun ColumnScope.StandardPlayerTimelineLane(
     onOpenLyric: () -> Unit,
     onSeekStart: () -> Unit,
     onSeekStop: (Float) -> Unit,
+    onInlineLyricSeek: ((Long) -> Unit)? = null,
 ) {
-    SideEffect {
-        if (PlaybackArtworkPerfTrace.isActive()) {
-            PlaybackArtworkPerfTrace.count(PlaybackArtworkPerfEvent.PLAYER_TIMELINE_LANE_COMPOSE_COMMIT)
-        }
-    }
     val resolvedPositionMs = currentPositionState?.value ?: currentPositionMs
     val resolvedLyricPositionMs = lyricPositionState?.value ?: lyricPositionMs
 
@@ -1826,10 +1950,14 @@ private fun ColumnScope.StandardPlayerTimelineLane(
                 progressStyle = progressStyle,
                 textPosition = textPosition,
                 onClick = onOpenLyric,
+                onLineSeek = onInlineLyricSeek,
                 modifier = Modifier.weight(1f)
             )
             Spacer(Modifier.height(8.dp))
             ClassicTimelineProgress(
+                currentSong = currentSong,
+                isPlaying = isPlaying,
+                coverPath = coverPath,
                 currentPositionMs = resolvedPositionMs,
                 totalDurationMs = totalDurationMs,
                 onSeekStart = onSeekStart,
@@ -1847,6 +1975,7 @@ private fun ColumnScope.StandardPlayerTimelineLane(
                 progressStyle = progressStyle,
                 textPosition = textPosition,
                 onClick = onOpenLyric,
+                onLineSeek = onInlineLyricSeek,
                 modifier = Modifier.weight(1f)
             )
             Spacer(Modifier.height(4.dp))
@@ -1875,6 +2004,7 @@ private fun ColumnScope.StandardPlayerTimelineLane(
                 progressStyle = progressStyle,
                 textPosition = textPosition,
                 onClick = onOpenLyric,
+                onLineSeek = onInlineLyricSeek,
                 modifier = Modifier.weight(1f)
             )
             Spacer(Modifier.height(3.dp))
@@ -1901,6 +2031,7 @@ private fun ColumnScope.StandardPlayerTimelineLane(
                 progressStyle = progressStyle,
                 textPosition = textPosition,
                 onClick = onOpenLyric,
+                onLineSeek = onInlineLyricSeek,
                 modifier = Modifier.weight(1f)
             )
             Spacer(Modifier.height(3.dp))
@@ -1922,7 +2053,7 @@ private fun ColumnScope.StandardPlayerTimelineLane(
 }
 
 @Composable
-private fun StandardMiniLyric(
+internal fun StandardMiniLyric(
     song: Song?,
     positionMs: Long,
     isPlaying: Boolean,
@@ -1931,9 +2062,39 @@ private fun StandardMiniLyric(
     progressStyle: ImmersiveProgressStyle,
     textPosition: LyricTextPosition,
     onClick: () -> Unit,
+    onLineSeek: ((Long) -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    PlayerContentCrossfade(playerLyricIdentity(song), PlayerLyricFrame(song, positionMs), modifier) { frame ->
+        StandardMiniLyricContent(frame.song, frame.positionMs, isPlaying && frame.song === song, displayTranslation,
+            displayRoma, progressStyle, textPosition, onClick,
+            onLineSeek?.let { seek -> { time: Long -> if (frame.song === song) seek(time) } })
+    }
+}
+
+@Composable
+private fun StandardMiniLyricContent(
+    song: Song?,
+    positionMs: Long,
+    isPlaying: Boolean,
+    displayTranslation: Boolean,
+    displayRoma: Boolean,
+    progressStyle: ImmersiveProgressStyle,
+    textPosition: LyricTextPosition,
+    onClick: () -> Unit,
+    onLineSeek: ((Long) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val tone = rememberStandardPlayerTone()
+    if (onLineSeek != null) {
+        InlinePlayerLyrics(
+            song = song, positionMs = positionMs, isPlaying = isPlaying,
+            displayTranslation = displayTranslation, displayRoma = displayRoma,
+            textColor = tone.primary, onSeek = onLineSeek,
+            modifier = modifier.fillMaxWidth(),
+        )
+        return
+    }
     val lyricLines = song?.lyrics.orEmpty()
     var viewportHeightPx by remember { mutableStateOf(0) }
     val density = LocalDensity.current
@@ -2014,29 +2175,29 @@ private fun StandardTransportButtons(
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onPlayMode: () -> Unit,
-    onQueuePlaceholder: () -> Unit
+    onQueuePlaceholder: () -> Unit,
+    compactHeight: Boolean = false,
 ) {
     val tone = rememberStandardPlayerTone()
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+    val controlScale = (maxWidth.value / 284f).coerceIn(0.5f, if (compactHeight) 0.72f else 1f)
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
+        horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        PlayerTransportIcon(iconRes = playModeIconRes, size = 40.dp, iconSize = 30.dp, tint = tone.tertiary, onClick = onPlayMode)
-        Spacer(Modifier.width(10.dp))
-        PlayerTransportIcon(iconRes = previousIconRes, size = 48.dp, iconSize = 40.dp, tint = tone.icon, onClick = onPrevious)
-        Spacer(Modifier.width(16.dp))
+        PlayerTransportIcon(iconRes = playModeIconRes, size = 40.dp * controlScale, iconSize = 30.dp * controlScale, tint = tone.tertiary, onClick = onPlayMode)
+        PlayerTransportIcon(iconRes = previousIconRes, size = 48.dp * controlScale, iconSize = 40.dp * controlScale, tint = tone.icon, onClick = onPrevious)
         PlayerTransportIcon(
             iconRes = if (isPlaying) pauseIconRes else playIconRes,
-            size = 56.dp,
-            iconSize = 42.dp,
+            size = 56.dp * controlScale,
+            iconSize = 42.dp * controlScale,
             tint = tone.icon,
             onClick = onPlayPause
         )
-        Spacer(Modifier.width(16.dp))
-        PlayerTransportIcon(iconRes = nextIconRes, size = 48.dp, iconSize = 40.dp, tint = tone.icon, onClick = onNext)
-        Spacer(Modifier.width(10.dp))
-        PlayerQueuePlaceholder(size = 40.dp, tint = if (queueVisible) tone.icon else tone.tertiary, selected = queueVisible, onClick = onQueuePlaceholder)
+        PlayerTransportIcon(iconRes = nextIconRes, size = 48.dp * controlScale, iconSize = 40.dp * controlScale, tint = tone.icon, onClick = onNext)
+        PlayerQueuePlaceholder(size = 40.dp * controlScale, tint = if (queueVisible) tone.icon else tone.tertiary, selected = queueVisible, onClick = onQueuePlaceholder)
+    }
     }
 }
 
@@ -2099,6 +2260,7 @@ private fun ArtworkTitleInfoPager(
     queueCurrentIndex: Int,
     @DrawableRes moreIconRes: Int,
     onMore: () -> Unit,
+    onMoreBoundsChanged: (Rect) -> Unit,
     onSwipeUpStart: () -> Unit,
     onSwipeUpProgress: (Float) -> Unit,
     onSwipeUpEnd: (Boolean, Float) -> Unit,
@@ -2260,12 +2422,14 @@ private fun ArtworkTitleInfoPager(
             role: PlayerArtworkItemRole,
             parkedDirection: PlayerArtworkDirection? = null,
             motionPaused: Boolean,
+            marqueeVisible: Boolean,
         ) {
             if (song == null) return
             PlayerTitlePage(
                 song = song,
                 moreIconRes = moreIconRes,
                 onMore = onMore,
+                onMoreBoundsChanged = onMoreBoundsChanged,
                 onLongPressGestureActiveChange = { active ->
                     titleLongPressActive = active
                     latestOnLongPressGestureActiveChange(active)
@@ -2273,6 +2437,8 @@ private fun ArtworkTitleInfoPager(
                 textPosition = textPosition,
                 leftContentInset = leftContentInset,
                 motionPaused = motionPaused,
+                marqueeVisible = marqueeVisible,
+                contentCrossfadeEnabled = !automaticArtworkFade,
                 modifier = Modifier
                     .fillMaxWidth()
                     .graphicsLayer {
@@ -2291,11 +2457,7 @@ private fun ArtworkTitleInfoPager(
                                 density = densityValue,
                             )
                         } else {
-                            val progress = if (artworkTransitionState.automaticFadeOnly) {
-                                0f
-                            } else {
-                                artworkTransitionState.ratio.coerceIn(0f, 1f)
-                            }
+                            val progress = artworkTransitionState.ratio.coerceIn(0f, 1f)
                             playerArtworkTitleTransform(
                                 style = artworkAnimationStyle,
                                 role = role,
@@ -2303,6 +2465,8 @@ private fun ArtworkTitleInfoPager(
                                 progress = progress,
                                 itemExtentPx = sharedExtent,
                                 density = densityValue,
+                                fadeOnly = artworkTransitionState.automaticFadeOnly,
+                                automaticCrossfade = artworkTransitionState.automaticCrossfadeArtworkFade,
                             )
                         }
                         translationX = transform.translationX
@@ -2396,7 +2560,8 @@ private fun ArtworkTitleInfoPager(
         val titleMotionActive = targetKey.isNotBlank() ||
             artworkTransitionState.isGestureActive || artworkTransitionState.isSettling
         val holders = if (automaticArtworkFade) {
-            listOf(currentHolder)
+            activeHolders.filter { it.song != null && (it.token != 0 || it.key.isNotBlank()) }
+                .distinctBy { if (it.token != 0) "token:${it.token}" else "key:${it.key}" }
         } else {
             (listOf(previousHolder, nextHolder) + activeHolders)
                 .filter { it.song != null && (it.token != 0 || it.key.isNotBlank()) }
@@ -2420,6 +2585,10 @@ private fun ArtworkTitleInfoPager(
                     role = holder.role,
                     parkedDirection = holder.parkedDirection,
                     motionPaused = titleMotionActive || holder.parkedDirection != null,
+                    marqueeVisible = playerTitleMarqueeVisible(
+                        holderVisible = holder.parkedDirection == null,
+                        transitionActive = titleMotionActive,
+                    ),
                 )
             }
         }
@@ -2432,10 +2601,13 @@ private fun PlayerTitlePage(
     song: AudioFile?,
     @DrawableRes moreIconRes: Int,
     onMore: () -> Unit,
+    onMoreBoundsChanged: (Rect) -> Unit,
     onLongPressGestureActiveChange: (Boolean) -> Unit,
     textPosition: LyricTextPosition,
     leftContentInset: androidx.compose.ui.unit.Dp = 0.dp,
     motionPaused: Boolean = false,
+    marqueeVisible: Boolean = true,
+    contentCrossfadeEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val tone = rememberStandardPlayerTone()
@@ -2454,21 +2626,34 @@ private fun PlayerTitlePage(
             Spacer(Modifier.width(leftContentInset))
         }
         ComposePlayerTitleInfo(
+            contentCrossfadeEnabled = contentCrossfadeEnabled,
+            trackKey = song?.let { "${it.path}|${it.cueTrackIndex}|${it.cueOffsetMs}" },
             title = song?.displayName ?: stringResource(R.string.player_no_song),
+            explicitBadge = com.rawsmusic.core.common.model.LocalLyricExplicit.isExplicit(song),
             artist = song?.artist?.takeIf { it.isNotBlank() }
                 ?: stringResource(R.string.player_unknown_artist),
             album = song?.album?.takeIf { it.isNotBlank() }.orEmpty(),
             titleColor = tone.primary,
             artistColor = tone.secondary,
             albumColor = tone.tertiary,
+            onClick = if (motionPaused) null else {
+                { com.rawsmusic.core.ui.widget.player.SongContributorsDialogState.show(song) }
+            },
             onLongClick = if (motionPaused) null else { { copySongInfoToClipboard(context, song) } },
             onLongPressGestureActiveChange = onLongPressGestureActiveChange,
             textPosition = textPosition,
-            motionPaused = motionPaused,
+            marqueeVisible = marqueeVisible,
             modifier = Modifier.weight(1f)
         )
         Spacer(Modifier.width(12.dp))
-        IconOnlyButton(iconRes = moreIconRes, onClick = onMore, enabled = !motionPaused)
+        IconOnlyButton(
+            iconRes = moreIconRes,
+            onClick = onMore,
+            enabled = !motionPaused,
+            modifier = Modifier.onGloballyPositioned { coordinates ->
+                onMoreBoundsChanged(coordinates.boundsInRoot())
+            },
+        )
     }
 }
 
@@ -2506,12 +2691,13 @@ private fun IconOnlyButton(
     @DrawableRes iconRes: Int,
     onClick: () -> Unit,
     enabled: Boolean = true,
+    modifier: Modifier = Modifier,
 ) {
     Image(
         painter = painterResource(iconRes),
         contentDescription = null,
         colorFilter = ColorFilter.tint(rememberStandardPlayerTone().iconSoft),
-        modifier = Modifier
+        modifier = modifier
             .size(44.dp)
             .clip(CircleShape)
             .clickable(enabled = enabled, onClick = onClick)

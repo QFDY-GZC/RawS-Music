@@ -224,11 +224,11 @@ object LyricParserBase {
     fun fillEndTimes(lines: MutableList<com.rawsmusic.core.common.model.LyricLine>) {
         for (k in 0 until lines.size - 1) {
             if (lines[k].endTime <= 0L) {
-                lines[k] = lines[k].copy(endTime = lines[k + 1].timeStamp)
+                lines[k] = lines[k].copy(endTime = lines[k + 1].timeStamp, endTimeIsEstimated = true)
             }
         }
         if (lines.isNotEmpty() && lines.last().endTime <= 0L) {
-            lines[lines.lastIndex] = lines.last().copy(endTime = lines.last().timeStamp + 5000L)
+            lines[lines.lastIndex] = lines.last().copy(endTime = lines.last().timeStamp + 5000L, endTimeIsEstimated = true)
         }
     }
 

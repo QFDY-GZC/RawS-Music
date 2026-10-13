@@ -1,6 +1,7 @@
 package com.rawsmusic.core.ui.scene.pages
 
 import com.rawsmusic.core.common.model.AudioFile
+import com.rawsmusic.core.common.model.FolderHierarchyNode
 import com.rawsmusic.core.ui.perf.TransitionPerfStage
 import com.rawsmusic.core.ui.perf.TransitionPerfTrace
 import com.rawsmusic.core.ui.scene.NavScene
@@ -8,6 +9,7 @@ import com.rawsmusic.core.ui.widget.index.RawAlphabetIndexCache
 import com.rawsmusic.core.ui.widget.index.RawAlphabetIndexData
 import com.rawsmusic.core.ui.widget.index.RawIndexMode
 import com.rawsmusic.core.ui.widget.index.buildAdaptiveAlphabetIndexData
+import com.rawsmusic.module.data.repository.buildFolderHierarchyIndex
 import java.util.Locale
 import java.util.concurrent.Executors
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -49,6 +51,7 @@ object LibrarySceneGroupingWarmup {
     private var source: List<AudioFile>? = null
     private var albumGroups: List<AlbumGroupUi>? = null
     private var folderGroups: List<FolderGroupUi>? = null
+    private var folderHierarchyNodes: List<FolderHierarchyNode>? = null
     private var artistGroups: List<ArtistGroupUi>? = null
     private var genreGroups: List<CategoryGroupUi>? = null
     private var yearGroups: List<CategoryGroupUi>? = null
@@ -83,6 +86,7 @@ object LibrarySceneGroupingWarmup {
         when (scene) {
             NavScene.ALBUMS -> albumGroups != null
             NavScene.FOLDERS -> folderGroups != null
+            NavScene.FOLDER_HIERARCHY -> folderHierarchyNodes != null
             NavScene.ARTISTS -> artistGroups != null
             NavScene.GENRE -> genreGroups != null
             NavScene.YEAR -> yearGroups != null
@@ -113,6 +117,7 @@ object LibrarySceneGroupingWarmup {
         loadSongsIndex(songs)
         loadAlbums(songs)
         loadFolders(songs)
+        loadFolderHierarchy(songs)
         loadArtists(songs)
         loadGenres(songs)
         loadYears(songs)
@@ -183,6 +188,25 @@ object LibrarySceneGroupingWarmup {
             }
         }
         groups
+    }
+
+    internal fun folderHierarchy(songs: List<AudioFile>): List<FolderHierarchyNode> = synchronized(lock) {
+        ensureSourceLocked(songs)
+        folderHierarchyNodes.orEmpty()
+    }
+
+    /** Same snapshot-owned provider lifetime as [loadFolders]; the hierarchy is not a second data source. */
+    internal suspend fun loadFolderHierarchy(songs: List<AudioFile>): List<FolderHierarchyNode> = withMetaTrace {
+        synchronized(lock) {
+            ensureSourceLocked(songs)
+            folderHierarchyNodes
+        }?.let { return@withMetaTrace it }
+
+        val nodes = buildFolderHierarchyIndex(songs)
+        synchronized(lock) {
+            if (source === songs) folderHierarchyNodes = nodes
+        }
+        nodes
     }
 
     internal fun artists(songs: List<AudioFile>): List<ArtistGroupUi> = synchronized(lock) {
@@ -341,6 +365,7 @@ object LibrarySceneGroupingWarmup {
         source = songs
         albumGroups = null
         folderGroups = null
+        folderHierarchyNodes = null
         artistGroups = null
         genreGroups = null
         yearGroups = null

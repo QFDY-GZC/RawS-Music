@@ -1,0 +1,9 @@
+<resources>
+    <string name="notice_playlist_added_song">「%1$s」を「%2$s」に追加しました</string>
+    <string name="notice_playlist_added_songs">%1$d曲を「%2$s」に追加しました</string>
+    <string name="notice_playlist_removed_song">「%1$s」を「%2$s」から削除しました</string>
+    <string name="notice_playlist_removed_songs">%1$d曲を「%2$s」から削除しました</string>
+    <string name="notice_playlist_deleted">プレイリスト「%1$s」を削除しました</string>
+    <string name="notice_playlist_delete_failed">プレイリストを削除できませんでした。もう一度お試しください。</string>
+    <string name="notice_playlist_partial_failure">一部のプレイリスト操作に失敗しました。</string>
+</resources>

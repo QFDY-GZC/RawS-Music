@@ -210,7 +210,6 @@ PcmToDsdConverter::PcmToDsdConverter()
       prev_dither_(0),
       input_rate_(44100),
       silence_phase_(0),
-      low_rate_assist_(0.0f),
       fixed_ratio_(0),
       p2d_ratio_(0),
       work_upsample_factor_(1),
@@ -244,22 +243,6 @@ bool PcmToDsdConverter::init(const DsdConfig& config, int input_rate) {
     // fractional scheduler only for unusual rates which do not map exactly.
     if (fixed_ratio_ < 8u || (fixed_ratio_ & 7u) != 0u) fixed_ratio_ = 0u;
     configureWorkRate();
-    {
-        const float nominalMultiplier = static_cast<float>(getRateMultiplier());
-        const float actualOsr = static_cast<float>(std::max<uint32_t>(1u, getActualUpsamplingFactor()));
-        const float nominalAssist = clampFloat(
-                (256.0f - std::min(nominalMultiplier, 256.0f)) / 192.0f,
-                0.0f,
-                1.0f);
-        const float osrAssist = clampFloat(
-                (64.0f - std::min(actualOsr, 64.0f)) / 32.0f,
-                0.0f,
-                1.0f);
-        low_rate_assist_ = clampFloat(
-                std::max(nominalAssist, osrAssist * 0.72f),
-                0.0f,
-                1.0f);
-    }
     reset();
     return true;
 }
@@ -427,37 +410,13 @@ uint32_t PcmToDsdConverter::convertLowLatencyFast(const void* pcm_data, uint32_t
 }
 
 const PcmToDsdConverter::P2dKernelSpec& PcmToDsdConverter::kernelSpec() const {
-    // Tuned SDM profiles. Keep the established stage order so output characteristics remain stable.
-    // CIFB family and pull the input gains back toward the reference envelope.
-    // The feedback taps remain intentionally conservative because this
-    // converter runs block-realtime in our USB write path.
-    static const P2dKernelSpec kDsd64 {
-        // The DSD64 N5 profile caps stable input at roughly 0.700.
-        // The previous 0.835 value over-drove the lowest-rate loop.
-        5, 0.700f, 0.98f,
-        { 1.000f, 0.245f, 0.095f, 0.0340f, 0.0105f, 0.0f, 0.0f },
-        1.04f, 1.80f, 0.0f
-    };
-    static const P2dKernelSpec kDsd128 {
-        5, 0.71428573f, 0.98f,
-        { 1.000f, 0.155f, 0.054f, 0.0170f, 0.0048f, 0.0f, 0.0f },
-        1.10f, 1.84f, 0.0f
-    };
-    static const P2dKernelSpec kDsd256 {
-        4, 0.85f, 0.98f,
-        { 1.000f, 0.125f, 0.040f, 0.0120f, 0.0035f, 0.0f, 0.0f },
-        1.22f, 2.00f, 0.0f
-    };
-    static const P2dKernelSpec kDsd512 {
-        3, 0.85f, 0.98f,
-        { 1.000f, 0.110f, 0.034f, 0.0100f, 0.0029f, 0.0f, 0.0f },
-        1.18f, 1.96f, 0.0f
-    };
-    static const P2dKernelSpec kDsd1024 {
-        2, 0.85f, 0.98f,
-        { 1.000f, 0.095f, 0.028f, 0.0080f, 0.0023f, 0.0f, 0.0f },
-        1.12f, 1.90f, 0.0f
-    };
+    // Preserve established per-rate output headroom; every rate now uses the same
+    // non-leaky second-order loop instead of level-dependent pseudo-order profiles.
+    static const P2dKernelSpec kDsd64 {0.700f, 0.98f};
+    static const P2dKernelSpec kDsd128 {0.71428573f, 0.98f};
+    static const P2dKernelSpec kDsd256 {0.85f, 0.98f};
+    static const P2dKernelSpec kDsd512 {0.85f, 0.98f};
+    static const P2dKernelSpec kDsd1024 {0.85f, 0.98f};
 
     switch (config_.rate) {
         case DsdRate::DSD1024: return kDsd1024;
@@ -502,34 +461,13 @@ uint32_t PcmToDsdConverter::convertRealtimeP2d(const void* pcm_data, uint32_t sa
     }
 
     source_cache_.resize(sample_count);
-    bool allSilent = true;
     for (uint32_t i = 0; i < sample_count; i++) {
         double vd = pcmToDouble(pcm_data, bit_depth, static_cast<int>(i));
         if (config_.volume_scale != 1.0) vd = applyVolume(vd, config_.volume_scale);
         if (!std::isfinite(vd)) vd = 0.0;
         vd = std::max(-1.0, std::min(1.0, vd));
         const float vf = static_cast<float>(vd);
-        if (std::fabs(vf) > P2D_SILENCE_THRESHOLD) allSilent = false;
         source_cache_[i] = vf;
-    }
-
-    if (allSilent && !config_.enable_dither) {
-        // Keep absolute digital silence deterministic and noise-free.  Decay the
-        // active states so low-level audio after a silent span does not splash.
-        for (uint32_t i = 0; i < dsd_bytes; i++) {
-            // 0x69 is the DSD idle pattern; 0xAA creates a strong periodic
-            // one-bit carrier that is audible on some DACs, especially DSD64.
-            dsd_output[i] = P2D_DSD_IDLE_PATTERN;
-        }
-        for (float& e : ef_hist_) e *= 0.25f;
-        ef_state_.error.fill(0.0f);
-        ef_state_.last_output = -1.0f;
-        silence_phase_ = 0;
-        previous_input_ = 0.0f;
-        have_previous_input_ = true;
-        samples_processed_ += sample_count;
-        bytes_output_ += dsd_bytes;
-        return dsd_bytes;
     }
 
     std::memset(dsd_output, 0, dsd_bytes);
@@ -570,19 +508,9 @@ uint32_t PcmToDsdConverter::convertRealtimeP2d(const void* pcm_data, uint32_t sa
 
         for (uint32_t j = 0; j < repeat && bits_packed < target_bits; j++) {
             const float interpolated = start + step * static_cast<float>(j + 1u);
-            int out;
-            if (!config_.enable_dither &&
-                nearlySilent(interpolated) &&
-                nearlySilent(start) &&
-                nearlySilent(current)) {
-                // Keep exact silence deterministic.  We still decay the history
-                // a little so a later non-silent block does not inherit stale
-                // state from an earlier loud passage.
-                out = nextDsdIdleBit(silence_phase_);
-                for (float& e : ef_hist_) e *= 0.82f;
-            } else {
-                out = quantizeP2dSample(interpolated, spec);
-            }
+            // Silence goes through the same persistent loop as music. A block-local
+            // silence shortcut would make output depend on the caller's chunk boundaries.
+            const int out = quantizeP2dSample(interpolated, spec);
             emitBit(out > 0 ? 1 : 0);
             bits_packed++;
         }
@@ -616,82 +544,21 @@ uint32_t PcmToDsdConverter::convertRealtimeP2d(const void* pcm_data, uint32_t sa
 }
 
 int PcmToDsdConverter::quantizeP2dSample(float sample, const P2dKernelSpec& spec) {
-    // Keep the modulator fixed. The previous low-level helper path made the
-    // state transition with program level, which produced audible swirl and
-    // roughness on real music. A static error-feedback loop is less fancy but
-    // much cleaner and easier for a DAC to track.
-    float x = clampFloat(sample, -P2D_MAX_INPUT_LEVEL, P2D_MAX_INPUT_LEVEL);
-    const float absx = std::fabs(x);
-
+    (void)spec; // Per-rate input headroom is applied before interpolation.
+    const double x = clampFloat(sample, -P2D_MAX_INPUT_LEVEL, P2D_MAX_INPUT_LEVEL);
+    const double previousOutput = ef_state_.last_output;
+    // Second-order feedback loop: unity signal transfer and two DC noise zeros.
+    // Leaking/clipping these states introduces a dead zone: tiny input can no longer
+    // accumulate enough error to change the bit pattern. Do not gate by signal level.
+    modulator_integrators_[0] += x - previousOutput;
+    modulator_integrators_[1] += modulator_integrators_[0] - previousOutput;
+    double decision = modulator_integrators_[1];
     if (config_.enable_dither) {
-        x += tpdfDither(ef_state_.rng, ef_state_.prev_dither, 0.18f / 2147483648.0f);
-        x = clampFloat(x, -P2D_MAX_INPUT_LEVEL, P2D_MAX_INPUT_LEVEL);
-    } else if (absx > P2D_SILENCE_THRESHOLD) {
-        const float decorrelateScale = 0.0035f * low_rate_assist_;
-        if (decorrelateScale > 0.0f) {
-            const float fadeIn = clampFloat((absx - 8.0e-8f) / (3.2e-6f - 8.0e-8f), 0.0f, 1.0f);
-            const float fadeOut = clampFloat((6.5e-4f - absx) / (6.5e-4f - 2.0e-5f), 0.0f, 1.0f);
-            const float decorrelate = fadeIn * fadeOut;
-            if (decorrelate > 0.0f) {
-                x += tpdfDither(ef_state_.rng, ef_state_.prev_dither,
-                                decorrelate * (decorrelateScale / 2147483648.0f));
-                x = clampFloat(x, -P2D_MAX_INPUT_LEVEL, P2D_MAX_INPUT_LEVEL);
-            }
-        }
+        decision += tpdfDither(ef_state_.rng, ef_state_.prev_dither,
+                              0.18f / 2147483648.0f);
     }
-
-    const int activeOrder = std::max(1, std::min(spec.order, 5));
-    float shaped = x + ef_hist_[0];
-    if (activeOrder >= 2) shaped += spec.feedback_coeffs[1] * ef_hist_[1];
-    if (activeOrder >= 3) shaped += spec.feedback_coeffs[2] * ef_hist_[2];
-    if (activeOrder >= 4) shaped += spec.feedback_coeffs[3] * ef_hist_[3];
-    if (activeOrder >= 5) shaped += spec.feedback_coeffs[4] * ef_hist_[4];
-
-    const float decision = clampFloat(shaped, -spec.decision_limit, spec.decision_limit);
-
-    int out;
-    if (decision > 0.0f) out = 1;
-    else if (decision < 0.0f) out = -1;
-    else out = (ef_state_.last_output > 0.0f) ? -1 : 1;
-
-    const float y = static_cast<float>(out);
-    const float err = x - y;
-
-    const float quietAssist = low_rate_assist_ *
-                              clampFloat((7.5e-4f - absx) / (7.5e-4f - 2.5e-5f), 0.0f, 1.0f);
-    const float limitTrim = 1.0f - 0.03f * quietAssist;
-    const float lim0 = spec.error_limit * limitTrim;
-    const float lim1 = spec.error_limit * 0.78f * limitTrim;
-    const float lim2 = spec.error_limit * 0.56f * limitTrim;
-    const float lim3 = spec.error_limit * 0.40f * limitTrim;
-    const float lim4 = spec.error_limit * 0.28f * limitTrim;
-
-    const float leak0 = 0.99980f;
-    const float leak1 = 0.99935f - 0.00008f * quietAssist;
-    const float leak2 = 0.99895f - 0.00010f * quietAssist;
-    const float leak3 = 0.99845f - 0.00012f * quietAssist;
-    const float leak4 = 0.99785f - 0.00014f * quietAssist;
-
-    const float f1 = 0.070f + 0.014f * low_rate_assist_;
-    const float f2 = 0.045f + 0.005f * low_rate_assist_;
-    const float f3 = 0.030f - 0.003f * low_rate_assist_;
-    const float f4 = 0.020f - 0.006f * low_rate_assist_;
-
-    ef_hist_[0] = clampFloat(leak0 * ef_hist_[0] + err, -lim0, lim0);
-    if (activeOrder >= 2) ef_hist_[1] = clampFloat(leak1 * ef_hist_[1] + f1 * ef_hist_[0], -lim1, lim1);
-    else ef_hist_[1] *= 0.92f;
-    if (activeOrder >= 3) ef_hist_[2] = clampFloat(leak2 * ef_hist_[2] + f2 * ef_hist_[1], -lim2, lim2);
-    else ef_hist_[2] *= 0.92f;
-    if (activeOrder >= 4) ef_hist_[3] = clampFloat(leak3 * ef_hist_[3] + f3 * ef_hist_[2], -lim3, lim3);
-    else ef_hist_[3] *= 0.92f;
-    if (activeOrder >= 5) ef_hist_[4] = clampFloat(leak4 * ef_hist_[4] + f4 * ef_hist_[3], -lim4, lim4);
-    else ef_hist_[4] *= 0.92f;
-
-    for (int i = 5; i < ErrorFeedbackState::MAX_TAPS; i++) {
-        ef_hist_[static_cast<size_t>(i)] *= 0.990f;
-    }
-
-    ef_state_.last_output = y;
+    const int out = decision >= 0.0 ? 1 : -1;
+    ef_state_.last_output = static_cast<float>(out);
     return out;
 }
 
@@ -707,6 +574,7 @@ void PcmToDsdConverter::reset() {
     ef_state_.reset(dither_state_);
     ef_hist_.fill(0.0f);
     silence_phase_ = 0;
+    modulator_integrators_.fill(0.0);
     for (auto& stage : work_rate_stages_) stage.reset();
     previous_input_ = 0.0f;
     have_previous_input_ = false;

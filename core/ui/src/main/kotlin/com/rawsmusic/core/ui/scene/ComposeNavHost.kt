@@ -12,7 +12,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -24,7 +23,6 @@ import com.rawsmusic.core.common.model.Album
 import com.rawsmusic.core.common.model.Artist
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.model.Folder
-import com.rawsmusic.core.common.model.FolderHierarchyNode
 import com.rawsmusic.core.common.model.Playlist
 import com.rawsmusic.core.common.model.SortOrder
 import com.rawsmusic.core.ui.scene.pages.AboutPage
@@ -49,6 +47,7 @@ import com.rawsmusic.core.ui.scene.pages.LibrarySceneGroupingWarmup
 import com.rawsmusic.core.ui.scene.pages.LocalLibraryChromeInfo
 import com.rawsmusic.core.ui.scene.pages.MetadataMatchSourceUi
 import com.rawsmusic.core.ui.scene.pages.PlaylistsPage
+import com.rawsmusic.core.ui.scene.pages.resolveCollectionHeroWindowGeometry
 import com.rawsmusic.core.ui.scene.pages.LibrarySongSelectionActions
 import com.rawsmusic.core.ui.scene.pages.QueuePage
 import com.rawsmusic.core.ui.scene.pages.RecentlyAddedPage
@@ -64,6 +63,7 @@ import com.rawsmusic.core.ui.widget.virtuallist.ReferenceLibraryProviderRegistry
 import com.rawsmusic.core.ui.widget.virtuallist.VirtualListPersistentRuntime
 import com.rawsmusic.core.ui.widget.virtuallist.LocalReferenceLibraryProviderIdentity
 import com.rawsmusic.core.ui.widget.virtuallist.stableVirtualListHash64
+import com.rawsmusic.core.ui.systemui.rawStableStatusBarTopPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.geometry.Rect
 import io.github.proify.lyricon.lyric.model.Song
@@ -73,6 +73,8 @@ import io.github.proify.lyricon.lyric.model.Song
  * 由 MainActivity 设置，传递给各个页面。
  */
 data class NavCallbacks(
+    /** Credits popup links are resolved to the real collection route, then PLAYER is dismissed. */
+    val onCreditsDetailClick: (NavScene, String) -> Unit = { _, _ -> },
     val onSongClick: (AudioFile, Int) -> Unit = { _, _ -> },
     val onSongLongClick: (AudioFile, Int) -> Unit = { _, _ -> },
     val onAlbumClick: (Album) -> Unit = {},
@@ -127,7 +129,6 @@ data class NavCallbacks(
  */
 data class NavData(
     val songs: List<AudioFile> = emptyList(),
-    val folderHierarchy: List<FolderHierarchyNode> = emptyList(),
     val currentPlayingIndex: Int = -1,
     val currentSong: AudioFile? = null,
     /** Live MiniPlayer identity; library/current-row state may remain frozen during a scene move. */
@@ -188,6 +189,7 @@ fun ComposeNavHost(
     onHomeCarouselCurrentArtworkLongPress: (HomeFullCoverSourceAnchor) -> Unit = {},
     onHomeCarouselCurrentArtworkBoundsChanged: (AudioFile, Rect) -> Unit = { _, _ -> },
     sceneGestureExclusionBounds: Rect? = null,
+    sceneGestureExclusionBoundsProvider: (() -> Rect?)? = null,
     sceneGesturesEnabled: Boolean = true,
     onSceneTransitionActiveChanged: (Boolean) -> Unit = {},
     onSceneTransitionFrameChanged: (SceneTransitionFrame) -> Unit = {},
@@ -207,6 +209,7 @@ fun ComposeNavHost(
     val albumDetailVirtualListState = rememberComposeVirtualListState("album_detail_songs")
     val artistsVirtualListState = rememberComposeVirtualListState("artists")
     val artistDetailVirtualListState = rememberComposeVirtualListState("artist_detail_songs")
+    val artistAllSongsVirtualListState = rememberComposeVirtualListState("artist_all_songs")
     val artistBiographyVirtualListState = rememberComposeVirtualListState("artist_biography")
     val genresVirtualListState = rememberComposeVirtualListState("genres")
     val genreDetailVirtualListState = rememberComposeVirtualListState("genre_detail_songs")
@@ -288,16 +291,30 @@ fun ComposeNavHost(
             state = state,
             modifier = Modifier.fillMaxSize(),
             horizontalGestureExclusionBounds = sceneGestureExclusionBounds,
+            horizontalGestureExclusionBoundsProvider = sceneGestureExclusionBoundsProvider,
             gesturesEnabled = sceneGesturesEnabled,
             providerBackGesture = folderHierarchyPageState.contentBackGesture.takeIf {
                 state.currentScene == NavScene.FOLDER_HIERARCHY
             },
             onTransitionActiveChanged = onSceneTransitionActiveChanged,
             onTransitionFrameChanged = onSceneTransitionFrameChanged,
+            onCollectionDetailReturnCommitted = { detailScene ->
+                when (detailScene) {
+                    NavScene.ALBUM_DETAIL -> albumDetailVirtualListState.clearVirtualListEdge()
+                    NavScene.ARTIST_DETAIL -> artistDetailVirtualListState.clearVirtualListEdge()
+                    NavScene.ARTIST_ALL_SONGS -> artistAllSongsVirtualListState.clearVirtualListEdge()
+                    NavScene.GENRE_DETAIL -> genreDetailVirtualListState.clearVirtualListEdge()
+                    NavScene.YEAR_DETAIL -> yearDetailVirtualListState.clearVirtualListEdge()
+                    NavScene.COMPOSER_DETAIL -> composerDetailVirtualListState.clearVirtualListEdge()
+                    NavScene.FOLDER_DETAIL -> folderDetailVirtualListState.clearVirtualListEdge()
+                    else -> Unit
+                }
+            },
             onCollectionDetailOffscreenReturnCommitted = { detailScene ->
                 when (detailScene) {
                     NavScene.ALBUM_DETAIL,
                     NavScene.ARTIST_DETAIL,
+                    NavScene.ARTIST_ALL_SONGS,
                     NavScene.GENRE_DETAIL,
                     NavScene.YEAR_DETAIL,
                     NavScene.COMPOSER_DETAIL,
@@ -318,6 +335,7 @@ fun ComposeNavHost(
                     providerIdentity = { providerScene ->
                         if (providerScene.isDetail()) state.currentArgument else ""
                     },
+                    onNavigate = { targetScene -> state.navigateTo(targetScene) },
                     modifier = Modifier.fillMaxSize(),
                     content = renderScene,
                 )
@@ -335,10 +353,8 @@ fun ComposeNavHost(
                 // later published the target into the real owner.
                 val sharedCoverRegistry = LocalSharedCoverRegistry.current
                 val density = LocalDensity.current
-                val configuration = LocalConfiguration.current
-                val collectionHeaderWidthPx = with(density) {
-                    configuration.screenWidthDp.dp.roundToPx()
-                }
+                val windowLayoutProfile = LocalRawWindowLayoutProfile.current
+                val collectionStatusBarTop = rawStableStatusBarTopPadding()
 
                 fun collectionDetailSharedElementId(
                     detailScene: NavScene,
@@ -348,6 +364,7 @@ fun ComposeNavHost(
                     return when (detailScene) {
                         NavScene.ALBUM_DETAIL -> "cover:album:$hash"
                         NavScene.ARTIST_DETAIL -> "cover:artist:$hash"
+                        NavScene.ARTIST_ALL_SONGS -> "cover:artist-all-songs:$hash"
                         NavScene.FOLDER_DETAIL -> "cover:folder:$hash"
                         NavScene.GENRE_DETAIL -> "cover:genre:$hash"
                         NavScene.YEAR_DETAIL -> "cover:year:$hash"
@@ -365,11 +382,25 @@ fun ComposeNavHost(
                     val sharedElementId =
                         collectionDetailSharedElementId(detailScene, decodedArgument)
                     if (sharedElementId.isNotBlank()) {
+                        val geometry = resolveCollectionHeroWindowGeometry(
+                            scene = detailScene,
+                            window = windowLayoutProfile,
+                            statusBarTop = collectionStatusBarTop,
+                        )
+                        val hostLeft = (
+                            (windowLayoutProfile.windowWidth - windowLayoutProfile.contentMaxWidth) / 2f +
+                                windowLayoutProfile.libraryRailWidth +
+                                windowLayoutProfile.libraryRailGap
+                            ).coerceAtLeast(0.dp)
                         sharedCoverRegistry.registerSynchronousSceneHeaderEndpoint(
                             sceneId = detailScene.name,
                             elementId = sharedElementId,
-                            widthPx = collectionHeaderWidthPx,
-                            sceneItemHeightPx = collectionHeaderWidthPx,
+                            widthPx = with(density) { geometry.artworkWidth.roundToPx() },
+                            sceneItemHeightPx = with(density) { geometry.artworkHeight.roundToPx() },
+                            viewportLeftPx = with(density) { geometry.artworkLeft.roundToPx() },
+                            viewportTopPx = with(density) { geometry.artworkTop.roundToPx() },
+                            windowLeftPx = with(density) { (hostLeft + geometry.artworkLeft).roundToPx() },
+                            windowTopPx = with(density) { geometry.artworkTop.roundToPx() },
                         )
                     }
                     if (state.currentScene != detailScene ||
@@ -415,6 +446,7 @@ fun ComposeNavHost(
                 onQueueNavigate = callbacks.onHomeCarouselNavigate,
                 onCarouselSongSelect = callbacks.onHomeCarouselSongClick,
                 onCurrentArtworkLongPress = onHomeCarouselCurrentArtworkLongPress,
+                onCurrentArtworkDoubleTap = callbacks.onNavigateToPlayer,
                 onCurrentArtworkBoundsChanged = onHomeCarouselCurrentArtworkBoundsChanged,
                 hideCenterForFullscreenTransition = homeFullCoverActive,
                 centerReflectionAlpha = homeFullCoverCenterReflectionAlpha,
@@ -647,10 +679,10 @@ fun ComposeNavHost(
             NavScene.FOLDER_HIERARCHY -> FolderHierarchyPage(
                 pageState = folderHierarchyPageState,
                 songs = data.songs,
-                hierarchy = data.folderHierarchy,
                 onBack = onBack,
                 onPlayQueue = callbacks.onPlayQueue,
                 onShuffle = callbacks.onShuffleAll,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.FOLDER) },
                 virtualListState = folderHierarchyVirtualListState,
                 predictiveBackEnabled = sceneGesturesEnabled,
             )
@@ -701,12 +733,27 @@ fun ComposeNavHost(
                 songs = data.songs,
                 dataSource = data.artistDataSource,
                 selectedArtistKey = roleArgument,
+                selectedArtistScene = NavScene.ARTIST_DETAIL,
                 detailListState = artistDetailVirtualListState,
                 onArtistClick = { artistKey ->
                     navigateToCollectionDetail(
                         NavScene.ARTIST_DETAIL,
                         Uri.encode(artistKey),
                         artistDetailVirtualListState,
+                    )
+                },
+                onAlbumClick = { albumKey ->
+                    navigateToCollectionDetail(
+                        NavScene.ALBUM_DETAIL,
+                        Uri.encode(albumKey),
+                        albumDetailVirtualListState,
+                    )
+                },
+                onOpenAllSongs = { artistKey ->
+                    navigateToCollectionDetail(
+                        NavScene.ARTIST_ALL_SONGS,
+                        Uri.encode(artistKey),
+                        artistAllSongsVirtualListState,
                     )
                 },
                 onBack = onBack,
@@ -720,6 +767,22 @@ fun ComposeNavHost(
                     state.navigateTo(NavScene.ARTIST_BIOGRAPHY, Uri.encode(artistKey))
                 },
                 virtualListState = artistsVirtualListState
+            )
+
+            NavScene.ARTIST_ALL_SONGS -> ArtistsPage(
+                songs = data.songs,
+                dataSource = data.artistDataSource,
+                selectedArtistKey = roleArgument,
+                selectedArtistScene = NavScene.ARTIST_ALL_SONGS,
+                detailListState = artistAllSongsVirtualListState,
+                onBack = onBack,
+                onPlayQueue = callbacks.onPlayQueue,
+                onSongLongClick = callbacks.onSongLongClick,
+                selectionActions = songSelectionActions,
+                onShuffle = callbacks.onShuffleAll,
+                onOpenFolder = callbacks.onOpenFolderPicker,
+                onSearch = { callbacks.onSearchClick(GlobalSearchScope.ARTIST) },
+                virtualListState = artistsVirtualListState,
             )
 
             NavScene.ARTIST_BIOGRAPHY -> ArtistBiographyPage(

@@ -4,6 +4,45 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VirtualListMarqueeMotionTest {
+    @Test fun oneSidedTransitionContinuesTextClockWithoutInternalLayoutInterpolation() {
+        assertTrue(shouldAdvanceVirtualListText(false, true))
+        assertTrue(shouldAdvanceVirtualListText(true, false))
+        assertFalse(shouldAdvanceVirtualListText(false, false))
+    }
+    @Test fun zoomGeometryKeepsAdvancingOutwardWithoutAnotherInitialHold() {
+        val motion = VirtualListMarqueeMotion()
+        motion.tick(0); motion.tick(1500); motion.tick(2500)
+        var previous = motion.offset
+        for (step in 1..10) {
+            val next = motion.update(2500L + step * 16, 100f + step,
+                50f, true, true, true, preserveProgress = true)
+            assertTrue("zoom frame $step stopped at $next", next > previous)
+            previous = next
+        }
+    }
+
+    @Test fun zoomGeometryKeepsReturnDirection() {
+        val motion = VirtualListMarqueeMotion()
+        motion.tick(0); motion.tick(1500); motion.tick(3500); motion.tick(6500); motion.tick(7500)
+        var previous = motion.offset
+        for (step in 1..10) {
+            val next = motion.update(7500L + step * 16, 100f + step,
+                50f, true, true, true, preserveProgress = true)
+            assertTrue("return frame $step stopped at $next", next < previous)
+            previous = next
+        }
+    }
+
+    @Test fun zoomDoesNotExtendInitialWaitOrSuppressNewTextReset() {
+        val motion = VirtualListMarqueeMotion()
+        motion.tick(0)
+        motion.update(1400, 120f, 50f, true, true, true, true)
+        motion.update(1500, 130f, 50f, true, true, true, true)
+        assertTrue(motion.update(1700, 140f, 50f, true, true, true, true) > 0f)
+        motion.reset()
+        assertEquals(0f, motion.update(1800, 140f, 50f, true, true, true, true), 0f)
+    }
+
     private fun VirtualListMarqueeMotion.tick(time: Long, distance: Float = 100f,
         visible: Boolean = true, changed: Boolean = false, enabled: Boolean = true) =
         update(time, distance, 50f, enabled, visible, changed)

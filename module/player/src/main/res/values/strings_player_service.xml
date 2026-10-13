@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="player_action_playback_mode">Playback mode</string>
+    <string name="player_notification_ready">Ready to play</string>
+    <string name="player_action_previous">Previous</string>
+    <string name="player_action_pause">Pause</string>
+    <string name="player_action_play">Play</string>
+    <string name="player_action_next">Next</string>
+    <string name="player_mode_shuffle">Shuffle</string>
+    <string name="player_mode_repeat_one">Repeat one</string>
+    <string name="player_mode_repeat_all">Repeat all</string>
+    <string name="player_mode_sequential">Sequential</string>
+    <string name="player_action_desktop_lyric">Desktop lyrics</string>
+</resources>

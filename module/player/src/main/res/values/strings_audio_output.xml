@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="audio_output_desc_opensl">Traditional output with maximum compatibility</string>
+    <string name="audio_output_desc_aaudio">Low-latency output, recommended on Android 8.1+</string>
+    <string name="audio_output_desc_direct">Bypass system mixing for direct high-sample-rate output</string>
+    <string name="audio_output_desc_audiotrack">System-mixed, high-compatibility PCM output up to 48 kHz / 24-bit / stereo</string>
+    <string name="audio_device_unknown">Unknown</string>
+    <string name="audio_device_none">No output device</string>
+    <string name="audio_device_speaker">Speaker</string>
+    <string name="audio_device_earpiece">Earpiece</string>
+    <string name="audio_device_wired_headset">Wired headset</string>
+    <string name="audio_device_wired_headphones">Wired headphones</string>
+    <string name="audio_device_bluetooth_a2dp">Bluetooth A2DP</string>
+    <string name="audio_device_bluetooth_sco">Bluetooth SCO</string>
+    <string name="audio_device_usb_audio">USB audio</string>
+    <string name="audio_device_usb_headset">USB headset</string>
+    <string name="audio_device_usb_accessory">USB accessory</string>
+    <string name="audio_device_line_analog">Analog line</string>
+    <string name="audio_device_line_digital">Digital line</string>
+    <string name="audio_device_hearing_aid">Hearing aid</string>
+    <string name="audio_device_generic">Device (%1$d)</string>
+    <string name="audio_sco_off">Off</string>
+    <string name="audio_sco_auto">Auto detect</string>
+    <string name="audio_sco_force">Force on</string>
+    <string name="audio_sco_desc_off">Do not use the Bluetooth call-audio channel</string>
+    <string name="audio_sco_desc_auto">Switch automatically only when the device does not support Bluetooth music audio</string>
+    <string name="audio_sco_desc_force">Always route through the Bluetooth call-audio channel</string>
+</resources>

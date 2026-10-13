@@ -31,6 +31,63 @@ class AutoTransitionPresentationPolicyTest {
         )
     }
 
+    @Test
+    fun envelopePreviewArmsWhenTailAnalysisWindowOpensBeforeTheMixerStarts() {
+        assertFalse(
+            AutoTransitionPresentationPolicy.shouldArmEnvelope(
+                remainingMs = 30_001L,
+                envelopeLookaheadMs = 30_000L,
+                targetPreparedAndCompatible = true,
+            )
+        )
+        assertTrue(
+            AutoTransitionPresentationPolicy.shouldArmEnvelope(
+                remainingMs = 30_000L,
+                envelopeLookaheadMs = 30_000L,
+                targetPreparedAndCompatible = true,
+            )
+        )
+        assertTrue(
+            AutoTransitionPresentationPolicy.shouldArmEnvelope(
+                remainingMs = 12_000L,
+                envelopeLookaheadMs = 30_000L,
+                targetPreparedAndCompatible = true,
+            )
+        )
+    }
+
+    @Test
+    fun envelopePreviewIsBoundedAndNeverAdvertisesUnpreparedOrInvalidTargets() {
+        assertFalse(
+            AutoTransitionPresentationPolicy.shouldArmEnvelope(
+                remainingMs = 45_000L,
+                envelopeLookaheadMs = 60_000L,
+                targetPreparedAndCompatible = true,
+            )
+        )
+        assertTrue(
+            AutoTransitionPresentationPolicy.shouldArmEnvelope(
+                remainingMs = 29_000L,
+                envelopeLookaheadMs = 60_000L,
+                targetPreparedAndCompatible = true,
+            )
+        )
+        assertFalse(
+            AutoTransitionPresentationPolicy.shouldArmEnvelope(
+                remainingMs = 9_000L,
+                envelopeLookaheadMs = 30_000L,
+                targetPreparedAndCompatible = false,
+            )
+        )
+        assertFalse(
+            AutoTransitionPresentationPolicy.shouldArmEnvelope(
+                remainingMs = 0L,
+                envelopeLookaheadMs = 30_000L,
+                targetPreparedAndCompatible = true,
+            )
+        )
+    }
+
     private fun shouldArm(positionMs: Long): Boolean =
         AutoTransitionPresentationPolicy.shouldArmLyrics(
             positionMs = positionMs,

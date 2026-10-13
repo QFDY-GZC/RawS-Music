@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -55,6 +56,13 @@ fun PlayerDismissMotionHost(
     backEnabled: Boolean = true,
     gestureEnabled: Boolean = true,
     gestureBlocked: Boolean = false,
+    // The immersive player uses the same physical sheet progress as the standard player.
+    // This host remains the stationary gesture gate, but does not translate a second page.
+    sceneSheetMotion: Boolean = false,
+    sceneSheetTravelPx: Float = 0f,
+    onSceneSheetDragStart: () -> Unit = {},
+    onSceneSheetDragProgress: (Float) -> Unit = {},
+    onSceneSheetDragEnd: (Boolean, Float) -> Unit = { _, _ -> },
     overlayContent: @Composable () -> Unit = {},
     content: @Composable (dismissingPlayer: Boolean) -> Unit
 ) {
@@ -71,11 +79,17 @@ fun PlayerDismissMotionHost(
     }
 
     val density = LocalDensity.current
+    val immersiveGestureGate = remember { com.rawsmusic.core.ui.widget.player.ImmersiveVerticalGestureGate() }
     val view = LocalView.current
     val scope = rememberCoroutineScope()
     val latestOnDismiss by rememberUpdatedState(onDismiss)
     val latestOnDismissProgressChange by rememberUpdatedState(onDismissProgressChange)
     val latestGestureBlocked by rememberUpdatedState(gestureBlocked)
+    val latestSceneSheetMotion by rememberUpdatedState(sceneSheetMotion)
+    val latestSceneSheetTravel by rememberUpdatedState(sceneSheetTravelPx)
+    val latestSceneSheetStart by rememberUpdatedState(onSceneSheetDragStart)
+    val latestSceneSheetProgress by rememberUpdatedState(onSceneSheetDragProgress)
+    val latestSceneSheetEnd by rememberUpdatedState(onSceneSheetDragEnd)
     val dragDismissOffset = remember { Animatable(0f) }
     var directDragActive by remember { mutableStateOf(false) }
     var directDragOffset by remember { mutableFloatStateOf(0f) }
@@ -143,13 +157,18 @@ fun PlayerDismissMotionHost(
                     Modifier.pointerInput(dismissingPlayer, dismissTargetPx, dismissThresholdPx) {
                         var closeGesture = false
                         var gestureOffset = 0f
+                        var controllerSheetGesture = false
                         val velocityTracker = VelocityTracker()
                         detectDragGestures(
                             onDragStart = { offset ->
                                 closeGesture = !dismissingPlayer &&
                                     !latestGestureBlocked &&
-                                    offset.y <= topDragLimitPx
-                                gestureOffset = if (directDragActive) {
+                                    immersiveGestureGate.dismissAllowed &&
+                                    (immersiveGestureGate.enabled || offset.y <= topDragLimitPx)
+                                controllerSheetGesture = closeGesture && latestSceneSheetMotion
+                                gestureOffset = if (controllerSheetGesture) {
+                                    0f
+                                } else if (directDragActive) {
                                     directDragOffset
                                 } else {
                                     dragDismissOffset.value
@@ -157,19 +176,99 @@ fun PlayerDismissMotionHost(
                                 velocityTracker.resetTracking()
                                 velocityTracker.addPosition(SystemClock.uptimeMillis(), offset)
                                 if (closeGesture) {
-                                    directDragOffset = gestureOffset
-                                    directDragActive = true
-                                    latestOnDismissProgressChange(
-                                        (gestureOffset / dismissTargetPx.coerceAtLeast(1f))
-                                            .coerceIn(0f, 1f)
-                                    )
-                                    scope.launch { dragDismissOffset.stop() }
+                                    if (controllerSheetGesture) {
+                                        latestSceneSheetStart()
+                                    } else {
+                                        directDragOffset = gestureOffset
+                                        directDragActive = true
+                                        latestOnDismissProgressChange(
+                                            (gestureOffset / dismissTargetPx.coerceAtLeast(1f))
+                                                .coerceIn(0f, 1f)
+                                        )
+                                        scope.launch { dragDismissOffset.stop() }
+                                    }
                                 }
                             },
                             onDrag = { change, dragAmount ->
                                 if (latestGestureBlocked) {
                                     if (closeGesture) {
                                         closeGesture = false
+                                        if (controllerSheetGesture) {
+                                            latestSceneSheetEnd(false, 0f)
+                                        } else {
+                                        val settleStart = directDragOffset
+                                        scope.launch {
+                                            dragDismissOffset.snapTo(settleStart)
+                                            directDragActive = false
+                                            dragDismissOffset.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                                    stiffness = Spring.StiffnessMediumLow
+                                                )
+                                            )
+                                        }
+                                        }
+                                    }
+                                    return@detectDragGestures
+                                }
+                                if (!closeGesture) return@detectDragGestures
+                                // Once the dismiss gesture is captured, vertical motion belongs to
+                                // this host in both directions. Applying extra resistance only when
+                                // the finger reverses makes the sheet lag behind the pointer and is
+                                // especially visible after a partial downward drag. Keep the motion
+                                // physically reversible and 1:1; the release threshold still decides
+                                // whether the gesture commits or springs back.
+                                val gestureTravel = if (controllerSheetGesture) {
+                                    latestSceneSheetTravel.takeIf { it > 0f } ?: dismissTargetPx
+                                } else {
+                                    dismissTargetPx
+                                }
+                                gestureOffset = (gestureOffset + dragAmount.y)
+                                    .coerceIn(0f, gestureTravel)
+                                velocityTracker.addPosition(change.uptimeMillis, change.position)
+                                // Pointer owns the physical offset synchronously. Do not dispatch a
+                                // coroutine per event: reversing direction must update this frame,
+                                // not after older snapTo jobs have drained.
+                                if (controllerSheetGesture) {
+                                    latestSceneSheetProgress(
+                                        (gestureOffset / gestureTravel.coerceAtLeast(1f))
+                                            .coerceIn(0f, 1f)
+                                    )
+                                } else {
+                                    directDragOffset = gestureOffset
+                                    latestOnDismissProgressChange(
+                                        (gestureOffset / dismissTargetPx.coerceAtLeast(1f))
+                                            .coerceIn(0f, 1f)
+                                    )
+                                }
+                                if (gestureOffset > 0f) change.consume()
+                            },
+                            onDragCancel = {
+                                closeGesture = false
+                                if (controllerSheetGesture) {
+                                    latestSceneSheetEnd(false, 0f)
+                                } else {
+                                    val settleStart = directDragOffset
+                                    scope.launch {
+                                        dragDismissOffset.snapTo(settleStart)
+                                        directDragActive = false
+                                        dragDismissOffset.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                stiffness = Spring.StiffnessMediumLow
+                                            )
+                                        )
+                                    }
+                                }
+                            },
+                            onDragEnd = {
+                                if (latestGestureBlocked) {
+                                    closeGesture = false
+                                    if (controllerSheetGesture) {
+                                        latestSceneSheetEnd(false, 0f)
+                                    } else {
                                         val settleStart = directDragOffset
                                         scope.launch {
                                             dragDismissOffset.snapTo(settleStart)
@@ -186,60 +285,16 @@ fun PlayerDismissMotionHost(
                                     return@detectDragGestures
                                 }
                                 if (!closeGesture) return@detectDragGestures
-                                // Once the dismiss gesture is captured, vertical motion belongs to
-                                // this host in both directions. Applying extra resistance only when
-                                // the finger reverses makes the sheet lag behind the pointer and is
-                                // especially visible after a partial downward drag. Keep the motion
-                                // physically reversible and 1:1; the release threshold still decides
-                                // whether the gesture commits or springs back.
-                                gestureOffset = (gestureOffset + dragAmount.y)
-                                    .coerceIn(0f, dismissTargetPx)
-                                velocityTracker.addPosition(change.uptimeMillis, change.position)
-                                // Pointer owns the physical offset synchronously. Do not dispatch a
-                                // coroutine per event: reversing direction must update this frame,
-                                // not after older snapTo jobs have drained.
-                                directDragOffset = gestureOffset
-                                latestOnDismissProgressChange(
-                                    (gestureOffset / dismissTargetPx.coerceAtLeast(1f))
-                                        .coerceIn(0f, 1f)
-                                )
-                                if (gestureOffset > 0f) change.consume()
-                            },
-                            onDragCancel = {
-                                closeGesture = false
-                                val settleStart = directDragOffset
-                                scope.launch {
-                                    dragDismissOffset.snapTo(settleStart)
-                                    directDragActive = false
-                                    dragDismissOffset.animateTo(
-                                        targetValue = 0f,
-                                        animationSpec = spring(
-                                            dampingRatio = Spring.DampingRatioNoBouncy,
-                                            stiffness = Spring.StiffnessMediumLow
-                                        )
-                                    )
-                                }
-                            },
-                            onDragEnd = {
-                                if (latestGestureBlocked) {
-                                    closeGesture = false
-                                    val settleStart = directDragOffset
-                                    scope.launch {
-                                        dragDismissOffset.snapTo(settleStart)
-                                        directDragActive = false
-                                        dragDismissOffset.animateTo(
-                                            targetValue = 0f,
-                                            animationSpec = spring(
-                                                dampingRatio = Spring.DampingRatioNoBouncy,
-                                                stiffness = Spring.StiffnessMediumLow
-                                            )
-                                        )
-                                    }
-                                    return@detectDragGestures
-                                }
-                                if (!closeGesture) return@detectDragGestures
                                 closeGesture = false
                                 val velocityY = velocityTracker.calculateVelocity().y
+                                if (controllerSheetGesture) {
+                                    val travel = latestSceneSheetTravel.takeIf { it > 0f }
+                                        ?: dismissTargetPx
+                                    val commit = gestureOffset >= dismissThresholdPx ||
+                                        velocityY >= dismissVelocityThresholdPx
+                                    latestSceneSheetEnd(commit, velocityY / travel.coerceAtLeast(1f))
+                                    return@detectDragGestures
+                                }
                                 val settleStart = directDragOffset
                                 scope.launch {
                                     dragDismissOffset.snapTo(settleStart)
@@ -275,20 +330,27 @@ fun PlayerDismissMotionHost(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    translationY = if (directDragActive) directDragOffset else dragDismissOffset.value
+                    translationY = if (sceneSheetMotion) 0f
+                        else if (directDragActive) directDragOffset else dragDismissOffset.value
                     scaleX = 1f
                     scaleY = 1f
                     transformOrigin = TransformOrigin(0.5f, 0f)
                     alpha = 1f
                 }
-                .clip(
-                    RoundedCornerShape(
-                        topStart = dragCornerRadius,
-                        topEnd = dragCornerRadius
+                .then(
+                    if (sceneSheetMotion) Modifier else Modifier.clip(
+                        RoundedCornerShape(
+                            topStart = dragCornerRadius,
+                            topEnd = dragCornerRadius,
+                        )
                     )
                 )
         ) {
-            content(dismissingPlayer)
+            CompositionLocalProvider(
+                com.rawsmusic.core.ui.widget.player.LocalImmersiveVerticalGestureGate provides immersiveGestureGate,
+            ) {
+                content(dismissingPlayer)
+            }
         }
 
         overlayContent()

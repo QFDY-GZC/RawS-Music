@@ -3,6 +3,9 @@ package com.rawsmusic.core.ui.widget.virtuallist
 import kotlin.math.cos
 import kotlin.math.roundToLong
 
+internal fun shouldAdvanceVirtualListText(updateInternalScene: Boolean, marqueeEnabled: Boolean): Boolean =
+    updateInternalScene || marqueeEnabled
+
 /** Per-text lifecycle; the host still supplies the single shared frame callback. */
 internal class VirtualListMarqueeMotion {
     var offset = 0f
@@ -39,13 +42,26 @@ internal class VirtualListMarqueeMotion {
     fun hide() { active = false; offset = 0f }
 
     fun update(now: Long, distance: Float, pixelsPerSecond: Float,
-               enabled: Boolean, visible: Boolean, layoutChanged: Boolean): Float {
+               enabled: Boolean, visible: Boolean, layoutChanged: Boolean,
+               preserveProgress: Boolean = false): Float {
         if (!enabled || distance <= 10f || pixelsPerSecond <= 0f) {
             reset()
             return offset
         }
         speed = pixelsPerSecond
-        if (layoutChanged || overflow != distance || overflow == 0f) {
+        if (preserveProgress && active && overflow > 0f &&
+            (layoutChanged || overflow != distance)) {
+            // Sample the old leg before changing its endpoint. Retarget at the same eased
+            // fraction so geometry updates neither jump the offset nor restart the hold/clock.
+            advance(now)
+            overflow = distance
+            offset = offset.coerceIn(0f, overflow)
+            if (phase == 1 || phase == 3) {
+                val fraction = fractionAt(now)
+                val target = if (phase == 1) overflow else 0f
+                from = if (fraction < 1f) (offset - target * fraction) / (1f - fraction) else offset
+            }
+        } else if (layoutChanged || overflow != distance || overflow == 0f) {
             overflow = distance
             offset = offset.coerceIn(0f, overflow)
             phase = 0
@@ -58,6 +74,16 @@ internal class VirtualListMarqueeMotion {
             active = true
         }
         if (!visible) { hide(); return offset }
+        advance(now)
+        return offset
+    }
+
+    private fun fractionAt(now: Long): Float {
+        val linear = ((now - start).toFloat() / duration.coerceAtLeast(1L)).coerceIn(0f, 1f)
+        return if (overflow > 50f) ((1.0 - cos(Math.PI * linear)) * 0.5).toFloat() else linear
+    }
+
+    private fun advance(now: Long) {
         if (now - start >= duration) {
             if (phase == 1) offset = overflow
             if (phase == 3) offset = 0f
@@ -65,12 +91,10 @@ internal class VirtualListMarqueeMotion {
             startPhase(now, 3000L)
         }
         if (phase == 1 || phase == 3) {
-            val linear = ((now - start).toFloat() / duration.coerceAtLeast(1L)).coerceIn(0f, 1f)
-            val fraction = if (overflow > 50f) ((1.0 - cos(Math.PI * linear)) * 0.5).toFloat() else linear
+            val fraction = fractionAt(now)
             val target = if (phase == 1) overflow else 0f
             offset = from + (target - from) * fraction
         }
-        return offset
     }
 
     private fun startPhase(now: Long, hold: Long) {

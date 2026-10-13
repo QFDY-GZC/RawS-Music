@@ -1,5 +1,6 @@
 package com.rawsmusic.core.ui.widget.virtuallist
 
+import androidx.compose.ui.unit.Density
 import kotlin.math.roundToInt
 
 internal fun composeArtworkItemSceneRects(
@@ -8,9 +9,22 @@ internal fun composeArtworkItemSceneRects(
     params: ListZoomParams,
     density: Float,
     artworkRadiusType: VirtualListArtworkRadiusType = VirtualListArtworkRadiusType.TRACK,
+    fontDensity: Density = Density(density),
 ): ComposeTransitionRects {
+    if (artworkRadiusType == VirtualListArtworkRadiusType.ARTIST_ALL_SONGS) {
+        val coverSide = (72f * density).roundToInt().coerceAtLeast(1)
+        val textLeft = (100f * density).roundToInt()
+        val textWidth = (position.width - textLeft - (16f * density).roundToInt()).coerceAtLeast(1)
+        return ComposeTransitionRects(
+            cover = ComposeItemRect((12f * density).roundToInt(), (8f * density).roundToInt(), coverSide, coverSide),
+            title = ComposeItemRect(textLeft, (17f * density).roundToInt(), textWidth, (28f * density).roundToInt(), fontSizeSp = 19f),
+            subtitle = ComposeItemRect(textLeft, (48f * density).roundToInt(), textWidth, (20f * density).roundToInt(), alpha = 0f),
+            meta = ComposeItemRect(textLeft, (49f * density).roundToInt(), textWidth, (22f * density).roundToInt(), fontSizeSp = 14f),
+            coverRadiusDp = 36f,
+        )
+    }
     return if (mode.isGrid) {
-        composeArtworkGridSceneRects(position, mode, density, artworkRadiusType)
+        composeArtworkGridSceneRects(position, mode, density, fontDensity, artworkRadiusType)
     } else {
         composeArtworkListSceneRects(position, mode, params, density, artworkRadiusType)
     }
@@ -20,6 +34,7 @@ private fun composeArtworkGridSceneRects(
     position: ComposeItemPosition,
     mode: ComposeVirtualListDisplayMode,
     density: Float,
+    fontDensity: Density,
     artworkRadiusType: VirtualListArtworkRadiusType,
 ): ComposeTransitionRects {
     val artworkMargin = (8f * density).roundToInt()
@@ -28,9 +43,19 @@ private fun composeArtworkGridSceneRects(
     val titleTop = artworkMargin + coverSize + (5f * density).roundToInt()
     val titleFontSp = 22f * 0.65f
     val subtitleFontSp = 18.25f * 0.65f
-    val titleHeight = (18f * density).roundToInt().coerceAtLeast(1)
+    val titleHeight = virtualListGridTextLaneHeightPx(
+        fontDensity = fontDensity,
+        density = density,
+        fontSizeSp = titleFontSp,
+        minimumHeightDp = 18f,
+    )
     val line2Top = titleTop + titleHeight + (3f * density).roundToInt()
-    val line2Height = (16f * density).roundToInt().coerceAtLeast(1)
+    val line2Height = virtualListGridTextLaneHeightPx(
+        fontDensity = fontDensity,
+        density = density,
+        fontSizeSp = subtitleFontSp,
+        minimumHeightDp = 16f,
+    )
     val metaHeight = (14f * density).roundToInt().coerceAtLeast(1)
     val metaBottom = position.height + (8f * density).roundToInt()
     return ComposeTransitionRects(
@@ -166,6 +191,7 @@ internal fun resolveArtworkRadiusDp(
             VirtualListArtworkRadiusType.TRACK -> params?.cornerRadiusTracksDp ?: 8f
             VirtualListArtworkRadiusType.ALBUM -> params?.cornerRadiusAlbumsDp ?: 8f
             VirtualListArtworkRadiusType.OTHER -> 8f
+            VirtualListArtworkRadiusType.ARTIST_ALL_SONGS -> 8f
         }
         ComposeVirtualListDisplayMode.LIST_NORMAL,
         ComposeVirtualListDisplayMode.LIST_ZOOMED -> when (artworkRadiusType) {
@@ -174,17 +200,20 @@ internal fun resolveArtworkRadiusDp(
             VirtualListArtworkRadiusType.ALBUM -> params?.cornerRadiusAlbumsDp
                 ?: if (mode == ComposeVirtualListDisplayMode.LIST_ZOOMED) 12f else 8f
             VirtualListArtworkRadiusType.OTHER -> safeCoverSide * 0.5f
+            VirtualListArtworkRadiusType.ARTIST_ALL_SONGS -> safeCoverSide * 0.5f
         }
         ComposeVirtualListDisplayMode.GRID_4,
         ComposeVirtualListDisplayMode.GRID_3 -> when (artworkRadiusType) {
             VirtualListArtworkRadiusType.TRACK -> 16f
             VirtualListArtworkRadiusType.ALBUM -> 8f
             VirtualListArtworkRadiusType.OTHER -> safeCoverSide * 0.5f
+            VirtualListArtworkRadiusType.ARTIST_ALL_SONGS -> safeCoverSide * 0.5f
         }
         ComposeVirtualListDisplayMode.GRID_2 -> when (artworkRadiusType) {
             VirtualListArtworkRadiusType.TRACK -> 24f
             VirtualListArtworkRadiusType.ALBUM -> 16f
             VirtualListArtworkRadiusType.OTHER -> safeCoverSide * 0.5f
+            VirtualListArtworkRadiusType.ARTIST_ALL_SONGS -> safeCoverSide * 0.5f
         }
     }.coerceAtMost(safeCoverSide * 0.5f)
 }
@@ -218,4 +247,3 @@ private fun lerpIntLocal(from: Int, to: Int, fraction: Float): Int {
     val f = fraction.coerceIn(0f, 1f)
     return (from + (to - from) * f).roundToInt()
 }
-

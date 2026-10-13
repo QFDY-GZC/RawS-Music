@@ -42,6 +42,7 @@ dependencies {
     implementation(libs.lottie.compose)
 
     implementation(libs.androidx.palette.ktx)
+    implementation("co.vexo:renderscript-intrinsics-replacement-toolkit:0.8.1")
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
@@ -61,4 +62,7 @@ dependencies {
     implementation("androidx.navigationevent:navigationevent-compose:1.1.1")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation(kotlin("test-junit"))
+    // HCT's six pure Java helpers are vendored from Material 1.13.0 under src/main/java.
+    // The app does not use Material Views; do not pull their layouts/themes into the APK.
 }

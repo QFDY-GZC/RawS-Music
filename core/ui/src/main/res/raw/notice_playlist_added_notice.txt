@@ -1,0 +1,2 @@
+Source: user-provided Heart splash.json.
+Complete heart and splash layers retained with original geometry, colors and timing.

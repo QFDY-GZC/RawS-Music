@@ -23,7 +23,18 @@ object ArtworkBitmapRuntime {
         val appContext = context.applicationContext
         if (key.isBlank()) return null
         return withContext(Dispatchers.IO) {
-            BitmapProvider.executePixelAnalysis(key, targetSide)
+            var attempts = 0
+            val bitmap = AudioArtworkDecodeCoordinator.retryAnalysisAfterSourceSelection {
+                attempts++
+                BitmapProvider.executePixelAnalysis(key, targetSide)
+            }
+            if (attempts > 1) {
+                com.rawsmusic.core.common.utils.AppLogger.i(
+                    "ArtworkRestore",
+                    "palette_source_retry key=${key.hashCode()} attempts=$attempts recovered=${bitmap != null}",
+                )
+            }
+            bitmap
         }
     }
 

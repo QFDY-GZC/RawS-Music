@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -124,10 +125,10 @@ fun PlayModePopupOverlay(
 @Composable
 private fun PlayModeRow(mode: PlayMode, selected: Boolean, onClick: () -> Unit) {
     val label = when (mode) {
-        PlayMode.SEQUENTIAL -> "顺序播放"
-        PlayMode.SHUFFLE_ALL -> "全部随机"
-        PlayMode.SHUFFLE_ONCE -> "随机播放"
-        PlayMode.REPEAT_ONE -> "单曲循环"
+        PlayMode.SEQUENTIAL -> stringResource(R.string.play_mode_sequential)
+        PlayMode.SHUFFLE_ALL -> stringResource(R.string.play_mode_shuffle_all)
+        PlayMode.SHUFFLE_ONCE -> stringResource(R.string.play_mode_shuffle_once)
+        PlayMode.REPEAT_ONE -> stringResource(R.string.repeat_one)
     }
     val iconRes = when (mode) {
         PlayMode.SEQUENTIAL -> R.drawable.ic_order_play_fill

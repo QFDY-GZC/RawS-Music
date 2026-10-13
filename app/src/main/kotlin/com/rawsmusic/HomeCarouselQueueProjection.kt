@@ -10,7 +10,7 @@ internal data class HomeCarouselQueueProjection(
 
 /**
  * Builds the carousel from the same policy-resolved neighbours shown by the mini player.
- * Outer lanes remain visual context only; a gesture is committed through next/previous transport.
+ * This is a finite policy-resolved preview, not a circular copy of the physical queue.
  */
 internal fun buildHomeCarouselQueueProjection(
     queue: PlayQueue,
@@ -32,17 +32,29 @@ internal fun buildHomeCarouselQueueProjection(
         return source[(sourceIndex + offset).floorMod(source.size)]
     }
 
-    val projected = (-3..3).map { offset ->
-        relativeSongs.getOrNull(offset + 3)
-            ?: when (offset) {
-                -1 -> previousSong
-                0 -> current
-                1 -> nextSong
-                else -> null
-            }
-            ?: physical(offset)
+    if (relativeSongs.isNotEmpty() && relativeSongs.any { it != null }) {
+        val center = relativeSongs.size / 2
+        // A null at an exhausted traversal boundary is meaningful. Never replace it with the
+        // physical library order: doing so invents neighbours that are not in shuffle traversal.
+        var first = center
+        var last = center
+        while (first > 0 && relativeSongs[first - 1] != null) first--
+        while (last < relativeSongs.lastIndex && relativeSongs[last + 1] != null) last++
+        return HomeCarouselQueueProjection(
+            (first..last).map { if (it == center) current else requireNotNull(relativeSongs[it]) },
+            center - first,
+        )
     }
-    return HomeCarouselQueueProjection(projected, 3)
+    val radius = com.rawsmusic.core.ui.scene.pages.HOME_CAROUSEL_PREVIEW_RADIUS
+    val projected = (-radius..radius).map { offset ->
+        when (offset) {
+            -1 -> previousSong
+            0 -> current
+            1 -> nextSong
+            else -> null
+        } ?: physical(offset)
+    }
+    return HomeCarouselQueueProjection(projected, radius)
 }
 
 private fun AudioFile.sameQueueItem(other: AudioFile): Boolean =

@@ -6,9 +6,11 @@ import android.graphics.RectF
 import android.os.SystemClock
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -56,6 +58,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -73,6 +76,9 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.rawsmusic.core.ui.theme.ThemeManager
 import com.rawsmusic.core.ui.widget.bitmaps.resolvePlaybackArtworkKey
 import com.rawsmusic.core.ui.widget.bitmaps.NativePlayerArtworkSwitchEasing
+import com.rawsmusic.core.ui.widget.bitmaps.AUTO_CROSSFADE_ARTWORK_FADE_IN_MS
+import com.rawsmusic.core.ui.widget.bitmaps.automaticCrossfadeArtworkOutAlpha
+import com.rawsmusic.core.ui.widget.bitmaps.automaticCrossfadeArtworkInAlpha
 import com.rawsmusic.core.ui.widget.player.LyricDirectRenderClock
 import com.rawsmusic.core.ui.widget.player.LyricColorSurface
 import com.rawsmusic.core.ui.widget.player.ResolvedLyricColor
@@ -82,6 +88,7 @@ import com.rawsmusic.core.ui.widget.player.rememberCoverAccentColor
 import com.rawsmusic.core.ui.widget.player.rememberLyricDirectRenderClock
 import com.rawsmusic.core.ui.widget.player.rememberResolvedLyricColor
 import com.rawsmusic.core.ui.widget.text.SharedMarqueeText
+import com.rawsmusic.core.ui.widget.text.resolveNativeTextLaneHeight
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.MiniPlayerBubbleMotion
 import com.rawsmusic.module.data.prefs.MiniPlayerBubbleOrigin
@@ -108,6 +115,30 @@ private const val MINI_PLAYER_SWITCH_THRESHOLD = 0.20f
 private const val MINI_PLAYER_SWITCH_DURATION_MS = 260
 private const val MINI_PLAYER_POST_DRAG_CLICK_BLOCK_MS = 320L
 private val MiniPlayerSwitchEasing = NativePlayerArtworkSwitchEasing
+
+/**
+ * Passive renderer crossfade is cover-only. Keep both exact cover identities attached during
+ * the dissolve; the MiniPlayer's title and controls bind the renderer-confirmed song in place.
+ * Progress is read from graphicsLayer, so the 1200ms clock does not recompose the three holders.
+ */
+private class MiniPlayerAutomaticArtworkFade(
+    val outgoingCoverPath: String,
+    val targetIdentity: String,
+) {
+    val progress = Animatable(0f)
+}
+
+internal fun shouldUseAutomaticMiniPlayerArtworkFade(
+    activeAutomaticTargetPath: String?,
+    committedSongPath: String?,
+    currentIdentity: String,
+    committedIdentity: String,
+    manualGestureActive: Boolean,
+): Boolean =
+    !activeAutomaticTargetPath.isNullOrBlank() &&
+        activeAutomaticTargetPath == committedSongPath &&
+        currentIdentity != committedIdentity &&
+        !manualGestureActive
 private val MiniPlayerEnergyGlowEasing = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f)
 private const val MINI_PLAYER_ENERGY_GLOW_MAX_ALPHA = 0.5019608f
 private val MINI_PLAYER_ENERGY_GLOW_RADIUS = 5.dp
@@ -129,7 +160,8 @@ private data class MiniPlayerContentSnapshot(
     val lyricText: String,
     val lyricTranslation: String,
     val coverPath: String?,
-    val isPlaying: Boolean
+    val isPlaying: Boolean,
+    val explicitBadge: Boolean = false,
 )
 
 private data class MiniPlayerKaraokeWordSpan(
@@ -248,6 +280,7 @@ fun ComposeMiniPlayer(
     coverPath: String? = null,
     contentIdentity: String? = null,
     currentSong: AudioFile? = null,
+    automaticCrossfadeTargetPath: String? = null,
     previousSong: AudioFile? = null,
     nextSong: AudioFile? = null,
     previousTitle: String? = null,
@@ -339,6 +372,12 @@ fun ComposeMiniPlayer(
         contentPaddingVertical,
         ((containerHeight - contentEnvelopeHeight) / 2f).coerceAtLeast(0.dp),
     )
+    val currentExplicitBadge =
+        com.rawsmusic.core.common.model.LocalLyricExplicit.isExplicit(currentSong)
+    val previousExplicitBadge =
+        com.rawsmusic.core.common.model.LocalLyricExplicit.isExplicit(previousSong)
+    val nextExplicitBadge =
+        com.rawsmusic.core.common.model.LocalLyricExplicit.isExplicit(nextSong)
     val authoritativeSnapshot = remember(
         currentSong,
         contentIdentity,
@@ -347,7 +386,8 @@ fun ComposeMiniPlayer(
         lyricText,
         lyricTranslation,
         coverPath,
-        isPlaying
+        isPlaying,
+        currentExplicitBadge,
     ) {
         MiniPlayerContentSnapshot(
             identity = contentIdentity?.takeIf { it.isNotBlank() }
@@ -357,7 +397,8 @@ fun ComposeMiniPlayer(
             lyricText = lyricText,
             lyricTranslation = lyricTranslation,
             coverPath = coverPath,
-            isPlaying = isPlaying
+            isPlaying = isPlaying,
+            explicitBadge = currentExplicitBadge,
         )
     }
     val miniPlayerKaraokeEnabled = MiniPlayerKaraokeEffectState.enabled
@@ -385,12 +426,13 @@ fun ComposeMiniPlayer(
         }
     }
     val karaokeClock = rememberLyricDirectRenderClock(
-        positionMs = playbackPositionMs,
+        positionMs = com.rawsmusic.core.common.utils.LyricPlaybackTimeline.toLyricTime(playbackPositionMs),
         isPlaying = isPlaying && miniPlayerKaraokeEnabled && karaokePresentation != null,
-        durationMs = playbackDurationMs,
+        durationMs = com.rawsmusic.core.common.utils.LyricPlaybackTimeline.toLyricTime(playbackDurationMs),
     )
     val previousSnapshot = remember(
-        previousSong, previousTitle, previousArtist, previousCoverPath, previousIdentity, isPlaying
+        previousSong, previousTitle, previousArtist, previousCoverPath, previousIdentity,
+        isPlaying, previousExplicitBadge,
     ) {
         previousSong?.toMiniPlayerPreviewSnapshot(isPlaying)
             ?: previousTitle?.takeIf(String::isNotBlank)?.let { previewTitle ->
@@ -406,7 +448,8 @@ fun ComposeMiniPlayer(
             }
     }
     val nextSnapshot = remember(
-        nextSong, nextTitle, nextArtist, nextCoverPath, nextIdentity, isPlaying
+        nextSong, nextTitle, nextArtist, nextCoverPath, nextIdentity,
+        isPlaying, nextExplicitBadge,
     ) {
         nextSong?.toMiniPlayerPreviewSnapshot(isPlaying)
             ?: nextTitle?.takeIf(String::isNotBlank)?.let { previewTitle ->
@@ -428,8 +471,12 @@ fun ComposeMiniPlayer(
     val latestSkipPrevious by rememberUpdatedState(onSkipPrevious)
     val latestSkipNext by rememberUpdatedState(onSkipNext)
     val latestSwitchProgress by rememberUpdatedState(onSwitchProgress)
+    val latestAutomaticCrossfadeTargetPath by rememberUpdatedState(automaticCrossfadeTargetPath)
 
     var visibleSnapshot by remember { mutableStateOf(authoritativeSnapshot) }
+    var automaticArtworkFade by remember {
+        mutableStateOf<MiniPlayerAutomaticArtworkFade?>(null)
+    }
 
     // Reference keeps three complete ArtworkItemNode holders attached and moves the whole holder. Mirror
     // that ownership here: these are physical Compose holder lanes, not temporary transition trees.
@@ -467,6 +514,7 @@ fun ComposeMiniPlayer(
             onClick()
         }
     }
+    val latestLongPressSong by rememberUpdatedState(currentSong)
     val scope = rememberCoroutineScope()
     // Same-track lyric/translation/play-state updates are live content, not a track transition.
     // Render them directly from the authoritative snapshot instead of copying the whole snapshot
@@ -649,6 +697,46 @@ fun ComposeMiniPlayer(
             settledQueueIndex = queueCurrentIndex
             return@LaunchedEffect
         }
+        if (shouldUseAutomaticMiniPlayerArtworkFade(
+                activeAutomaticTargetPath = latestAutomaticCrossfadeTargetPath,
+                committedSongPath = currentSong?.path,
+                currentIdentity = visibleSnapshot.identity,
+                committedIdentity = authoritativeSnapshot.identity,
+                manualGestureActive = horizontalGestureActive || transitionRunning,
+            )
+        ) {
+            // Renderer first mixed frames, not the MiniPlayer's gesture/transport owner, have
+            // committed this identity. Change the title/controls in place and dissolve only
+            // the two exact artwork keys; do NOT call animateSwitch (which slides all three rows).
+            val outgoingCover = visibleSnapshot.coverPath.orEmpty()
+            val incomingCover = authoritativeSnapshot.coverPath.orEmpty()
+            val fade = if (outgoingCover.isNotBlank() &&
+                incomingCover.isNotBlank() && outgoingCover != incomingCover
+            ) {
+                MiniPlayerAutomaticArtworkFade(
+                    outgoingCoverPath = outgoingCover,
+                    targetIdentity = authoritativeSnapshot.identity,
+                )
+            } else null
+            automaticArtworkFade = fade
+            setHolderSnapshot(centerHolderSlot, authoritativeSnapshot)
+            visibleSnapshot = authoritativeSnapshot
+            settledQueueIndex = queueCurrentIndex
+            if (fade != null) {
+                scope.launch {
+                    fade.progress.animateTo(
+                        1f,
+                        animationSpec = tween(
+                            durationMillis = AUTO_CROSSFADE_ARTWORK_FADE_IN_MS,
+                            easing = LinearEasing,
+                        ),
+                    )
+                    if (automaticArtworkFade === fade) automaticArtworkFade = null
+                }
+            }
+            return@LaunchedEffect
+        }
+        automaticArtworkFade = null
         val direction = resolveMiniPlayerQueueDirection(
             oldIndex = settledQueueIndex,
             newIndex = queueCurrentIndex,
@@ -686,6 +774,7 @@ fun ComposeMiniPlayer(
             .pointerInput(Unit) {
                 detectHorizontalDragGestures(
                     onDragStart = {
+                        automaticArtworkFade = null
                         val captureUptimeMs = SystemClock.uptimeMillis()
                         gestureTransaction.beginPointerCapture(captureUptimeMs)
                         horizontalGestureActive = true
@@ -798,10 +887,18 @@ fun ComposeMiniPlayer(
                     }
                 )
             }
-            .clickable(
+            .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = guardedOpenPlayer
+                onClick = guardedOpenPlayer,
+                onLongClick = {
+                    // Do not turn a gesture commit's UP into a popup.
+                    if (!horizontalGestureActive && gestureTransaction.controlsAllowed()) {
+                        com.rawsmusic.core.ui.widget.player.SongContributorsDialogState.show(
+                            latestLongPressSong,
+                        )
+                    }
+                },
             )
     ) {
         if (drawBackground) {
@@ -877,6 +974,9 @@ fun ComposeMiniPlayer(
 
             MiniPlayerSlidingContent(
                 snapshot = snapshot,
+                automaticArtworkFade = automaticArtworkFade?.takeIf {
+                    activeCenter && snapshot.identity == it.targetIdentity
+                },
                 lyricColors = miniLyricColors,
                 karaokePresentation = karaokePresentation.takeIf {
                     activeCenter && snapshot.identity == authoritativeSnapshot.identity
@@ -955,6 +1055,7 @@ fun ComposeMiniPlayer(
 @Composable
 private fun MiniPlayerSlidingContent(
     snapshot: MiniPlayerContentSnapshot,
+    automaticArtworkFade: MiniPlayerAutomaticArtworkFade? = null,
     lyricColors: ResolvedLyricColor,
     karaokePresentation: MiniPlayerKaraokePresentation?,
     karaokeClock: LyricDirectRenderClock?,
@@ -1008,6 +1109,27 @@ private fun MiniPlayerSlidingContent(
         textColor
     }
     val effectiveSecondaryColor = if (hasLyric) lyricColors.secondary else secondaryColor
+    val fontDensity = LocalDensity.current
+    val primaryTextLaneHeight = resolveNativeTextLaneHeight(
+        fontDensity = fontDensity,
+        fontSizeSp = 14f,
+        minimumHeight = 20.dp,
+    )
+    val secondaryTextLaneHeight = resolveNativeTextLaneHeight(
+        fontDensity = fontDensity,
+        fontSizeSp = 11f,
+        minimumHeight = 18.dp,
+    )
+    val oneLineTextLaneHeight = resolveNativeTextLaneHeight(
+        fontDensity = fontDensity,
+        fontSizeSp = 14f,
+        minimumHeight = 44.dp,
+    )
+    val textLaneEnvelopeHeight = if (secondaryText.isBlank()) {
+        oneLineTextLaneHeight
+    } else {
+        maxOf(44.dp, primaryTextLaneHeight + secondaryTextLaneHeight)
+    }
 
     Row(
         modifier = modifier
@@ -1058,30 +1180,58 @@ private fun MiniPlayerSlidingContent(
             if (controlGap > 0.dp) Spacer(Modifier.width(controlGap))
         }
 
-        MiniPlayerArtwork(
-            mode = artworkMode,
-            coverPath = snapshot.coverPath,
-            isPlaying = snapshot.isPlaying,
-            contentDescription = snapshot.title,
-            onCoverBoundsChanged = onCoverBoundsChanged,
-            onDoubleTapToggleMode = if (controlsEnabled) {
-                { if (canDispatchControl()) onToggleArtworkMode() }
-            } else ({}),
-            onSingleTap = if (controlsEnabled) {
-                { if (canDispatchControl()) onClick() }
-            } else ({}),
-            animateArtwork = animateArtwork,
-            artworkSize = artworkSize,
-            originalArtworkCornerRadius = originalArtworkCornerRadius,
-            modifier = Modifier.graphicsLayer {
-                // Keep the MiniPlayer's physical artwork node and BitmapImage owner mounted while
-                // PLAYER owns the screen. PLAYER -> MAIN promotes a separate shared actor; hiding
-                // only these pixels prevents a duplicate source image during the downward handoff
-                // without disposing/re-requesting the MiniPlayer bitmap. Visibility returns only
-                // after PlayerSceneController commits the MAIN endpoint.
-                alpha = if (artworkVisible) 1f else 0f
-            },
-        )
+        @Composable
+        fun ArtworkLayer(key: String?, interactive: Boolean, modifier: Modifier) {
+            MiniPlayerArtwork(
+                mode = artworkMode,
+                coverPath = key,
+                isPlaying = snapshot.isPlaying,
+                contentDescription = snapshot.title,
+                onCoverBoundsChanged = if (interactive) onCoverBoundsChanged else ({}),
+                onDoubleTapToggleMode = if (interactive && controlsEnabled) {
+                    { if (canDispatchControl()) onToggleArtworkMode() }
+                } else ({}),
+                onSingleTap = if (interactive && controlsEnabled) {
+                    { if (canDispatchControl()) onClick() }
+                } else ({}),
+                animateArtwork = animateArtwork && interactive,
+                artworkSize = artworkSize,
+                originalArtworkCornerRadius = originalArtworkCornerRadius,
+                modifier = modifier,
+            )
+        }
+
+        // The MiniPlayer's physical artwork node remains at the exact same coordinates during
+        // an automatic audio crossfade. Only its two artwork bitmaps are composited, with the
+        // same 1000ms-out / 1200ms-in alpha clocks as the large player artwork. The title,
+        // progress bar and playback buttons belong to the confirmed song without sliding.
+        val artworkVisibility = Modifier.graphicsLayer {
+            alpha = if (artworkVisible) 1f else 0f
+        }
+        if (automaticArtworkFade != null) {
+            Box(modifier = artworkVisibility) {
+                ArtworkLayer(
+                    key = automaticArtworkFade.outgoingCoverPath,
+                    interactive = false,
+                    modifier = Modifier.graphicsLayer {
+                        alpha = automaticCrossfadeArtworkOutAlpha(automaticArtworkFade.progress.value)
+                    },
+                )
+                ArtworkLayer(
+                    key = snapshot.coverPath,
+                    interactive = true,
+                    modifier = Modifier.graphicsLayer {
+                        alpha = automaticCrossfadeArtworkInAlpha(automaticArtworkFade.progress.value)
+                    },
+                )
+            }
+        } else {
+            ArtworkLayer(
+                key = snapshot.coverPath,
+                interactive = true,
+                modifier = artworkVisibility,
+            )
+        }
 
         if (playPausePosition == MiniPlayerPlayPausePosition.ARTWORK_RIGHT) {
             if (controlGap > 0.dp) Spacer(Modifier.width(controlGap))
@@ -1093,7 +1243,7 @@ private fun MiniPlayerSlidingContent(
         Box(
             modifier = Modifier
                 .weight(1f)
-                .height(44.dp),
+                .height(textLaneEnvelopeHeight),
             contentAlignment = Alignment.CenterStart
         ) {
             if (secondaryText.isBlank()) {
@@ -1101,9 +1251,10 @@ private fun MiniPlayerSlidingContent(
                 // composed the empty 18dp secondary lane, leaving the title/lyric in the upper
                 // 20dp lane and making it look vertically off-center. SharedMarqueeText already
                 // centers its native baseline inside the supplied canvas, so give the only line
-                // the complete 44dp envelope. Keep the existing two-line geometry unchanged.
+                // the complete 44dp envelope. Grow it only when the scaled native font needs more.
                 SharedMarqueeText(
                     text = primaryText,
+                    explicitBadge = snapshot.explicitBadge && !hasLyric,
                     fontSizeSp = 14f,
                     fontWeight = FontWeight.Medium,
                     color = primaryBaseColor,
@@ -1119,12 +1270,13 @@ private fun MiniPlayerSlidingContent(
                     edgeFeather = 8.dp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp)
+                        .height(oneLineTextLaneHeight)
                 )
             } else {
                 androidx.compose.foundation.layout.Column {
                     SharedMarqueeText(
                         text = primaryText,
+                        explicitBadge = snapshot.explicitBadge && !hasLyric,
                         fontSizeSp = 14f,
                         fontWeight = FontWeight.Medium,
                         color = primaryBaseColor,
@@ -1140,7 +1292,7 @@ private fun MiniPlayerSlidingContent(
                         edgeFeather = 8.dp,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(20.dp)
+                            .height(primaryTextLaneHeight)
                     )
                     SharedMarqueeText(
                         text = secondaryText,
@@ -1153,7 +1305,7 @@ private fun MiniPlayerSlidingContent(
                         edgeFeather = 7.dp,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(18.dp)
+                            .height(secondaryTextLaneHeight)
                     )
                 }
             }
@@ -1643,7 +1795,8 @@ private fun AudioFile.toMiniPlayerPreviewSnapshot(isPlaying: Boolean): MiniPlaye
         lyricText = "",
         lyricTranslation = "",
         coverPath = resolvePlaybackArtworkKey(albumArtPath),
-        isPlaying = isPlaying
+        isPlaying = isPlaying,
+        explicitBadge = com.rawsmusic.core.common.model.LocalLyricExplicit.isExplicit(this),
     )
 }
 

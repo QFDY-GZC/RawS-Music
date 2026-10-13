@@ -26,6 +26,7 @@ import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.platform.InspectorInfo
+import androidx.compose.ui.unit.Density
 import com.rawsmusic.core.common.model.AudioFile
 import com.rawsmusic.core.common.utils.AppLogger
 import com.rawsmusic.core.ui.R
@@ -85,6 +86,7 @@ internal data class VirtualListSettledNodeItem(
 internal data class VirtualListSettledNodeFrame(
     val items: List<VirtualListSettledNodeItem>,
     val density: Float,
+    val fontDensity: Density,
     val textDensity: Float,
     val dark: Boolean,
     val configuredTypeface: Typeface?,
@@ -96,6 +98,11 @@ internal data class VirtualListSettledNodeFrame(
     val scrollInvalidationOwner: VirtualListScrollPositionOwner?,
     val viewportHeightPx: Int = 0,
     val virtualListEdgeOvershootProvider: () -> Float = { 0f },
+    val edgeFirstVisibleIndex: Int = 0,
+    val edgeLastVisibleIndex: Int = -1,
+    val edgeColumns: Int = 1,
+    val boundaryScaleProvider: () -> Float = { 1f },
+    val boundaryMotionActive: Boolean = false,
     val onPlayingCoverBoundsChanged: (RectF?) -> Unit,
     val onPlayingCoverTargetChanged: (CoverTransitionTarget?) -> Unit,
     val onSongClick: (AudioFile, Int) -> Unit,
@@ -217,6 +224,7 @@ private data class VirtualListOuterContentSignature(
     val items: List<VirtualListOuterHolderContentSignature>,
     val densityBits: Int,
     val textDensityBits: Int,
+    val fontDensity: Density,
     val dark: Boolean,
     val configuredTypeface: Typeface?,
     val resources: Resources,
@@ -238,6 +246,7 @@ private fun VirtualListOuterTransitionNodeFrame.contentSignature(
             .sortedBy(VirtualListOuterHolderContentSignature::slotId),
         densityBits = metadata.density.toRawBits(),
         textDensityBits = metadata.textDensity.toRawBits(),
+        fontDensity = metadata.fontDensity,
         dark = metadata.dark,
         configuredTypeface = metadata.configuredTypeface,
         resources = metadata.resources,
@@ -286,6 +295,7 @@ private fun describeOuterContentSignatureChange(
     }
     if (previous.densityBits != next.densityBits) reasons += "density"
     if (previous.textDensityBits != next.textDensityBits) reasons += "textDensity"
+    if (previous.fontDensity != next.fontDensity) reasons += "fontDensity"
     if (previous.dark != next.dark) reasons += "dark:${previous.dark}->${next.dark}"
     if (previous.configuredTypeface != next.configuredTypeface) reasons += "typeface"
     if (previous.resources !== next.resources) reasons += "resources"
@@ -311,6 +321,10 @@ internal class VirtualListOuterTransitionMotionSample {
     var retainedPivotX: Float = 0f
     var retainedPivotY: Float = 0f
     var holderScale: Float = 1f
+    var currentTranslationX: Float = 0f
+    var currentTranslationY: Float = 0f
+    var retainedTranslationX: Float = 0f
+    var retainedTranslationY: Float = 0f
 }
 
 private fun sampleOuterTransitionMotion(
@@ -320,15 +334,19 @@ private fun sampleOuterTransitionMotion(
     val current = frame.currentTransform
     val retained = frame.retainedTransform
     out.currentFraction = frame.currentFractionProvider().coerceIn(0f, 1f)
-    out.currentScale = current?.scaleProvider?.invoke()?.coerceIn(0.5f, 1.5f) ?: 1f
+    out.currentScale = current?.scaleProvider?.invoke()?.let { if (current.rectangleMapped) it else it.coerceIn(0.5f, 1.5f) } ?: 1f
     out.currentAlpha = current?.alphaProvider?.invoke()?.coerceIn(0f, 1f) ?: 1f
     out.currentPivotX = current?.pivotX ?: 0f
     out.currentPivotY = current?.pivotY ?: 0f
-    out.retainedScale = retained?.scaleProvider?.invoke()?.coerceIn(0.5f, 1.5f) ?: 1f
+    out.retainedScale = retained?.scaleProvider?.invoke()?.let { if (retained.rectangleMapped) it else it.coerceIn(0.5f, 1.5f) } ?: 1f
     out.retainedAlpha = retained?.alphaProvider?.invoke()?.coerceIn(0f, 1f) ?: 1f
     out.retainedPivotX = retained?.pivotX ?: 0f
     out.retainedPivotY = retained?.pivotY ?: 0f
     out.holderScale = frame.holderScaleProvider().coerceIn(0.5f, 1.5f)
+    out.currentTranslationX = current?.translationXProvider?.invoke() ?: 0f
+    out.currentTranslationY = current?.translationYProvider?.invoke() ?: 0f
+    out.retainedTranslationX = retained?.translationXProvider?.invoke() ?: 0f
+    out.retainedTranslationY = retained?.translationYProvider?.invoke() ?: 0f
 }
 
 /**
@@ -628,6 +646,17 @@ internal class VirtualListSettledNodeController(
         val top = windowTop + item.position.bounds.top - remainder + cover.top
         val holderTop = item.position.bounds.top - remainder
         val holderBottom = item.position.bounds.bottom - remainder
+        fun childBounds(rect: ComposeItemRect): androidx.compose.ui.geometry.Rect? {
+            if (rect.width <= 0 || rect.height <= 0 || rect.alpha <= 0f) return null
+            val childLeft = windowLeft + item.position.bounds.left + rect.left
+            val childTop = windowTop + holderTop + rect.top
+            return androidx.compose.ui.geometry.Rect(
+                left = childLeft,
+                top = childTop,
+                right = childLeft + rect.width,
+                bottom = childTop + rect.height,
+            )
+        }
         return SharedCoverSnapshot(
             sceneId = frame.sharedCoverSceneId,
             elementId = elementId,
@@ -639,6 +668,9 @@ internal class VirtualListSettledNodeController(
             ),
             coverKey = item.song.coverKey,
             radiusDp = item.rects.coverRadiusDp,
+            titleBoundsInWindow = childBounds(item.rects.title),
+            subtitleBoundsInWindow = childBounds(item.rects.subtitle),
+            metaBoundsInWindow = childBounds(item.rects.meta),
             itemIndex = item.index,
             itemViewportBounds = androidx.compose.ui.geometry.Rect(
                 left = item.position.bounds.left.toFloat(),
@@ -648,6 +680,7 @@ internal class VirtualListSettledNodeController(
             ),
             physicalSlotId = item.slotId,
             promotedBitmap = artworkBitmapProvider(item.slotId),
+            layoutColumns = frame.edgeColumns,
         )
     }
 
@@ -1060,6 +1093,8 @@ private fun sceneTransformedLayoutInto(
     pivotX: Float,
     pivotY: Float,
     out: VirtualListResolvedOuterTransform,
+    translationX: Float = 0f,
+    translationY: Float = 0f,
 ) {
     if (!base.present) {
         out.alpha = 0f
@@ -1079,8 +1114,8 @@ private fun sceneTransformedLayoutInto(
     val centerX = (base.left + base.right) * 0.5f
     val centerY = (base.top + base.bottom) * 0.5f
     val scaleDelta = scale - 1f
-    out.left = (base.left + ((centerX - pivotX) * scaleDelta)).toInt()
-    out.top = (base.top + ((centerY - pivotY) * scaleDelta)).toInt()
+    out.left = (base.left + ((centerX - pivotX) * scaleDelta) + translationX).toInt()
+    out.top = (base.top + ((centerY - pivotY) * scaleDelta) + translationY).toInt()
     out.right = out.left + width
     out.bottom = out.top + height
     out.alpha = base.alpha * alpha
@@ -1164,6 +1199,7 @@ internal const val VIRTUAL_LIST_META_ICON_FOLDER = 2
  * than rebuilding text through a transition renderer.
  */
 internal class VirtualListTextChildState {
+    var preserveMarqueeProgress = false
     var marqueeEnabled = false
     var marqueeSpeed = 0f
     var left: Int = 0
@@ -1339,17 +1375,26 @@ internal class VirtualListViewGroupPresentationFrame {
 internal interface VirtualListPhysicalSharedHost {
     fun promoteSlot(slotId: Int, elementId: String): Boolean
 
+    fun stashPromotedSlot(elementId: String): Boolean
+
+    fun updateRetainedHeader(elementId: String?, transform: RetainedSceneItemTransform?) {}
+
+    fun activateStashedSlot(elementId: String): Boolean
+
     fun updatePromotedGeometry(
         transitionKey: String,
         target: SharedCoverSnapshot,
         progressProvider: (() -> Float)?,
         animateFromCurrent: Boolean,
+        originOverscrollXProvider: (() -> Float)? = null,
     )
 
     fun restorePromotedSlot(slotId: Int)
 
     /** @return true when the Android host actually removed a promoted concrete View. */
     fun clearPromotedSlot(): Boolean
+
+    fun clearStashedPromotedSlots(): Int
 }
 
 internal class VirtualListSettledNodeRuntime {
@@ -1431,6 +1476,9 @@ internal class VirtualListSettledNodeRuntime {
     private var promotedSharedHolder: NodeHolder? = null
     private var promotedSharedSlotId: Int = -1
     private var promotedSharedElementId: String = ""
+    private var promotedSharedFromStash = false
+    private val stashedSharedHolders = LinkedHashMap<String, NodeHolder>()
+    private val stashedSharedSourceSlots = LinkedHashMap<String, Int>()
 
     // baseline implementation keeps one VirtualList View attached to one parent. For the persistent library host,
     // holder coordinates are still published in the active VirtualList viewport's local space, so the
@@ -1583,9 +1631,11 @@ internal class VirtualListSettledNodeRuntime {
         currentTransform: RetainedSceneItemTransform?,
         retainedTransform: RetainedSceneItemTransform?,
         onPopulationPublished: (() -> Unit)? = null,
+        contentBindAllowed: Boolean = false,
+        retainedHeaderElementId: String? = null,
     ) {
+        physicalSharedHost?.updateRetainedHeader(retainedHeaderElementId, retainedTransform)
         val metadataFrame = powerCurrentFrame ?: powerRetainedFrame ?: run {
-            onPopulationPublished?.invoke()
             return
         }
         val retainedOnly = ArrayList<VirtualListOuterTransitionNodeItem>()
@@ -1636,7 +1686,7 @@ internal class VirtualListSettledNodeRuntime {
                 currentFractionProvider = currentFractionProvider,
                 currentTransform = currentTransform,
                 retainedTransform = retainedTransform,
-                contentBindAllowedProvider = { false },
+                contentBindAllowedProvider = { contentBindAllowed },
                 onPopulationPublished = onPopulationPublished,
             )
         )
@@ -1721,6 +1771,7 @@ internal class VirtualListSettledNodeRuntime {
         promotedSharedHolder = holder
         promotedSharedSlotId = slotId
         promotedSharedElementId = elementId
+        promotedSharedFromStash = false
         presentationStructureGeneration += 1L
         if (!host.promoteSlot(slotId, elementId)) {
             promotedSharedHolder = null
@@ -1736,11 +1787,78 @@ internal class VirtualListSettledNodeRuntime {
         return true
     }
 
+    /**
+     * Commit ItemToHeader without destroying the concrete holder identity.
+     * Nested Folders Hierarchy needs one parked header holder per active depth so a later
+     * HeaderToItem can reactivate the exact View instead of constructing a new bitmap actor.
+     */
+    internal fun stashSharedHolderPromotion(elementId: String): Boolean {
+        val holder = promotedSharedHolder ?: return false
+        if (elementId.isBlank() || promotedSharedElementId != elementId) return false
+        val sourceSlot = promotedSharedSlotId
+        val host = physicalSharedHost ?: return false
+        if (!host.stashPromotedSlot(elementId)) return false
+        if (sourceSlot >= 0 && holders[sourceSlot] === holder) {
+            holders.remove(sourceSlot)
+            settledDrawOrder.remove(holder)
+            outerDrawOrder.remove(holder)
+        }
+        stashedSharedHolders.remove(elementId)?.takeIf { it !== holder }?.release()
+        stashedSharedHolders[elementId] = holder
+        stashedSharedSourceSlots[elementId] = sourceSlot
+        promotedSharedHolder = null
+        promotedSharedSlotId = -1
+        promotedSharedElementId = ""
+        promotedSharedFromStash = false
+        presentationStructureGeneration += 1L
+        invalidationOwner.invalidate()
+        return true
+    }
+
+    /** Reactivate a parked hierarchy header holder as the sole HeaderToItem actor. */
+    internal fun activateStashedSharedHolder(elementId: String): Boolean {
+        if (elementId.isBlank()) return false
+        if (promotedSharedHolder != null) return promotedSharedElementId == elementId
+        val holder = stashedSharedHolders.remove(elementId) ?: return false
+        val sourceSlot = stashedSharedSourceSlots.remove(elementId) ?: -1
+        val host = physicalSharedHost ?: run {
+            stashedSharedHolders[elementId] = holder
+            stashedSharedSourceSlots[elementId] = sourceSlot
+            return false
+        }
+        if (!host.activateStashedSlot(elementId)) {
+            stashedSharedHolders[elementId] = holder
+            stashedSharedSourceSlots[elementId] = sourceSlot
+            return false
+        }
+        promotedSharedHolder = holder
+        promotedSharedSlotId = sourceSlot
+        promotedSharedElementId = elementId
+        promotedSharedFromStash = true
+        presentationStructureGeneration += 1L
+        invalidationOwner.invalidate()
+        return true
+    }
+
+    internal fun clearStashedSharedHolders(): Int {
+        val count = stashedSharedHolders.size
+        stashedSharedHolders.values.forEach(NodeHolder::release)
+        stashedSharedHolders.clear()
+        stashedSharedSourceSlots.clear()
+        physicalSharedHost?.clearStashedPromotedSlots()
+        if (count > 0) {
+            presentationStructureGeneration += 1L
+            invalidationOwner.invalidate()
+        }
+        return count
+    }
+
     internal fun updateSharedHolderGeometry(
         transitionKey: String,
         target: SharedCoverSnapshot,
         progressProvider: (() -> Float)?,
         animateFromCurrent: Boolean,
+        originOverscrollXProvider: (() -> Float)? = null,
     ) {
         val promotedHolder = promotedSharedHolder ?: return
         if (target.elementId != promotedSharedElementId) return
@@ -1753,6 +1871,7 @@ internal class VirtualListSettledNodeRuntime {
             target = target,
             progressProvider = progressProvider,
             animateFromCurrent = animateFromCurrent,
+            originOverscrollXProvider = originOverscrollXProvider,
         )
         invalidationOwner.invalidate()
     }
@@ -1823,6 +1942,7 @@ internal class VirtualListSettledNodeRuntime {
         holder.endSharedArtworkPromotion()
         promotedSharedHolder = null
         promotedSharedSlotId = -1
+        promotedSharedFromStash = false
         invalidationOwner.invalidate()
         return elementId
     }
@@ -1833,6 +1953,9 @@ internal class VirtualListSettledNodeRuntime {
     /** Abort forward shared-holder migration back into the original source holder. */
     internal fun cancelSharedHolderPromotion(elementId: String): Boolean {
         if (elementId.isBlank() || promotedSharedElementId != elementId) return false
+        if (promotedSharedFromStash) {
+            return stashSharedHolderPromotion(elementId)
+        }
         val sourceSlot = promotedSharedSlotId
         if (sourceSlot < 0) return false
         return restoreSharedHolderPromotion(sourceSlot) == elementId
@@ -1875,6 +1998,63 @@ internal class VirtualListSettledNodeRuntime {
         }
     }
 
+    /** Exact CURRENT/RETAINED shared-cover endpoint from the already-published outer LayoutRes. */
+    internal fun resolveOuterSharedCoverEndpoint(
+        sceneId: String,
+        elementId: String,
+        retainedRole: Boolean,
+    ): SharedCoverSnapshot? {
+        if (sceneId.isBlank() || elementId.isBlank()) return null
+        val outer = outerPresentationFrame ?: return null
+        val motion = outer.items.firstOrNull { candidate ->
+            candidate.holderItem.sharedCoverElementId.ifBlank {
+                outer.holderFrame.sharedCoverElementIdProvider(
+                    candidate.holderItem.song,
+                    candidate.holderItem.index,
+                )
+            } == elementId
+        } ?: return null
+        val position = (if (retainedRole) motion.retainedPosition else motion.currentPosition) ?: return null
+        val rects = (if (retainedRole) motion.retainedRects else motion.currentRects) ?: return null
+        val cover = rects.cover
+        if (cover.width <= 0f || cover.height <= 0f) return null
+        val itemBounds = position.bounds
+        val coverBounds = androidx.compose.ui.geometry.Rect(
+            left = itemBounds.left.toFloat() + cover.left,
+            top = itemBounds.top.toFloat() + cover.top,
+            right = itemBounds.left.toFloat() + cover.left + cover.width,
+            bottom = itemBounds.top.toFloat() + cover.top + cover.height,
+        )
+        fun childBounds(rect: ComposeItemRect): androidx.compose.ui.geometry.Rect? {
+            if (rect.width <= 0 || rect.height <= 0 || rect.alpha <= 0f) return null
+            return androidx.compose.ui.geometry.Rect(
+                left = itemBounds.left.toFloat() + rect.left,
+                top = itemBounds.top.toFloat() + rect.top,
+                right = itemBounds.left.toFloat() + rect.left + rect.width,
+                bottom = itemBounds.top.toFloat() + rect.top + rect.height,
+            )
+        }
+        return SharedCoverSnapshot(
+            sceneId = sceneId,
+            elementId = elementId,
+            boundsInWindow = coverBounds,
+            coverKey = motion.holderItem.song.coverKey,
+            radiusDp = rects.coverRadiusDp,
+            titleBoundsInWindow = childBounds(rects.title),
+            subtitleBoundsInWindow = childBounds(rects.subtitle),
+            metaBoundsInWindow = childBounds(rects.meta),
+            itemIndex = motion.holderItem.index,
+            physicalSlotId = motion.holderItem.slotId,
+            itemViewportBounds = androidx.compose.ui.geometry.Rect(
+                left = itemBounds.left.toFloat(),
+                top = itemBounds.top.toFloat(),
+                right = itemBounds.right.toFloat(),
+                bottom = itemBounds.bottom.toFloat(),
+            ),
+            physicalViewportBounds = coverBounds,
+        )
+    }
+
     internal fun clearSharedHolderPromotion() {
         val holder = promotedSharedHolder
         if (holder != null) {
@@ -1886,7 +2066,9 @@ internal class VirtualListSettledNodeRuntime {
         promotedSharedHolder = null
         promotedSharedSlotId = -1
         promotedSharedElementId = ""
+        promotedSharedFromStash = false
         physicalSharedHost?.clearPromotedSlot()
+        clearStashedSharedHolders()
         presentationStructureGeneration += 1L
         invalidationOwner.invalidate()
     }
@@ -2103,6 +2285,7 @@ internal class VirtualListSettledNodeRuntime {
     }
 
     fun publishSettledFrame(frame: VirtualListSettledNodeFrame) {
+        physicalSharedHost?.updateRetainedHeader(null, null)
         settledMotionInvalidationPending = false
         viewGroupPresentationSuspended = false
         val previousMode = presentationMode
@@ -2348,6 +2531,7 @@ internal class VirtualListSettledNodeRuntime {
     private fun prepareSettledCustomViewGroupState(
         slotId: Int,
         record: PowerCustomRecord,
+        frame: VirtualListSettledNodeFrame,
         remainder: Float,
         offsetX: Float,
         offsetY: Float,
@@ -2359,6 +2543,21 @@ internal class VirtualListSettledNodeRuntime {
         if (position.isEmpty()) return null
         val width = position.width.coerceAtLeast(1)
         val height = position.height.coerceAtLeast(1)
+        val overshoot = frame.virtualListEdgeOvershootProvider()
+        val maxOvershoot = VIRTUAL_LIST_MAX_OVERSHOOT_DP * frame.density
+        val holderFraction = virtualListHolderEdgeFraction(
+            itemIndex = binding.index,
+            firstVisibleIndex = frame.edgeFirstVisibleIndex,
+            lastVisibleIndex = frame.edgeLastVisibleIndex,
+            columns = frame.edgeColumns,
+        )
+        val edgeScaleY = virtualListHolderScaleY(overshoot, maxOvershoot, holderFraction)
+        val edgeTranslationY = virtualListHolderTranslationY(
+            overshootPx = overshoot,
+            maxOvershootPx = maxOvershoot,
+            holderShiftPx = VIRTUAL_LIST_HOLDER_SHIFT_DP * frame.density,
+            holderFraction = holderFraction,
+        )
         return record.state.apply {
             this.slotId = slotId
             drawOrderGroup = 1
@@ -2366,9 +2565,9 @@ internal class VirtualListSettledNodeRuntime {
             this.width = width
             this.height = height
             left = offsetX + position.bounds.left
-            top = offsetY + position.bounds.top - remainder
+            top = offsetY + position.bounds.top - remainder + edgeTranslationY
             scaleX = position.scaleX
-            scaleY = position.scaleY
+            scaleY = position.scaleY * edgeScaleY
             alpha = position.alpha.coerceIn(0f, 1f)
             dualLayout = false
             dirtyBits = record.presentation.update(
@@ -2417,6 +2616,8 @@ internal class VirtualListSettledNodeRuntime {
                 pivotX = motionSample.currentPivotX,
                 pivotY = motionSample.currentPivotY,
                 out = record.resolved,
+                translationX = motionSample.currentTranslationX,
+                translationY = motionSample.currentTranslationY,
             )
             retainedLayout != null -> sceneTransformedLayoutInto(
                 base = record.retainedMutableLayout,
@@ -2425,6 +2626,8 @@ internal class VirtualListSettledNodeRuntime {
                 pivotX = motionSample.retainedPivotX,
                 pivotY = motionSample.retainedPivotY,
                 out = record.resolved,
+                translationX = motionSample.retainedTranslationX,
+                translationY = motionSample.retainedTranslationY,
             )
             else -> return null
         }
@@ -2559,6 +2762,7 @@ internal class VirtualListSettledNodeRuntime {
                     prepareSettledCustomViewGroupState(
                         slotId = slotId,
                         record = record,
+                        frame = frame,
                         remainder = remainder,
                         offsetX = dx,
                         offsetY = dy,
@@ -2703,6 +2907,7 @@ internal class VirtualListSettledNodeRuntime {
             prepareSettledCustomViewGroupState(
                 slotId = slotId,
                 record = record,
+                frame = frame,
                 remainder = remainder,
                 offsetX = dx,
                 offsetY = dy,
@@ -2986,7 +3191,8 @@ internal class VirtualListSettledNodeRuntime {
         if (presentationMode == VirtualListPresentationMode.NONE || viewGroupPresentationSuspended) return false
         // GenericPivot is an attached LayoutRes role, so the same permanent host owns its vsync.
         if (outerPresentationFrame != null) return true
-        return hasAnimatingArtwork() || presentationHasMarquee()
+        return settledPresentationFrame?.boundaryMotionActive == true ||
+            hasAnimatingArtwork() || presentationHasMarquee()
     }
 
     /** True only for direct user interaction on the settled population (scroll/drag/etc.). */
@@ -3194,7 +3400,12 @@ internal class VirtualListSettledNodeRuntime {
         promotedSharedHolder = null
         promotedSharedSlotId = -1
         promotedSharedElementId = ""
+        promotedSharedFromStash = false
         physicalSharedHost?.clearPromotedSlot()
+        stashedSharedHolders.values.forEach(NodeHolder::release)
+        stashedSharedHolders.clear()
+        stashedSharedSourceSlots.clear()
+        physicalSharedHost?.clearStashedPromotedSlots()
         settledDrawOrder.clear()
         outerDrawOrder.clear()
         settledPresentationFrame = null
@@ -3470,6 +3681,7 @@ private class NodeHolder(
             dark = frame.dark,
             density = frame.density,
             textDensity = frame.textDensity,
+            fontDensity = frame.fontDensity,
             defaultArtworkEnabled = frame.defaultArtworkEnabled,
         )
         if (nextRenderSignature != renderSignature) {
@@ -3499,6 +3711,7 @@ private class NodeHolder(
             subtitleRect = next.rects.subtitle,
             metaRect = next.rects.meta,
             textDensity = frame.textDensity,
+            fontDensity = frame.fontDensity,
             configuredTypeface = frame.configuredTypeface,
             leftInset = leftInset,
             animateText = animateText,
@@ -3507,7 +3720,7 @@ private class NodeHolder(
             titleText = prepareVirtualListText(
                 text = signature.title,
                 rect = signature.titleRect,
-                density = frame.textDensity,
+                fontDensity = frame.fontDensity,
                 bold = true,
                 animate = animateText,
                 configuredTypeface = frame.configuredTypeface,
@@ -3515,7 +3728,7 @@ private class NodeHolder(
             subtitleText = prepareVirtualListText(
                 text = signature.subtitle,
                 rect = signature.subtitleRect,
-                density = frame.textDensity,
+                fontDensity = frame.fontDensity,
                 bold = false,
                 animate = animateText,
                 configuredTypeface = frame.configuredTypeface,
@@ -3523,7 +3736,7 @@ private class NodeHolder(
             metaText = prepareVirtualListText(
                 text = signature.meta,
                 rect = signature.metaRect,
-                density = frame.textDensity,
+                fontDensity = frame.fontDensity,
                 bold = false,
                 leftInsetPx = leftInset,
                 animate = animateText,
@@ -3615,6 +3828,7 @@ private class NodeHolder(
             if (render.dark != frame.dark) reasons += "render:dark"
             if (render.density != frame.density) reasons += "render:density"
             if (render.textDensity != frame.textDensity) reasons += "render:textDensity"
+            if (render.fontDensity != frame.fontDensity) reasons += "render:fontDensity"
             if (render.defaultArtworkEnabled != frame.defaultArtworkEnabled) reasons += "render:defaultArtwork"
         }
 
@@ -3630,6 +3844,7 @@ private class NodeHolder(
             if (prepared.subtitleRect != next.rects.subtitle) reasons += "text:subtitleRect"
             if (prepared.metaRect != next.rects.meta) reasons += "text:metaRect"
             if (prepared.textDensity != frame.textDensity) reasons += "text:density"
+            if (prepared.fontDensity != frame.fontDensity) reasons += "text:fontDensity"
             if (prepared.configuredTypeface != frame.configuredTypeface) reasons += "text:typeface"
             if (prepared.leftInset != expectedLeftInset) reasons += "text:leftInset"
             if (prepared.animateText != frame.marqueeAllowed) reasons += "text:marquee"
@@ -3726,7 +3941,9 @@ private class NodeHolder(
         out.width = rect.width.coerceAtLeast(1)
         out.height = rect.height.coerceAtLeast(1)
         out.alpha = rect.alpha.coerceIn(0f, 1f)
-        out.textSizePx = (rect.fontSizeSp.takeIf { it > 0f } ?: 14f) * frame.textDensity
+        out.textSizePx = frame.fontDensity.virtualListSpToPx(
+            rect.fontSizeSp.takeIf { it > 0f } ?: 14f
+        )
         out.sourceTextSizePx = out.textSizePx
         out.targetTextSizePx = out.textSizePx
         out.text = rawText
@@ -3740,6 +3957,7 @@ private class NodeHolder(
         )
         out.ellipsize = ellipsize
         out.marqueeEnabled = frame.marqueeAllowed
+        out.preserveMarqueeProgress = frame.boundaryMotionActive
         out.marqueeSpeed = marqueeSpeedPxPerSecond
         out.metaIconKind = metaIconKind
         out.metaIconSizePx = when (metaIconKind) {
@@ -3765,8 +3983,12 @@ private class NodeHolder(
     ) {
         val source = retainedRect ?: fallbackRect
         val target = currentRect ?: fallbackRect
-        out.sourceTextSizePx = (source.fontSizeSp.takeIf { it > 0f } ?: 14f) * frame.textDensity
-        out.targetTextSizePx = (target.fontSizeSp.takeIf { it > 0f } ?: 14f) * frame.textDensity
+        out.sourceTextSizePx = frame.fontDensity.virtualListSpToPx(
+            source.fontSizeSp.takeIf { it > 0f } ?: 14f
+        )
+        out.targetTextSizePx = frame.fontDensity.virtualListSpToPx(
+            target.fontSizeSp.takeIf { it > 0f } ?: 14f
+        )
         when (outerKind) {
             VirtualListOuterTransitionKind.SHARED -> {
                 val p = motionSample.currentFraction.coerceIn(0f, 1f)
@@ -3777,7 +3999,9 @@ private class NodeHolder(
                 out.alpha = (source.alpha + (target.alpha - source.alpha) * p).coerceIn(0f, 1f)
                 val sourceSp = source.fontSizeSp.takeIf { it > 0f } ?: 14f
                 val targetSp = target.fontSizeSp.takeIf { it > 0f } ?: 14f
-                out.textSizePx = (sourceSp + (targetSp - sourceSp) * p) * frame.textDensity
+                val sourceSizePx = frame.fontDensity.virtualListSpToPx(sourceSp)
+                val targetSizePx = frame.fontDensity.virtualListSpToPx(targetSp)
+                out.textSizePx = sourceSizePx + (targetSizePx - sourceSizePx) * p
             }
             VirtualListOuterTransitionKind.CURRENT_ONLY -> {
                 out.left = target.left
@@ -3785,7 +4009,9 @@ private class NodeHolder(
                 out.width = target.width.coerceAtLeast(1)
                 out.height = target.height.coerceAtLeast(1)
                 out.alpha = target.alpha.coerceIn(0f, 1f)
-                out.textSizePx = (target.fontSizeSp.takeIf { it > 0f } ?: 14f) * frame.textDensity
+                out.textSizePx = frame.fontDensity.virtualListSpToPx(
+                    target.fontSizeSp.takeIf { it > 0f } ?: 14f
+                )
             }
             VirtualListOuterTransitionKind.RETAINED_ONLY -> {
                 out.left = source.left
@@ -3793,7 +4019,9 @@ private class NodeHolder(
                 out.width = source.width.coerceAtLeast(1)
                 out.height = source.height.coerceAtLeast(1)
                 out.alpha = source.alpha.coerceIn(0f, 1f)
-                out.textSizePx = (source.fontSizeSp.takeIf { it > 0f } ?: 14f) * frame.textDensity
+                out.textSizePx = frame.fontDensity.virtualListSpToPx(
+                    source.fontSizeSp.takeIf { it > 0f } ?: 14f
+                )
             }
             null -> {
                 out.left = fallbackRect.left
@@ -3801,7 +4029,9 @@ private class NodeHolder(
                 out.width = fallbackRect.width.coerceAtLeast(1)
                 out.height = fallbackRect.height.coerceAtLeast(1)
                 out.alpha = fallbackRect.alpha.coerceIn(0f, 1f)
-                out.textSizePx = (fallbackRect.fontSizeSp.takeIf { it > 0f } ?: 14f) * frame.textDensity
+                out.textSizePx = frame.fontDensity.virtualListSpToPx(
+                    fallbackRect.fontSizeSp.takeIf { it > 0f } ?: 14f
+                )
             }
         }
         out.text = rawText
@@ -3815,6 +4045,7 @@ private class NodeHolder(
         )
         out.ellipsize = !frame.marqueeAllowed && outerKind != VirtualListOuterTransitionKind.SHARED
         out.marqueeEnabled = frame.marqueeAllowed
+        out.preserveMarqueeProgress = true
         out.marqueeSpeed = marqueeSpeedPxPerSecond
         out.metaIconKind = metaIconKind
         out.metaIconSizePx = when (metaIconKind) {
@@ -3856,8 +4087,8 @@ private class NodeHolder(
             top = offsetY + settledLayout.top.toFloat() - remainder
             pivotX = width * 0.5f
             pivotY = height * 0.5f
-            scaleX = 1f
-            scaleY = 1f
+            scaleX = frame.boundaryScaleProvider().coerceIn(0.9105f, 1.0895f)
+            scaleY = scaleX
             alpha = settledLayout.alpha.coerceIn(0f, 1f)
             coverLeft = current.rects.cover.left
             coverTop = current.rects.cover.top
@@ -3930,8 +4161,14 @@ private class NodeHolder(
         val bottom = settledLayout.bottom.toFloat() - remainder
         val overshoot = frame.virtualListEdgeOvershootProvider()
         val maxOvershoot = VIRTUAL_LIST_MAX_OVERSHOOT_DP * frame.density
-        val holderFraction = virtualListHolderEdgeFraction(top, bottom, frame.viewportHeightPx)
+        val holderFraction = virtualListHolderEdgeFraction(
+            itemIndex = current.index,
+            firstVisibleIndex = frame.edgeFirstVisibleIndex,
+            lastVisibleIndex = frame.edgeLastVisibleIndex,
+            columns = frame.edgeColumns,
+        )
         val edgeScaleY = virtualListHolderScaleY(overshoot, maxOvershoot, holderFraction)
+        val boundaryScale = frame.boundaryScaleProvider().coerceIn(0.9105f, 1.0895f)
         val edgeTranslationY = virtualListHolderTranslationY(
             overshootPx = overshoot,
             maxOvershootPx = maxOvershoot,
@@ -3947,8 +4184,8 @@ private class NodeHolder(
             this.height = height
             left = offsetX + settledLayout.left.toFloat()
             this.top = offsetY + top + edgeTranslationY
-            scaleX = 1f
-            scaleY = edgeScaleY
+            scaleX = boundaryScale
+            scaleY = boundaryScale * edgeScaleY
             this.alpha = alpha
             dualLayout = false
             updateInternalChildren = true
@@ -3960,8 +4197,8 @@ private class NodeHolder(
             dirtyBits = presentationLayout.update(
                 width = width,
                 height = height,
-                scaleX = 1f,
-                scaleY = edgeScaleY,
+                scaleX = boundaryScale,
+                scaleY = boundaryScale * edgeScaleY,
                 alpha = alpha,
             )
             artwork.fillViewGroupArtworkMotionState(this)
@@ -4320,6 +4557,10 @@ private class NodeHolder(
         out: VirtualListResolvedOuterTransform,
     ) {
         when (outerKind) {
+            // When both LayoutRes records exist for the same physical holder, interpolate
+            // the stored geometry, scale and alpha
+            // directly and does NOT call layoutEngine.j(). GenericPivot mode=4 is applied by j()
+            // only for a one-sided holder. Do not add the scene 0.5/1.5 pivot transform here.
             VirtualListOuterTransitionKind.SHARED -> interpolateOuterLayoutInto(
                 source = outerRetainedLayout,
                 target = outerCurrentLayout,
@@ -4333,6 +4574,8 @@ private class NodeHolder(
                 pivotX = motionSample.currentPivotX,
                 pivotY = motionSample.currentPivotY,
                 out = out,
+                translationX = motionSample.currentTranslationX,
+                translationY = motionSample.currentTranslationY,
             )
             VirtualListOuterTransitionKind.RETAINED_ONLY -> sceneTransformedLayoutInto(
                 base = outerRetainedLayout,
@@ -4341,6 +4584,8 @@ private class NodeHolder(
                 pivotX = motionSample.retainedPivotX,
                 pivotY = motionSample.retainedPivotY,
                 out = out,
+                translationX = motionSample.retainedTranslationX,
+                translationY = motionSample.retainedTranslationY,
             )
             null -> {
                 out.left = 0
@@ -4398,7 +4643,12 @@ private class NodeHolder(
         val bottom = settledLayout.bottom.toFloat() - remainder
         val overshoot = frame.virtualListEdgeOvershootProvider()
         val maxOvershoot = VIRTUAL_LIST_MAX_OVERSHOOT_DP * frame.density
-        val holderFraction = virtualListHolderEdgeFraction(top, bottom, frame.viewportHeightPx)
+        val holderFraction = virtualListHolderEdgeFraction(
+            itemIndex = current.index,
+            firstVisibleIndex = frame.edgeFirstVisibleIndex,
+            lastVisibleIndex = frame.edgeLastVisibleIndex,
+            columns = frame.edgeColumns,
+        )
         val edgeScaleY = virtualListHolderScaleY(overshoot, maxOvershoot, holderFraction)
         val edgeTranslationY = virtualListHolderTranslationY(
             overshootPx = overshoot,
@@ -4491,7 +4741,12 @@ private class NodeHolder(
         val bottom = settledLayout.bottom.toFloat() - remainder
         val overshoot = frame.virtualListEdgeOvershootProvider()
         val maxOvershoot = VIRTUAL_LIST_MAX_OVERSHOOT_DP * frame.density
-        val holderFraction = virtualListHolderEdgeFraction(top, bottom, frame.viewportHeightPx)
+        val holderFraction = virtualListHolderEdgeFraction(
+            itemIndex = current.index,
+            firstVisibleIndex = frame.edgeFirstVisibleIndex,
+            lastVisibleIndex = frame.edgeLastVisibleIndex,
+            columns = frame.edgeColumns,
+        )
         val edgeScaleY = virtualListHolderScaleY(overshoot, maxOvershoot, holderFraction)
         val edgeTranslationY = virtualListHolderTranslationY(
             overshootPx = overshoot,
@@ -4631,7 +4886,7 @@ private class NodeHolder(
             text = titleText.display,
             rect = current.rects.title,
             color = colors.title.copy(alpha = colors.title.alpha * rowAlpha),
-            density = frame.textDensity,
+            fontDensity = frame.fontDensity,
             bold = true,
             typefaceOverride = titleText.typeface,
             alreadyEllipsized = true,
@@ -4643,7 +4898,7 @@ private class NodeHolder(
             text = subtitleText.display,
             rect = current.rects.subtitle,
             color = colors.secondary.copy(alpha = colors.secondary.alpha * rowAlpha),
-            density = frame.textDensity,
+            fontDensity = frame.fontDensity,
             bold = false,
             typefaceOverride = subtitleText.typeface,
             alreadyEllipsized = true,
@@ -4655,7 +4910,7 @@ private class NodeHolder(
             text = metaText.display,
             rect = current.rects.meta,
             color = colors.meta.copy(alpha = colors.meta.alpha * rowAlpha),
-            density = frame.textDensity,
+            fontDensity = frame.fontDensity,
             bold = false,
             leftInsetPx = if (current.hasCollectionMetaIcon) 16f * frame.density else 0f,
             typefaceOverride = metaText.typeface,
@@ -4678,7 +4933,7 @@ private class NodeHolder(
                 text = titleText.display,
                 rect = current.rects.title,
                 color = colors.title,
-                density = frame.textDensity,
+                fontDensity = frame.fontDensity,
                 bold = true,
                 typefaceOverride = titleText.typeface,
                 alreadyEllipsized = true,
@@ -4690,7 +4945,7 @@ private class NodeHolder(
                 text = subtitleText.display,
                 rect = current.rects.subtitle,
                 color = colors.secondary,
-                density = frame.textDensity,
+                fontDensity = frame.fontDensity,
                 bold = false,
                 typefaceOverride = subtitleText.typeface,
                 alreadyEllipsized = true,
@@ -4702,7 +4957,7 @@ private class NodeHolder(
                 text = metaText.display,
                 rect = current.rects.meta,
                 color = colors.meta,
-                density = frame.textDensity,
+                fontDensity = frame.fontDensity,
                 bold = false,
                 leftInsetPx = if (current.hasCollectionMetaIcon) 16f * frame.density else 0f,
                 typefaceOverride = metaText.typeface,
@@ -5200,6 +5455,7 @@ private data class NodeHolderRenderSignature(
     val dark: Boolean,
     val density: Float,
     val textDensity: Float,
+    val fontDensity: Density,
     val defaultArtworkEnabled: Boolean,
 )
 
@@ -5211,6 +5467,7 @@ private data class PreparedSignature(
     val subtitleRect: ComposeItemRect,
     val metaRect: ComposeItemRect,
     val textDensity: Float,
+    val fontDensity: Density,
     val configuredTypeface: Typeface?,
     val leftInset: Float,
     val animateText: Boolean,

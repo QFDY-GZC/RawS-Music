@@ -78,8 +78,6 @@ import com.rawsmusic.core.ui.theme.RawThemeRuntimeState
 import com.rawsmusic.core.ui.theme.ThemeManager
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkSurface
 import com.rawsmusic.core.ui.widget.bitmaps.ArtworkBitmapRuntime
-import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkPerfStage
-import com.rawsmusic.core.ui.widget.bitmaps.PlaybackArtworkPerfTrace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -113,7 +111,7 @@ import com.rawsmusic.core.ui.widget.RawMiuixOverlayDialog
  * radial shader per blob and move/scale it through Shader.localMatrix; rebuild only while the
  * actual color endpoint is animating.
  */
-private class RetainedFlowRadialBlob(
+internal class RetainedFlowRadialBlob(
     private val stops: FloatArray,
     private val alphaMultipliers: FloatArray,
 ) {
@@ -167,6 +165,8 @@ private const val FLOW_PREFS = "raw_flow_background"
 private const val FLOW_MODE_KEY = "mode"
 private const val FLOW_STYLE_KEY = "background_style"
 private const val FLOW_SPEED_KEY = "motion_speed"
+private const val ALBUM_COLOR_SPEED_KEY = "album_color_motion_speed_v2"
+private const val FLOW_FRAME_RATE_KEY = "frame_rate_fps"
 private const val FLOW_SATURATION_KEY = "color_saturation"
 private const val FLOW_BRIGHTNESS_KEY = "color_brightness"
 private const val STATIC_GRADIENT_KEY = "static_gradient"
@@ -195,6 +195,7 @@ private object RawFlowPaletteRuntimeState {
 fun clearRawFlowMemoryCache() {
     flowPaletteCache.evictAll()
     RawFlowPaletteRuntimeState.bump()
+    clearRawAlbumColorMemoryCache()
     clearRawStaticArtworkCache()
 }
 
@@ -218,6 +219,7 @@ enum class RawFlowMode(val prefValue: String) {
 
 enum class RawBackgroundStyle(val prefValue: String) {
     FLOW("flow"),
+    ALBUM_COLOR("album_color"),
     STATIC("static"),
     SIMPLE("simple")
 }
@@ -226,6 +228,10 @@ object RawFlowTuningState {
     var style by mutableStateOf(RawBackgroundStyle.FLOW)
         private set
     var speed by mutableFloatStateOf(2f)
+        private set
+    var albumColorSpeed by mutableFloatStateOf(2f)
+        private set
+    var frameRateFps by mutableIntStateOf(60)
         private set
     var saturation by mutableFloatStateOf(1f)
         private set
@@ -255,6 +261,8 @@ object RawFlowTuningState {
             it.prefValue == prefs.getString(FLOW_STYLE_KEY, RawBackgroundStyle.FLOW.prefValue)
         } ?: RawBackgroundStyle.FLOW
         speed = prefs.getFloat(FLOW_SPEED_KEY, 2f).coerceIn(0.5f, 4f)
+        albumColorSpeed = prefs.getFloat(ALBUM_COLOR_SPEED_KEY, 2f).coerceIn(0.25f, 6f)
+        frameRateFps = normalizeFrameRate(prefs.getInt(FLOW_FRAME_RATE_KEY, 60))
         saturation = prefs.getFloat(FLOW_SATURATION_KEY, 1f).coerceIn(0.5f, 1.6f)
         brightness = prefs.getFloat(FLOW_BRIGHTNESS_KEY, 1f).coerceIn(0.65f, 1.35f)
         staticGradient = prefs.getFloat(STATIC_GRADIENT_KEY, 4f).coerceIn(0f, 10f)
@@ -275,6 +283,18 @@ object RawFlowTuningState {
     fun setSpeed(context: Context, value: Float) {
         ensureInitialized(context)
         speed = value.coerceIn(0.5f, 4f)
+        persist(context)
+    }
+
+    fun setAlbumColorSpeed(context: Context, value: Float) {
+        ensureInitialized(context)
+        albumColorSpeed = value.coerceIn(0.25f, 6f)
+        persist(context)
+    }
+
+    fun setFrameRate(context: Context, value: Int) {
+        ensureInitialized(context)
+        frameRateFps = normalizeFrameRate(value)
         persist(context)
     }
 
@@ -342,6 +362,8 @@ object RawFlowTuningState {
             .edit()
             .putString(FLOW_STYLE_KEY, style.prefValue)
             .putFloat(FLOW_SPEED_KEY, speed)
+            .putFloat(ALBUM_COLOR_SPEED_KEY, albumColorSpeed)
+            .putInt(FLOW_FRAME_RATE_KEY, frameRateFps)
             .putFloat(FLOW_SATURATION_KEY, saturation)
             .putFloat(FLOW_BRIGHTNESS_KEY, brightness)
             .putFloat(STATIC_GRADIENT_KEY, staticGradient)
@@ -352,6 +374,11 @@ object RawFlowTuningState {
             .putInt(STATIC_GRADIENT_COLOR_KEY, staticGradientColor)
             .apply()
         revision++
+    }
+
+    private fun normalizeFrameRate(value: Int): Int {
+        val supported = intArrayOf(24, 30, 45, 60, 90, 120)
+        return supported.minByOrNull { kotlin.math.abs(it - value) } ?: 60
     }
 }
 
@@ -494,21 +521,28 @@ fun rememberRawFlowChromeBaseColor(
         fallback,
     ) {
         when {
-            flowMode == RawFlowMode.OFF || backgroundStyle != RawBackgroundStyle.FLOW -> fallback
+            flowMode == RawFlowMode.OFF ||
+                (backgroundStyle != RawBackgroundStyle.FLOW &&
+                    backgroundStyle != RawBackgroundStyle.ALBUM_COLOR) -> fallback
             else -> {
-                val fallbackColors = defaultFlowColors(flowMode, isSystemDark)
+                val effectiveMode = if (backgroundStyle == RawBackgroundStyle.ALBUM_COLOR) {
+                    RawFlowMode.DARK
+                } else {
+                    flowMode
+                }
+                val fallbackColors = defaultFlowColors(effectiveMode, isSystemDark)
                 val cached = resolveFlowColorsFromMemory(
                     context = context,
                     sourceCoverKey = sourceCoverKey,
-                    mode = flowMode,
+                    mode = effectiveMode,
                     isSystemDark = isSystemDark,
                     fallbackColors = fallbackColors,
-                    backgroundStyle = RawBackgroundStyle.FLOW,
+                    backgroundStyle = backgroundStyle,
                 )
                 val dominant = cached?.firstOrNull()
                     ?.let { tuneFlowColor(it, saturationScale, brightnessScale) }
                 if (dominant != null) {
-                    baseFlowColor(flowMode, isSystemDark, dominant)
+                    baseFlowColor(effectiveMode, isSystemDark, dominant)
                 } else {
                     fallback
                 }
@@ -538,6 +572,9 @@ private fun rememberRawFlowIsDarkTheme(): Boolean {
     val systemDark = isSystemInDarkTheme()
     val runtimeVersion = RawThemeRuntimeState.version
     val themeMode = remember(runtimeVersion) { ThemeManager.getCurrentTheme() }
+    // ALBUM_COLOR forces the dark theme (white foregrounds); keep its palette on the dark variant too
+    // so a light-theme user never gets a pale album surface underneath forced white text.
+    if (RawFlowTuningState.style == RawBackgroundStyle.ALBUM_COLOR) return true
     return when (themeMode) {
         ThemeManager.ThemeMode.DARK -> true
         ThemeManager.ThemeMode.LIGHT -> false
@@ -552,7 +589,7 @@ private fun flowPaletteCacheKey(
     backgroundStyle: RawBackgroundStyle = RawBackgroundStyle.FLOW,
 ): String = "${backgroundStyle.prefValue}:${mode.prefValue}:$isSystemDark:${sourceCoverKey.orEmpty()}"
 
-private fun resolveFlowColorsFromMemory(
+internal fun resolveFlowColorsFromMemory(
     context: Context,
     sourceCoverKey: String?,
     mode: RawFlowMode,
@@ -578,7 +615,7 @@ private fun resolveFlowColorsFromMemory(
 }
 
 
-private suspend fun loadRawFlowEndpointColors(
+internal suspend fun loadRawFlowEndpointColors(
     context: Context,
     sourceCoverKey: String?,
     sourceArtwork: AndroidBitmap?,
@@ -597,24 +634,13 @@ private suspend fun loadRawFlowEndpointColors(
     }
     val cacheKey = flowPaletteCacheKey(mode, isSystemDark, sourceCoverKey, backgroundStyle)
     flowPaletteCache.get(cacheKey)?.let { cached ->
-        PlaybackArtworkPerfTrace.mark(
-            "background_flow_cache_hit",
-            "lane=$traceLane key=${PlaybackArtworkPerfTrace.keyTag(sourceCoverKey)} colors=${cached.size}",
-        )
         return cached
     }
 
-    val endpointStartNs = if (PlaybackArtworkPerfTrace.isActive()) System.nanoTime() else 0L
     val supplied = sourceArtwork?.takeUnless { it.isRecycled }
     val bitmap = resolveRawFlowPixelAnalysisBitmap(context, sourceCoverKey, supplied)
-    PlaybackArtworkPerfTrace.mark(
-        "background_flow_source",
-        "lane=$traceLane key=${PlaybackArtworkPerfTrace.keyTag(sourceCoverKey)} supplied=${supplied != null} " +
-            "bitmap=${bitmap?.let { "${it.width}x${it.height}" } ?: "-"}",
-    )
     val completed = bitmap?.takeUnless { it.isRecycled }?.let { artwork ->
-        val paletteStartNs = if (PlaybackArtworkPerfTrace.isActive()) System.nanoTime() else 0L
-        try {
+        run {
             withContext(Dispatchers.Default) {
                 extractRawBackgroundColors(
                     bitmap = artwork,
@@ -625,26 +651,7 @@ private suspend fun loadRawFlowEndpointColors(
                     finalizeExtractedBackgroundColors(extracted, fallbackColors, backgroundStyle)
                 }
             }
-        } finally {
-            if (paletteStartNs != 0L) {
-                PlaybackArtworkPerfTrace.recordDuration(
-                    PlaybackArtworkPerfStage.BACKGROUND_FLOW_PALETTE,
-                    System.nanoTime() - paletteStartNs,
-                )
-            }
         }
-    }
-    if (endpointStartNs != 0L) {
-        val durationNs = System.nanoTime() - endpointStartNs
-        PlaybackArtworkPerfTrace.recordDuration(
-            PlaybackArtworkPerfStage.BACKGROUND_FLOW_ENDPOINT,
-            durationNs,
-        )
-        PlaybackArtworkPerfTrace.mark(
-            "background_flow_ready",
-            "lane=$traceLane key=${PlaybackArtworkPerfTrace.keyTag(sourceCoverKey)} duration=${"%.2f".format(durationNs / 1_000_000.0)}ms " +
-                "resolved=${completed != null}",
-        )
     }
     if (completed != null) {
         flowPaletteCache.put(cacheKey, completed)
@@ -706,11 +713,6 @@ internal class RawFlowAaLiveSlots {
             // identity leaves the current slot so post-commit artwork/palette upgrades stay invisible.
             currentKey = secondaryKey
             currentEndpoint = secondaryEndpoint.ifEmpty { fallback }
-            PlaybackArtworkPerfTrace.backgroundCurrentCommit(
-                lane = "flow",
-                key = currentKey,
-                detail = "colors=${currentEndpoint.size}",
-            )
             // Only a genuinely prepared secondary palette may become an immutable committed
             // endpoint. If commit happened while the secondary slot still carried the inherited
             // outgoing palette, allow the new current artwork's async palette to replace it.
@@ -818,7 +820,7 @@ internal fun expandReferenceFlowDrawSlots(colors: List<Color>): List<Color> {
     return List(FLOW_MAX_COLOR_COUNT) { index -> source.getOrElse(index) { last } }
 }
 
-private fun lerpFlowColor(start: Color, end: Color, fraction: Float): Color {
+internal fun lerpFlowColor(start: Color, end: Color, fraction: Float): Color {
     val t = fraction.coerceIn(0f, 1f)
     return Color(
         red = start.red + (end.red - start.red) * t,
@@ -882,12 +884,32 @@ fun RawFlowTransitionBackground(
         )
         return
     }
+    if (backgroundStyle == RawBackgroundStyle.ALBUM_COLOR) {
+        RawAlbumColorTransitionBackground(
+            mode = flowMode,
+            currentCoverKey = currentCoverKey,
+            targetCoverKey = targetCoverKey,
+            currentArtwork = currentArtwork,
+            targetArtwork = targetArtwork,
+            progressProvider = progressProvider,
+            modifier = modifier,
+            active = active,
+            motionEnabled = motionEnabled,
+            frameIntervalMs = frameIntervalMs,
+            prefetchPreviousCoverKey = prefetchPreviousCoverKey,
+            prefetchPreviousArtwork = prefetchPreviousArtwork,
+            prefetchNextCoverKey = prefetchNextCoverKey,
+            prefetchNextArtwork = prefetchNextArtwork,
+            deferHeavyEndpointWork = deferHeavyEndpointWork,
+        )
+        return
+    }
     if (backgroundStyle != RawBackgroundStyle.FLOW) {
         RawFlowBackground(
             mode = flowMode,
             sourceCoverKey = targetCoverKey ?: currentCoverKey,
             fallbackSourceCoverKey = currentCoverKey,
-            sourceArtwork = targetArtwork ?: currentArtwork,
+            sourceArtwork = if (targetCoverKey != null) targetArtwork else currentArtwork,
             modifier = modifier,
             active = active,
             motionEnabled = motionEnabled,
@@ -1063,12 +1085,6 @@ fun RawFlowTransitionBackground(
         )
         if (resolved != null) {
             val progress = progressProvider().coerceIn(0f, 1f)
-            PlaybackArtworkPerfTrace.backgroundSecondaryAdmit(
-                lane = "flow",
-                key = requestedKey,
-                progress = progress,
-                detail = "colors=${resolved.size}",
-            )
             scene.updateSecondaryDuringMotion(
                 requestedKey,
                 resolved.ifEmpty { loaded },
@@ -1104,7 +1120,7 @@ fun RawFlowTransitionBackground(
     val timeSecondsState = rememberRawFlowTimeState(
         enabled = motionEnabled && frameAnimationActive,
         modeName = flowMode.prefValue,
-        frameIntervalMs = frameIntervalMs.coerceAtLeast(FLOW_FRAME_INTERVAL_MS),
+        targetFps = RawFlowTuningState.frameRateFps,
     )
     val seeds = remember { flowBlobSeeds() }
     val blobRenderers = remember {
@@ -1177,43 +1193,9 @@ fun RawFlowBackground(
     val backgroundStyle = RawFlowTuningState.style
     val runtimeRevision = RawFlowRuntimeState.revision
     val flowMode = RawFlowRuntimeState.mode ?: mode
-    val providerArtwork by produceState<AndroidBitmap?>(
-        initialValue = sourceArtwork?.takeUnless { it.isRecycled },
-        sourceCoverKey,
-        sourceArtwork,
-        active,
-        flowMode,
-        backgroundStyle,
-    ) {
-        val providedArtwork = sourceArtwork?.takeUnless { it.isRecycled }
-        value = providedArtwork
-        if (
-            providedArtwork != null ||
-            !active ||
-            flowMode == RawFlowMode.OFF ||
-            backgroundStyle == RawBackgroundStyle.SIMPLE
-        ) {
-            // The playback artwork holder already owns the exact bitmap. Do not launch a second 96px
-            // provider request for the same source while a track-switch frame is being composed.
-            return@produceState
-        }
-        // FLOW needs only CPU palette pixels and resolves those through executePixelAnalysisBitmap
-        // below. Decode a foreground-quality provider bitmap here only when STATIC player mode
-        // actually renders that bitmap as the full-screen background.
-        value = if (backgroundStyle == RawBackgroundStyle.STATIC && surface == RawBackgroundSurface.PLAYER) {
-            sourceCoverKey?.takeIf { it.isNotBlank() }?.let { key ->
-                ArtworkBitmapRuntime.executeBitmap(
-                    context = context,
-                    key = key,
-                    width = FLOW_EXTRACT_SIZE,
-                    height = FLOW_EXTRACT_SIZE,
-                    surface = ArtworkSurface.Playback,
-                )
-            }
-        } else {
-            null
-        }
-    }
+    // Static artwork acquisition belongs to its persistent renderer, shared with the player
+    // transition path. Palette-sized inputs must not determine static-background detail.
+    val providerArtwork = sourceArtwork?.takeUnless { it.isRecycled }
     val tuningRevision = RawFlowTuningState.revision
     val motionSpeed = RawFlowTuningState.speed
     val saturationScale = RawFlowTuningState.saturation
@@ -1245,11 +1227,24 @@ fun RawFlowBackground(
         return
     }
 
-    if (backgroundStyle == RawBackgroundStyle.STATIC && surface == RawBackgroundSurface.PLAYER) {
+    if (backgroundStyle == RawBackgroundStyle.STATIC) {
         RawStaticArtworkSingleBackground(
             sourceCoverKey = sourceCoverKey ?: fallbackSourceCoverKey,
             sourceArtwork = providerArtwork,
             modifier = modifier.fillMaxSize(),
+        )
+        return
+    }
+    if (backgroundStyle == RawBackgroundStyle.ALBUM_COLOR) {
+        RawAlbumColorBackground(
+            mode = flowMode,
+            sourceCoverKey = sourceCoverKey,
+            fallbackSourceCoverKey = fallbackSourceCoverKey,
+            sourceArtwork = providerArtwork,
+            modifier = modifier,
+            active = active,
+            motionEnabled = motionEnabled,
+            frameIntervalMs = frameIntervalMs,
         )
         return
     }
@@ -1388,6 +1383,12 @@ fun RawFlowBackground(
         }
 
         if (!appliedAlbumPalette) {
+            com.rawsmusic.core.common.utils.AppLogger.i(
+                "ArtworkRestore",
+                "palette_miss key=${sourceCoverKey.hashCode()} style=$backgroundStyle " +
+                    "surface=$surface supplied=${providerArtwork != null} " +
+                    "decoded=${bitmap != null} elapsedMs=${SystemClock.elapsedRealtime() - paletteStartMs}",
+            )
             PowerTraceLogger.flowPalette(
                 stage = "load_miss_inherited",
                 mode = flowMode.prefValue,
@@ -1506,7 +1507,7 @@ fun RawFlowBackground(
         enabled = frameAnimationActive && motionEnabled && canMove &&
             backgroundStyle == RawBackgroundStyle.FLOW,
         modeName = flowMode.prefValue,
-        frameIntervalMs = frameIntervalMs.coerceAtLeast(FLOW_FRAME_INTERVAL_MS)
+        targetFps = RawFlowTuningState.frameRateFps,
     )
     val blobSeeds = remember { flowBlobSeeds() }
     val blobRenderers = remember {
@@ -1584,21 +1585,24 @@ fun RawFlowBackground(
 }
 
 @Composable
-private fun rememberRawFlowTimeState(
+internal fun rememberRawFlowTimeState(
     enabled: Boolean,
     modeName: String,
-    frameIntervalMs: Long
+    targetFps: Int,
 ): androidx.compose.runtime.State<Float> {
     fun globalPhaseSeconds(nowNs: Long = System.nanoTime()): Float =
         ((nowNs - FLOW_GLOBAL_EPOCH_NS).coerceAtLeast(0L) / 1_000_000_000f)
 
     val timeSeconds = remember { mutableFloatStateOf(globalPhaseSeconds()) }
-    LaunchedEffect(enabled, modeName, frameIntervalMs) {
+    val normalizedFps = targetFps.coerceIn(1, 240)
+    val requestedIntervalNs = 1_000_000_000L / normalizedFps.toLong()
+    val traceIntervalMs = (1000f / normalizedFps).roundToInt().toLong().coerceAtLeast(1L)
+    LaunchedEffect(enabled, modeName, normalizedFps) {
         if (!enabled) {
             PowerTraceLogger.flowFrame(
                 mode = modeName,
                 enabled = false,
-                frameIntervalMs = frameIntervalMs
+                frameIntervalMs = traceIntervalMs
             )
             return@LaunchedEffect
         }
@@ -1611,15 +1615,10 @@ private fun rememberRawFlowTimeState(
         var lastUpdateNs = 0L
         var lastTraceNs = 0L
         val startVisualSeconds = timeSeconds.floatValue
-        val requestedIntervalNs = frameIntervalMs.coerceAtLeast(1L) * 1_000_000L
         while (isActive) {
             val frameNs = withFrameNanos { it }
             if (firstFrameNs == 0L) firstFrameNs = frameNs
-            if (
-                frameIntervalMs <= FLOW_FRAME_INTERVAL_MS ||
-                lastUpdateNs == 0L ||
-                frameNs - lastUpdateNs >= requestedIntervalNs
-            ) {
+            if (lastUpdateNs == 0L || frameNs - lastUpdateNs >= requestedIntervalNs) {
                 timeSeconds.floatValue = startVisualSeconds +
                     ((frameNs - firstFrameNs).coerceAtLeast(0L) / 1_000_000_000f)
                 lastUpdateNs = frameNs
@@ -1628,7 +1627,7 @@ private fun rememberRawFlowTimeState(
                 PowerTraceLogger.flowFrame(
                     mode = modeName,
                     enabled = true,
-                    frameIntervalMs = frameIntervalMs
+                    frameIntervalMs = traceIntervalMs
                 )
                 lastTraceNs = frameNs
             }
@@ -1653,11 +1652,13 @@ fun RawFlowModeDialog(
     val backgroundStyle = RawFlowTuningState.style
     val dialogTitle = when (backgroundStyle) {
         RawBackgroundStyle.FLOW -> stringResource(R.string.flow_background_dialog_title)
+        RawBackgroundStyle.ALBUM_COLOR -> stringResource(R.string.album_color_background_dialog_title)
         RawBackgroundStyle.STATIC -> stringResource(R.string.static_background_dialog_title)
         RawBackgroundStyle.SIMPLE -> stringResource(R.string.simple_background_dialog_title)
     }
     val dialogSummary = when (backgroundStyle) {
         RawBackgroundStyle.FLOW -> stringResource(R.string.flow_background_dialog_summary)
+        RawBackgroundStyle.ALBUM_COLOR -> stringResource(R.string.album_color_background_dialog_summary)
         RawBackgroundStyle.STATIC -> stringResource(R.string.static_background_dialog_summary)
         RawBackgroundStyle.SIMPLE -> stringResource(R.string.simple_background_dialog_summary)
     }
@@ -1736,6 +1737,11 @@ fun RawFlowModeDialog(
                         onClick = { selectMode(RawFlowMode.UNIVERSAL) }
                     )
                 }
+                RawBackgroundStyle.ALBUM_COLOR -> RawBackgroundStyleSummary(
+                    title = stringResource(R.string.album_color_switch_to_flow_title),
+                    summary = stringResource(R.string.album_color_switch_to_flow_summary),
+                    onClick = { RawFlowTuningState.setStyle(context, RawBackgroundStyle.FLOW) },
+                )
                 RawBackgroundStyle.STATIC -> RawBackgroundStyleSummary(
                     title = stringResource(R.string.static_background_follow_cover_title),
                     summary = stringResource(R.string.static_background_follow_cover_summary)
@@ -1774,6 +1780,11 @@ private fun RawBackgroundStyleDialog(
                     RawBackgroundStyle.FLOW,
                     stringResource(R.string.flow_background_style_flow),
                     stringResource(R.string.flow_background_style_flow_summary)
+                ),
+                Triple(
+                    RawBackgroundStyle.ALBUM_COLOR,
+                    stringResource(R.string.flow_background_style_album_color),
+                    stringResource(R.string.flow_background_style_album_color_summary)
                 ),
                 Triple(
                     RawBackgroundStyle.STATIC,
@@ -1903,13 +1914,31 @@ private fun RawFlowParameterControls(
             }
             return@Column
         }
-        if (backgroundStyle == RawBackgroundStyle.FLOW) {
+        if (
+            backgroundStyle == RawBackgroundStyle.FLOW ||
+            backgroundStyle == RawBackgroundStyle.ALBUM_COLOR
+        ) {
+            val motionSpeed = if (backgroundStyle == RawBackgroundStyle.ALBUM_COLOR) {
+                RawFlowTuningState.albumColorSpeed
+            } else {
+                RawFlowTuningState.speed
+            }
             RawFlowParameterSlider(
                 title = stringResource(R.string.flow_background_speed_parameter),
-                value = RawFlowTuningState.speed,
-                valueRange = 0.5f..4f,
-                valueText = "${"%.1f".format(RawFlowTuningState.speed)}×",
-                onValueChange = { RawFlowTuningState.setSpeed(context, it) }
+                value = motionSpeed,
+                valueRange = if (backgroundStyle == RawBackgroundStyle.ALBUM_COLOR) {
+                    0.25f..6f
+                } else {
+                    0.5f..4f
+                },
+                valueText = "${"%.1f".format(motionSpeed)}×",
+                onValueChange = {
+                    if (backgroundStyle == RawBackgroundStyle.ALBUM_COLOR) {
+                        RawFlowTuningState.setAlbumColorSpeed(context, it)
+                    } else {
+                        RawFlowTuningState.setSpeed(context, it)
+                    }
+                }
             )
         }
         RawFlowParameterSlider(
@@ -1932,14 +1961,17 @@ private fun RawFlowParameterControls(
 @Composable
 private fun RawBackgroundStyleSummary(
     title: String,
-    summary: String
+    summary: String,
+    onClick: (() -> Unit)? = null,
 ) {
+    val contentModifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(18.dp))
+        .background(MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f))
+        .let { base -> if (onClick != null) base.clickable(onClick = onClick) else base }
+        .padding(horizontal = 16.dp, vertical = 14.dp)
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f))
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+        modifier = contentModifier,
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(text = title, color = MiuixTheme.colorScheme.onSurface, fontSize = 16.sp)
@@ -2066,7 +2098,7 @@ private fun FlowColorPreview(colors: List<Color>) {
     }
 }
 
-private data class FlowBlobSeed(
+internal data class FlowBlobSeed(
     val baseX: Float,
     val baseY: Float,
     val amplitudeX: Float,
@@ -2082,7 +2114,7 @@ private data class FlowBlobSeed(
     val alphaSpeed: Float
 )
 
-private fun flowBlobSeeds(): List<FlowBlobSeed> {
+internal fun flowBlobSeeds(): List<FlowBlobSeed> {
     return listOf(
         FlowBlobSeed(0.08f, 0.17f, 0.38f, 0.30f, 0.45f, 0.54f, 0.20f, 0.91f, 0.63f, 0.37f, 0.49f, 0.43f, 0.61f),
         FlowBlobSeed(0.86f, 0.14f, 0.31f, 0.33f, 0.40f, 0.48f, 1.70f, 0.57f, 0.83f, 0.41f, 0.31f, 0.55f, 0.47f),
@@ -2238,7 +2270,7 @@ private fun perceptualColorDistance(a: Color, b: Color): Float {
     return kotlin.math.sqrt(hue * hue + saturation * saturation + value * value)
 }
 
-private fun tuneFlowColor(color: Color, saturationScale: Float, brightnessScale: Float): Color {
+internal fun tuneFlowColor(color: Color, saturationScale: Float, brightnessScale: Float): Color {
     val hsv = FloatArray(3)
     AndroidColor.colorToHSV(color.toArgbNoAlpha(), hsv)
     hsv[1] = (hsv[1] * saturationScale).coerceIn(0f, 1f)
@@ -2246,7 +2278,7 @@ private fun tuneFlowColor(color: Color, saturationScale: Float, brightnessScale:
     return colorFromArgb(AndroidColor.HSVToColor(0xFF, hsv))
 }
 
-private fun defaultFlowColors(mode: RawFlowMode, isSystemDark: Boolean): List<Color> {
+internal fun defaultFlowColors(mode: RawFlowMode, isSystemDark: Boolean): List<Color> {
     val darkPalette = listOf(
         Color(0xFF67377B),
         Color(0xFF7B324E),
@@ -2284,7 +2316,7 @@ private fun defaultFlowColors(mode: RawFlowMode, isSystemDark: Boolean): List<Co
     }
 }
 
-private fun baseFlowColor(mode: RawFlowMode, isSystemDark: Boolean, dominant: Color?): Color {
+internal fun baseFlowColor(mode: RawFlowMode, isSystemDark: Boolean, dominant: Color?): Color {
     if (dominant == null || mode == RawFlowMode.UNIVERSAL || mode == RawFlowMode.OFF) {
         return if (isSystemDark) Color(0xFF0B0911) else Color(0xFFFFFAF4)
     }

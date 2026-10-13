@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_player_keep_screen_on">再生画面を常時点灯</string>
+    <string name="settings_player_keep_screen_on_summary">再生画面や歌詞画面を開いている間は、一時停止中も画面を点灯したままにします</string>
+</resources>

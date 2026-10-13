@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="transcode_post_source_delete_needs_consent">変換は完了しました。元ファイルを削除するにはシステムの許可が必要です。</string>
+    <string name="transcode_post_source_deleted">変換が完了し、元ファイルを削除しました。</string>
+    <string name="transcode_post_source_delete_failed">変換は完了しましたが、元ファイルを削除できませんでした。</string>
+    <string name="transcode_post_library_refresh_requested">変換が完了し、ライブラリの更新を要求しました。</string>
+    <string name="transcode_post_action_notice">変換は完了しましたが、後続のメディアライブラリ処理を完了できませんでした。</string>
+</resources>

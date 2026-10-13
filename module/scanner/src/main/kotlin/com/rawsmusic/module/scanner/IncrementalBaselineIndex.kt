@@ -4,13 +4,17 @@ import com.rawsmusic.core.common.model.AudioFile
 import java.util.Locale
 
 /** Reuses enriched Room rows when a cold-start directory probe reports the same file. */
-internal class IncrementalBaselineIndex(baselineSongs: List<AudioFile>) {
-    private val songsByPath = baselineSongs.groupBy { it.normalizedScanPath() }
+internal class IncrementalBaselineIndex(
+    baselineSongs: List<AudioFile>,
+    private val pendingKeys: Set<String> = emptySet(),
+    private val songsByPath: ScanPathIndex = ScanPathIndex(baselineSongs),
+) {
 
     fun reusableSongs(raw: AudioFile): List<AudioFile>? {
         if (raw.fileSize <= 0L || raw.dateModified <= 0L) return null
-        val candidates = songsByPath[raw.normalizedScanPath()].orEmpty()
+        val candidates = songsByPath.rowsForPath(raw.path)
         if (candidates.isEmpty()) return null
+        if (candidates.any { scanRowKey(it) in pendingKeys }) return null
         if (candidates.any { old ->
                 old.fileSize != raw.fileSize ||
                     old.dateModified <= 0L ||
@@ -33,4 +37,4 @@ internal fun List<AudioFile>.physicalScanRows(): List<AudioFile> =
         }
 
 private fun AudioFile.normalizedScanPath(): String =
-    path.trim().replace('\\', '/').lowercase(Locale.ROOT)
+    normalizedScanPath(path)

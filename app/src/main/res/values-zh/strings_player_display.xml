@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_player_keep_screen_on">播放界面屏幕常亮</string>
+    <string name="settings_player_keep_screen_on_summary">播放页或歌词页打开时保持屏幕常亮，暂停时也生效</string>
+</resources>

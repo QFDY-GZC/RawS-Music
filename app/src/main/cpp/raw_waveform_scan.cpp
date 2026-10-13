@@ -7,6 +7,7 @@
 #include <ctime>
 #include <vector>
 #include "raw_fft_analyzer.h"
+#include "raw_sacd_avio.h"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -309,7 +310,7 @@ std::vector<float> rawsmusic_scan_waveform_precise_seek(
     int64_t full_duration_ms = 0;
     int64_t segment_ms = 0;
 
-    if (avformat_open_input(&fmt, input_path, nullptr, nullptr) < 0) {
+    if (raw_audio_format_open(&fmt, input_path, nullptr, nullptr) < 0) {
         WLOGE("open failed: %s", input_path);
         goto cleanup;
     }
@@ -499,6 +500,6 @@ cleanup:
     if (frame) av_frame_free(&frame);
     if (swr) swr_free(&swr);
     if (codec) avcodec_free_context(&codec);
-    if (fmt) avformat_close_input(&fmt);
+    if (fmt) raw_audio_format_close(&fmt);
     return empty;
 }

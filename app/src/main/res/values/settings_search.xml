@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_search_recent_title">最近搜索</string>
+    <string name="settings_search_suggestions_title">常用设置</string>
+    <string name="settings_search_clear_history">清空</string>
+    <string name="settings_search_remove_history">删除搜索记录：%1$s</string>
+    <string name="settings_search_expand_group">展开其余 %1$d 项</string>
+    <string name="settings_search_collapse_group">收起</string>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_player_more_favorite_visible">더보기 팝업에 즐겨찾기 표시</string>
+    <string name="settings_player_more_favorite_visible_summary">플레이어 더보기 팝업의 제목 옆에 버튼을 표시하여 현재 곡을 재생목록에 추가합니다.</string>
+</resources>

@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -28,10 +29,15 @@ import androidx.compose.ui.window.Dialog
 import com.rawsmusic.module.data.prefs.AppPreferences
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.module.data.prefs.PlayerHiResBadgeCorner
+import com.rawsmusic.module.data.prefs.PlayerHiResBadgeSettings
+import com.rawsmusic.module.data.prefs.PlayerHiResBadgeSourceInfo
 import com.rawsmusic.module.data.prefs.PlayerProgressPreferences
+import com.rawsmusic.module.data.prefs.readPlayerHiResBadgeSourceInfo
+import com.rawsmusic.module.data.prefs.resolvePlayerHiResBadgeDisplaySize
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.rawsmusic.core.common.ui.AppNoticeBus
+import com.rawsmusic.helper.rememberSystemFileAccessGate
 import androidx.core.content.ContextCompat
 import com.rawsmusic.R
 import com.rawsmusic.core.ui.widget.RawWindowDropdownPreference
@@ -54,10 +60,14 @@ fun LiquidGlassPlayerInterfaceScreen(
     onBack: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val withSystemFileAccess = rememberSystemFileAccessGate()
     val scope = rememberCoroutineScope()
 
     var defaultBackgroundEnabled by remember { mutableStateOf(AppPreferences.UI.isDefaultBackgroundEnabled) }
     var immersiveEnabled by remember { mutableStateOf(AppPreferences.UI.isImmersiveEnabled) }
+    var immersiveVerticalTrackSwipeEnabled by remember {
+        mutableStateOf(AppPreferences.UI.immersiveVerticalTrackSwipeEnabled)
+    }
     var audioVisualizerEnabled by remember { mutableStateOf(AppPreferences.UI.isAudioVisualizerEnabled) }
     var audioVisualizerHapticsEnabled by remember {
         mutableStateOf(AppPreferences.UI.audioVisualizerHapticsEnabled)
@@ -68,12 +78,36 @@ fun LiquidGlassPlayerInterfaceScreen(
     var statusBarHidden by remember { mutableStateOf(AppPreferences.UI.isStatusBarHidden) }
     var miniCoverEnabled by remember { mutableStateOf(AppPreferences.UI.isMiniCoverEnabled) }
     var playPageMemoryEnabled by remember { mutableStateOf(AppPreferences.UI.isPlayPageMemoryEnabled) }
+    var playerSwipeToChangeTrackDisabled by remember {
+        mutableStateOf(AppPreferences.UI.playerSwipeToChangeTrackDisabled)
+    }
+    var playerMoreFavoriteVisible by remember {
+        mutableStateOf(AppPreferences.UI.playerMoreFavoriteVisible)
+    }
     var playerTitleAlignment by remember { mutableStateOf(AppPreferences.UI.playerTitleAlignment) }
     var miniLyricAlignment by remember { mutableStateOf(AppPreferences.UI.miniLyricAlignment) }
     val playerArtworkCornerRadiusDp by PersonalizationPreferences.playerArtworkCornerRadiusDp.collectAsState()
     val playerArtworkAnimationStyleValue by PersonalizationPreferences.playerArtworkAnimationStyle.collectAsState()
     val playerArtworkAnimationStyle = PlayerArtworkAnimationStyle.from(playerArtworkAnimationStyleValue)
     val hiResBadgeSettings by PersonalizationPreferences.playerHiResBadgeSettings.collectAsState()
+    val hiResBadgeSourceInfo by produceState<PlayerHiResBadgeSourceInfo?>(
+        initialValue = null,
+        hiResBadgeSettings.customPath,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            readPlayerHiResBadgeSourceInfo(hiResBadgeSettings.customPath)
+        }
+    }
+    val hiResBadgeDisplaySize = remember(
+        hiResBadgeSourceInfo,
+        hiResBadgeSettings.customPath,
+        hiResBadgeSettings.sizeScale,
+    ) {
+        resolvePlayerHiResBadgeDisplaySize(
+            customSource = hiResBadgeSourceInfo.takeIf { hiResBadgeSettings.customPath.isNotBlank() },
+            sizeScale = hiResBadgeSettings.sizeScale,
+        )
+    }
     var waveformColorTarget by remember { mutableStateOf<WaveformColorTarget?>(null) }
     var waveformEditingColor by remember { mutableStateOf(Color.White) }
     val waveformBarCount by PlayerProgressPreferences.waveformBarCount.collectAsState()
@@ -292,6 +326,15 @@ fun LiquidGlassPlayerInterfaceScreen(
                 title = stringResource(R.string.settings_player_immersive),
                 description = stringResource(R.string.settings_player_immersive_desc)
             )
+            SwitchRow(stringResource(R.string.settings_player_immersive_vertical_swipe),
+                immersiveVerticalTrackSwipeEnabled) { checked ->
+                immersiveVerticalTrackSwipeEnabled = checked
+                AppPreferences.UI.immersiveVerticalTrackSwipeEnabled = checked
+            }
+            SettingsInfoEntry(
+                title = stringResource(R.string.settings_player_immersive_vertical_swipe),
+                description = stringResource(R.string.settings_player_immersive_vertical_swipe_summary),
+            )
             PlayerArtworkCornerRadiusSlider(
                 value = playerArtworkCornerRadiusDp,
                 onValueChange = { PersonalizationPreferences.playerArtworkCornerRadiusDpValue = it },
@@ -307,6 +350,28 @@ fun LiquidGlassPlayerInterfaceScreen(
             SettingsInfoEntry(
                 title = stringResource(R.string.settings_player_artwork_animation_title),
                 description = stringResource(R.string.settings_player_artwork_animation_summary),
+            )
+            SwitchRow(
+                stringResource(R.string.settings_player_disable_track_swipe),
+                playerSwipeToChangeTrackDisabled,
+            ) { checked ->
+                playerSwipeToChangeTrackDisabled = checked
+                AppPreferences.UI.playerSwipeToChangeTrackDisabled = checked
+            }
+            SettingsInfoEntry(
+                title = stringResource(R.string.settings_player_disable_track_swipe),
+                description = stringResource(R.string.settings_player_disable_track_swipe_summary),
+            )
+            SwitchRow(
+                stringResource(R.string.settings_player_more_favorite_visible),
+                playerMoreFavoriteVisible,
+            ) { checked ->
+                playerMoreFavoriteVisible = checked
+                AppPreferences.UI.playerMoreFavoriteVisible = checked
+            }
+            SettingsInfoEntry(
+                title = stringResource(R.string.settings_player_more_favorite_visible),
+                description = stringResource(R.string.settings_player_more_favorite_visible_summary),
             )
             SwitchRow(
                 stringResource(R.string.settings_player_hires_badge_title),
@@ -327,6 +392,19 @@ fun LiquidGlassPlayerInterfaceScreen(
                     maxHeight = 260.dp,
                     collapseOnSelection = true,
                 )
+                PlayerHiResBadgeSizeSlider(
+                    sizeScale = hiResBadgeSettings.sizeScale,
+                    displayWidthDp = hiResBadgeDisplaySize.widthDp,
+                    displayHeightDp = hiResBadgeDisplaySize.heightDp,
+                    sourceInfo = hiResBadgeSourceInfo.takeIf {
+                        hiResBadgeSettings.customPath.isNotBlank()
+                    },
+                    onValueChange = { value ->
+                        PersonalizationPreferences.updatePlayerHiResBadgeSettings {
+                            it.copy(sizeScale = value)
+                        }
+                    },
+                )
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -334,7 +412,11 @@ fun LiquidGlassPlayerInterfaceScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Button(
-                        onClick = { hiResBadgeImportLauncher.launch("image/*") },
+                        onClick = {
+                            withSystemFileAccess {
+                                hiResBadgeImportLauncher.launch("image/*")
+                            }
+                        },
                         modifier = Modifier.weight(1f),
                     ) {
                         Text(
@@ -614,6 +696,62 @@ private fun PlayerArtworkCornerRadiusSlider(
         )
         Text(
             text = stringResource(R.string.settings_player_artwork_corner_radius_desc),
+            fontSize = 12.sp,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun PlayerHiResBadgeSizeSlider(
+    sizeScale: Float,
+    displayWidthDp: Float,
+    displayHeightDp: Float,
+    sourceInfo: PlayerHiResBadgeSourceInfo?,
+    onValueChange: (Float) -> Unit,
+) {
+    val safeScale = sizeScale.coerceIn(
+        PlayerHiResBadgeSettings.MIN_SIZE_SCALE,
+        PlayerHiResBadgeSettings.MAX_SIZE_SCALE,
+    )
+    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(R.string.settings_player_hires_badge_size),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = MiuixTheme.colorScheme.onBackground,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = stringResource(
+                    R.string.settings_player_hires_badge_size_value,
+                    (safeScale * 100f).toInt(),
+                    displayWidthDp.toInt(),
+                    displayHeightDp.toInt(),
+                ),
+                fontSize = 12.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
+        Slider(
+            value = safeScale,
+            onValueChange = onValueChange,
+            valueRange = PlayerHiResBadgeSettings.MIN_SIZE_SCALE..PlayerHiResBadgeSettings.MAX_SIZE_SCALE,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            text = sourceInfo?.let { source ->
+                stringResource(
+                    R.string.settings_player_hires_badge_size_custom_summary,
+                    source.widthPx,
+                    source.heightPx,
+                )
+            } ?: stringResource(R.string.settings_player_hires_badge_size_builtin_summary),
             fontSize = 12.sp,
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             modifier = Modifier.padding(top = 2.dp),

@@ -5,6 +5,14 @@ import org.junit.Test
 
 class HomeCardEditorPolicyTest {
     @Test
+    fun enteringEditShowsHintButDraggingOrExitingDoesNotRepeatIt() {
+        assertEquals(true, shouldShowHomeCardDragHint(false, true))
+        assertEquals(false, shouldShowHomeCardDragHint(true, true))
+        assertEquals(false, shouldShowHomeCardDragHint(true, false))
+        assertEquals(false, shouldShowHomeCardDragHint(false, false))
+    }
+
+    @Test
     fun twoColumnDropMapsHorizontalAndVerticalMotionToVisibleIndices() {
         assertEquals(0, resolveHomeCardDropDelta(20f, 30f, 200, 260))
         assertEquals(1, resolveHomeCardDropDelta(150f, 0f, 200, 260))

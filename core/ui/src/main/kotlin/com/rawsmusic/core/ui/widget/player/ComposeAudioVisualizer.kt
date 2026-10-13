@@ -567,6 +567,7 @@ enum class AudioVisualizerLayer {
 @Composable
 fun AlbumArtworkSpectrumOverlay(
     spectrum: FloatArray,
+    spectrumState: State<FloatArray>? = null,
     visible: Boolean,
     isPlaying: Boolean,
     layer: AudioVisualizerLayer,
@@ -593,6 +594,7 @@ fun AlbumArtworkSpectrumOverlay(
                 .audioVisualizerFrame(
                     motion = motion,
                     spectrum = spectrum,
+                    spectrumState = spectrumState,
                     visible = visible,
                     playing = isPlaying,
                 )

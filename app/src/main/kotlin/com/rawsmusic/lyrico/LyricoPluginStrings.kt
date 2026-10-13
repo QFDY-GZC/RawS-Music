@@ -12,6 +12,10 @@ class LyricoPluginStrings private constructor(
 ) {
     fun text(key: String): String = lookup(key) ?: key
 
+    fun manifestText(value: String, fallback: String): String =
+        if (value.startsWith('@')) lookup(value.drop(1))?.takeIf { it.isNotBlank() } ?: fallback
+        else value
+
     fun format(key: String, args: List<Any?>): String {
         val template = lookup(key) ?: return key
         return if (args.isEmpty()) template else LyricoPluginStringFormat.format(template, args)
@@ -117,10 +121,11 @@ class LyricoPluginStrings private constructor(
             return inferChineseScript(left) == inferChineseScript(right)
         }
 
-        private fun inferChineseScript(locale: Locale): String = when (locale.country.uppercase(Locale.ROOT)) {
-            "TW", "HK", "MO" -> "Hant"
-            else -> "Hans"
-        }
+        private fun inferChineseScript(locale: Locale): String = locale.script.takeIf { it.isNotEmpty() }
+            ?: when (locale.country.uppercase(Locale.ROOT)) {
+                "TW", "HK", "MO" -> "Hant"
+                else -> "Hans"
+            }
 
         private fun isCanonicalLocaleTag(tag: String): Boolean {
             if (tag.isBlank() || tag == "und") return false

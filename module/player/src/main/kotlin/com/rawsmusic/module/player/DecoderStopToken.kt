@@ -14,12 +14,17 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 internal class DecoderStopToken(val label: String) {
     private val requested = AtomicBoolean(false)
+    private val decodeComplete = AtomicBoolean(false)
     private val closeRetiredHandleInOwnerThread = AtomicBoolean(false)
     @Volatile
     private var lastReason: String = ""
 
     val isStopRequested: Boolean
         get() = requested.get()
+
+    val isDecodeComplete: Boolean get() = decodeComplete.get()
+    fun markDecodeComplete() { decodeComplete.set(true) }
+    fun resetDecodeCompletion() { decodeComplete.set(false) }
 
     /**
      * True when the decoder thread that captured this token must close its own

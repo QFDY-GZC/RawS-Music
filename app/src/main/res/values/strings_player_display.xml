@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_player_keep_screen_on">Keep player screen on</string>
+    <string name="settings_player_keep_screen_on_summary">Keep the screen on while the player or lyrics page is open, including when paused</string>
+</resources>

@@ -57,6 +57,7 @@ internal fun SharedMarqueeText(
     rainbowGradient: Boolean = false,
     drawClock: LyricDirectRenderClock? = null,
     edgeFeather: Dp = 0.dp,
+    explicitBadge: Boolean = false,
 ) {
     val density = LocalDensity.current
     val frameAnimationActive = LocalUiFrameAnimationActive.current
@@ -77,6 +78,12 @@ internal fun SharedMarqueeText(
         }
     }
     val textWidth = remember(text, paint.textSize, paint.typeface) { paint.measureText(text) }
+    val totalWidth = textWidth + if (explicitBadge) {
+        explicitBadgeGap(paint.textSize) + explicitBadgeWidth(paint.textSize)
+    } else 0f
+    val explicitLabelPaint = remember(explicitBadge, paint.textSize) {
+        if (explicitBadge) createExplicitBadgeLabelPaint(paint.textSize) else null
+    }
     val cumulativeCharacterWidths = remember(text, paint.textSize, paint.typeface) {
         val characterWidths = FloatArray(text.length)
         if (text.isNotEmpty()) paint.getTextWidths(text, characterWidths)
@@ -132,7 +139,7 @@ internal fun SharedMarqueeText(
         }
     }
     var measuredWidth by remember { mutableFloatStateOf(0f) }
-    val overflowPx = (textWidth - measuredWidth).coerceAtLeast(0f)
+    val overflowPx = (totalWidth - measuredWidth).coerceAtLeast(0f)
     val marqueeEnabled =
         frameAnimationActive && visible && LongTextMotionState.enabled &&
             LongTextMotionState.enabledEverywhere && overflowPx > 0.5f
@@ -191,8 +198,8 @@ internal fun SharedMarqueeText(
         )
         val baseline = verticalLayout.baseline
         val staticStartX = when (textAlign) {
-            TextAlign.Center -> ((drawWidth - textWidth) * 0.5f).coerceAtLeast(0f)
-            TextAlign.End, TextAlign.Right -> (drawWidth - textWidth).coerceAtLeast(0f)
+            TextAlign.Center -> ((drawWidth - totalWidth) * 0.5f).coerceAtLeast(0f)
+            TextAlign.End, TextAlign.Right -> (drawWidth - totalWidth).coerceAtLeast(0f)
             else -> 0f
         }
         val drawX = if (marqueeEnabled) -marqueeOffset else staticStartX
@@ -221,6 +228,14 @@ internal fun SharedMarqueeText(
             bottom = verticalLayout.clipBottom,
         ) {
             drawIntoNativeText(text, paint, Offset(drawX, baseline))
+            if (explicitBadge && explicitLabelPaint != null) {
+                drawExplicitTitleBadge(
+                    left = drawX + textWidth + explicitBadgeGap(paint.textSize),
+                    titleBaseline = baseline,
+                    fontSizePx = paint.textSize,
+                    labelPaint = explicitLabelPaint,
+                )
+            }
             val highlightCharacterPosition = highlightCharacterPositionProvider?.invoke()
                 ?: highlightProgress?.let { progress -> progress.coerceIn(0f, 1f) * text.length }
             highlightCharacterPosition?.let { rawCharacterPosition ->
@@ -259,7 +274,7 @@ internal fun SharedMarqueeText(
             }
         }
 
-        if (edgeFeather > 0.dp && textWidth > drawWidth + 0.5f) {
+        if (edgeFeather > 0.dp && totalWidth > drawWidth + 0.5f) {
             val featherPx = edgeFeather.toPx().coerceAtMost(drawWidth * 0.22f)
             if (featherPx > 0.5f && drawWidth > 1f) {
                 val featherFraction = (featherPx / drawWidth).coerceIn(0f, 0.22f)

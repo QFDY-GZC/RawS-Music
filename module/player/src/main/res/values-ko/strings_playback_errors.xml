@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="player_error_usb_thread_busy">이전 USB 재생 스레드가 아직 종료되지 않아 USB 장치를 보호하기 위해 동시 시작을 차단했습니다.</string>
+    <string name="player_error_online_native_mismatch">온라인 재생 native 인터페이스가 일치하지 않습니다: %1$s</string>
+    <string name="player_error_playback_failed_detail">재생 실패: %1$s</string>
+    <string name="player_error_strict_bitperfect_track">엄격한 Bit-perfect: 현재 트랙 형식을 USB로 그대로 출력할 수 없습니다.</string>
+    <string name="player_error_strict_bitperfect_device">엄격한 Bit-perfect: USB 장치가 현재 트랙의 정확한 형식을 지원하지 않습니다.</string>
+    <string name="player_error_audio_file_missing">오디오 파일을 찾을 수 없습니다: %1$s</string>
+    <string name="player_error_audio_file_lost">오디오 파일을 더 이상 사용할 수 없습니다.</string>
+    <string name="player_error_file_read">파일 읽기 오류입니다. 저장 장치가 제거되었거나 파일이 손상되었을 수 있습니다.</string>
+    <string name="player_error_playback_exception">재생 오류: %1$s</string>
+    <string name="player_error_decoder_thread">디코더 스레드 오류: %1$s</string>
+    <string name="player_error_online_decode_failed">온라인 재생 디코딩에 실패했습니다.</string>
+    <string name="usb_notice_no_exclusive_dac">USB 독점 모드를 지원하는 DAC가 감지되지 않았습니다. 먼저 장치를 연결하세요.</string>
+    <string name="usb_notice_hardware_volume_enabled">하드웨어 볼륨이 활성화되었습니다</string>
+    <string name="usb_notice_hardware_volume_pending">다음 USB 초기화 후 하드웨어 볼륨을 확인합니다</string>
+    <string name="usb_notice_hardware_volume_disabled">하드웨어 볼륨이 비활성화되었습니다</string>
+    <string name="player_notice_gapless_failed">연속 재생에 실패하여 중지했습니다</string>
+</resources>

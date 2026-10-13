@@ -21,6 +21,8 @@ import com.rawsmusic.core.ui.scene.GlobalSearchScope
 import com.rawsmusic.core.ui.scene.NavScene
 import com.rawsmusic.core.ui.scene.NavigationState
 import com.rawsmusic.core.ui.widget.virtuallist.ComposeVirtualListState
+import com.rawsmusic.helper.rememberSystemFileAccessGate
+import com.rawsmusic.locale.localizedErrorMessage
 import com.rawsmusic.module.data.prefs.PlaylistStore
 import com.rawsmusic.module.data.prefs.PlaybackStatsStore
 import com.rawsmusic.module.player.dsp.GraphicEQController
@@ -53,6 +55,7 @@ import kotlinx.coroutines.launch
 
 // 设置页面 Activity 映射（internal 供 MainActivity 使用）
 internal val SETTINGS_ACTIVITY_MAP = mapOf<NavScene, Class<*>>(
+    NavScene.HDR_SETTINGS to com.rawsmusic.ui.settings.HdrSettingsActivity::class.java,
     NavScene.APPEARANCE to com.rawsmusic.ui.settings.AppearanceActivity::class.java,
     NavScene.ALBUM_ART_SETTINGS to com.rawsmusic.ui.settings.AlbumArtActivity::class.java,
     NavScene.GLOBAL_FONT_SETTINGS to com.rawsmusic.ui.settings.GlobalFontSettingsActivity::class.java,
@@ -95,6 +98,7 @@ class AppPageRendererImpl(
         virtualListState: ComposeVirtualListState?,
     ): Boolean {
         val context = LocalContext.current
+        val withSystemFileAccess = rememberSystemFileAccessGate()
         val activity = context as? MainActivity
         val pc = activity?.playerController
 
@@ -147,7 +151,20 @@ class AppPageRendererImpl(
                     },
                     onRemoveSong = { song ->
                         val playlistId = playlist?.id ?: return@PlaylistDetailScreen
-                        scope.launch { playlistStore.removeSongFromPlaylist(playlistId, song.playlistIdentityKey()) }
+                        val playlistName = playlist?.name ?: return@PlaylistDetailScreen
+                        scope.launch {
+                            runCatching { playlistStore.removeSongFromPlaylist(playlistId, song.playlistIdentityKey()) }
+                                .onSuccess { changed ->
+                                    if (changed) com.rawsmusic.helper.playlistSongChangeMessage(context, listOf(song.title), playlistName, true)
+                                        ?.let { com.rawsmusic.core.common.ui.AppNoticeBus.post(it,
+                                            com.rawsmusic.core.common.ui.AppNoticeIcon.PLAYLIST,
+                                            com.rawsmusic.core.common.ui.AppNoticeAnimation.DELETE) }
+                                }
+                                .onFailure { failure ->
+                                    if (failure is kotlinx.coroutines.CancellationException) throw failure
+                                    com.rawsmusic.core.common.ui.AppNoticeBus.error(context.getString(com.rawsmusic.R.string.ui_playlist_remove_failed))
+                                }
+                        }
                     }
                 )
             }
@@ -318,12 +335,17 @@ class AppPageRendererImpl(
                     speakerOutputElasticityController = speakerOutputElasticityController,
                     surround360Controller = surround360Controller,
                     panoramic360Controller = panoramic360Controller,
+                    reverbController = pc?.reverbController,
                     onExportPeqToFile = { json ->
                         pendingPeqExportJson = json
-                        peqExportLauncher.launch("PEQ_preset_${System.currentTimeMillis()}.peq.json")
+                        withSystemFileAccess {
+                            peqExportLauncher.launch("PEQ_preset_${System.currentTimeMillis()}.peq.json")
+                        }
                     },
                     onImportPeqFromFile = {
-                        peqImportLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        withSystemFileAccess {
+                            peqImportLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        }
                     },
                     importedPeqFileContent = importedPeqFileContent,
                     onImportedPeqFileContentConsumed = { importedPeqFileContent = null },
@@ -360,10 +382,14 @@ class AppPageRendererImpl(
                         onBack = onBack,
                         onExportToFile = { json ->
                             pendingExportJson = json
-                            exportLauncher.launch("PEQ_preset_${System.currentTimeMillis()}.peq.json")
+                            withSystemFileAccess {
+                                exportLauncher.launch("PEQ_preset_${System.currentTimeMillis()}.peq.json")
+                            }
                         },
                         onImportFromFile = {
-                            importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                            withSystemFileAccess {
+                                importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                            }
                         },
                         importedFileContent = importedFileContent,
                         onImportedFileContentConsumed = { importedFileContent = null }
@@ -498,7 +524,10 @@ class AppPageRendererImpl(
             )
         } catch (e: Exception) {
             AppNoticeBus.error(
-                context.getString(com.rawsmusic.R.string.preset_save_failed, e.message.orEmpty())
+                context.getString(
+                    com.rawsmusic.R.string.preset_save_failed,
+                    context.localizedErrorMessage(e, com.rawsmusic.R.string.ui_unknown_error),
+                )
             )
         }
     }
@@ -510,7 +539,10 @@ class AppPageRendererImpl(
             }
         } catch (e: Exception) {
             AppNoticeBus.error(
-                context.getString(com.rawsmusic.R.string.preset_read_failed, e.message.orEmpty())
+                context.getString(
+                    com.rawsmusic.R.string.preset_read_failed,
+                    context.localizedErrorMessage(e, com.rawsmusic.R.string.ui_unknown_error),
+                )
             )
             null
         }

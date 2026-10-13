@@ -46,10 +46,12 @@ import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.rawsmusic.core.ui.widget.background.CustomMediaBackgroundState
+import com.rawsmusic.helper.rememberSystemFileAccessGate
 import com.rawsmusic.module.data.prefs.PersonalizationPreferences
 import com.rawsmusic.module.data.prefs.BottomBarMaterial
 import com.rawsmusic.module.data.prefs.LibraryBottomButtonsSurface
 import com.rawsmusic.module.data.prefs.SettingsSurfaceStyle
+import com.rawsmusic.module.data.prefs.PlayerDisplayPreferences
 
 @Composable
 fun LiquidGlassAppearanceScreen(
@@ -58,6 +60,7 @@ fun LiquidGlassAppearanceScreen(
     
     val fontFamily = appFontFamily()
     val context = LocalContext.current
+    val withSystemFileAccess = rememberSystemFileAccessGate()
     RawFlowTuningState.ensureInitialized(context)
     CustomMediaBackgroundState.ensureInitialized(context)
     @Suppress("UNUSED_VARIABLE")
@@ -96,8 +99,17 @@ fun LiquidGlassAppearanceScreen(
     val mainButtonsSurface by PersonalizationPreferences.libraryBottomButtonsSurface.collectAsState()
     val playbackMaterial = bottomBarMaterial.asSurfaceStyle()
     val mainButtonsMaterial = mainButtonsSurface.asSurfaceStyle()
+    val playerKeepScreenOn by PlayerDisplayPreferences.keepScreenOn.collectAsState()
 
     SettingsPage(title = stringResource(R.string.settings_appearance_title), onBack = onBack) {
+        SettingsCard {
+            SwitchPreference(
+                title = stringResource(R.string.settings_player_keep_screen_on),
+                summary = stringResource(R.string.settings_player_keep_screen_on_summary),
+                checked = playerKeepScreenOn,
+                onCheckedChange = PlayerDisplayPreferences::setKeepScreenOn,
+            )
+        }
         SettingsCard {
             SectionHeader(stringResource(R.string.settings_language_title))
             Text(
@@ -107,42 +119,53 @@ fun LiquidGlassAppearanceScreen(
                 fontFamily = fontFamily
             )
             Spacer(Modifier.height(12.dp))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                listOf(
-                    AppLocaleManager.SYSTEM to stringResource(R.string.settings_language_system),
-                    AppLocaleManager.SIMPLIFIED_CHINESE to stringResource(R.string.settings_language_chinese),
-                    AppLocaleManager.ENGLISH to stringResource(R.string.settings_language_english)
-                ).forEach { (language, label) ->
-                    val selected = applicationLanguage == language
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(40.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(
-                                if (selected) MiuixTheme.colorScheme.primary
-                                else MiuixTheme.colorScheme.surfaceContainer
+            val languageOptions = listOf(
+                AppLocaleManager.SYSTEM to stringResource(R.string.settings_language_system),
+                AppLocaleManager.SIMPLIFIED_CHINESE to stringResource(R.string.settings_language_chinese),
+                AppLocaleManager.ENGLISH to stringResource(R.string.settings_language_english),
+                AppLocaleManager.JAPANESE to stringResource(R.string.settings_language_japanese),
+                AppLocaleManager.KOREAN to stringResource(R.string.settings_language_korean),
+            )
+            languageOptions.chunked(3).forEach { row ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    row.forEach { (language, label) ->
+                        val selected = applicationLanguage == language
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (selected) MiuixTheme.colorScheme.primary
+                                    else MiuixTheme.colorScheme.surfaceContainer
+                                )
+                                .clickable {
+                                    if (applicationLanguage != language) {
+                                        applicationLanguage = language
+                                        val requiresManualRecreate =
+                                            AppLocaleManager.setLanguage(context, language)
+                                        if (requiresManualRecreate) {
+                                            (context as? Activity)?.recreate()
+                                        }
+                                    }
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                color = if (selected) MiuixTheme.colorScheme.onPrimary
+                                else MiuixTheme.colorScheme.onBackgroundVariant,
+                                fontSize = 14.sp,
+                                fontFamily = fontFamily
                             )
-                            .clickable {
-                                if (applicationLanguage != language) {
-                                    applicationLanguage = language
-                                    AppLocaleManager.setLanguage(context, language)
-                                    (context as? Activity)?.recreate()
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = label,
-                            color = if (selected) MiuixTheme.colorScheme.onPrimary
-                            else MiuixTheme.colorScheme.onBackgroundVariant,
-                            fontSize = 14.sp,
-                            fontFamily = fontFamily
-                        )
+                        }
                     }
+                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
         }
@@ -393,54 +416,125 @@ fun LiquidGlassAppearanceScreen(
                 fontFamily = fontFamily
             )
             Spacer(Modifier.height(12.dp))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                listOf(
-                    RawBackgroundStyle.FLOW to stringResource(R.string.settings_background_style_flow),
-                    RawBackgroundStyle.STATIC to stringResource(R.string.settings_background_style_static),
-                    RawBackgroundStyle.SIMPLE to stringResource(R.string.settings_background_style_simple)
-                ).forEach { (style, label) ->
-                    val selected = RawFlowTuningState.style == style
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(40.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(
-                                if (selected) MiuixTheme.colorScheme.primary
-                                else MiuixTheme.colorScheme.surfaceContainer
+            listOf(
+                RawBackgroundStyle.FLOW to stringResource(R.string.settings_background_style_flow),
+                RawBackgroundStyle.ALBUM_COLOR to stringResource(R.string.settings_background_style_album_color),
+                RawBackgroundStyle.STATIC to stringResource(R.string.settings_background_style_static),
+                RawBackgroundStyle.SIMPLE to stringResource(R.string.settings_background_style_simple),
+            ).chunked(2).forEach { styleRow ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    styleRow.forEach { (style, label) ->
+                        val selected = RawFlowTuningState.style == style
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (selected) MiuixTheme.colorScheme.primary
+                                    else MiuixTheme.colorScheme.surfaceContainer
+                                )
+                                .clickable {
+                                    RawFlowTuningState.setStyle(context, style)
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                color = if (selected) {
+                                    MiuixTheme.colorScheme.onPrimary
+                                } else {
+                                    MiuixTheme.colorScheme.onBackgroundVariant
+                                },
+                                fontSize = 14.sp,
+                                fontFamily = fontFamily
                             )
-                            .clickable {
-                                RawFlowTuningState.setStyle(context, style)
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = label,
-                            color = if (selected) {
-                                MiuixTheme.colorScheme.onPrimary
-                            } else {
-                                MiuixTheme.colorScheme.onBackgroundVariant
-                            },
-                            fontSize = 14.sp,
-                            fontFamily = fontFamily
-                        )
+                        }
                     }
                 }
             }
 
+            Text(
+                text = stringResource(R.string.settings_background_frame_rate),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = MiuixTheme.colorScheme.onBackground,
+                modifier = Modifier.padding(top = 4.dp),
+                fontFamily = fontFamily,
+            )
+            Text(
+                text = stringResource(R.string.settings_background_frame_rate_desc),
+                fontSize = 12.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
+                fontFamily = fontFamily,
+            )
+            listOf(24, 30, 45, 60, 90, 120).chunked(3).forEach { fpsRow ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    fpsRow.forEach { fps ->
+                        val selected = RawFlowTuningState.frameRateFps == fps
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (selected) MiuixTheme.colorScheme.primary
+                                    else MiuixTheme.colorScheme.surfaceContainer
+                                )
+                                .clickable { RawFlowTuningState.setFrameRate(context, fps) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = stringResource(R.string.settings_background_frame_rate_value, fps),
+                                color = if (selected) {
+                                    MiuixTheme.colorScheme.onPrimary
+                                } else {
+                                    MiuixTheme.colorScheme.onBackgroundVariant
+                                },
+                                fontSize = 13.sp,
+                                fontFamily = fontFamily,
+                            )
+                        }
+                    }
+                }
+            }
+
+            val backgroundMotionSpeed = when (RawFlowTuningState.style) {
+                RawBackgroundStyle.ALBUM_COLOR -> RawFlowTuningState.albumColorSpeed
+                else -> RawFlowTuningState.speed
+            }
             FlowTuningSlider(
                 title = stringResource(R.string.settings_background_speed),
-                value = RawFlowTuningState.speed,
-                valueRange = 0.5f..4f,
+                value = backgroundMotionSpeed,
+                valueRange = if (RawFlowTuningState.style == RawBackgroundStyle.ALBUM_COLOR) {
+                    0.25f..6f
+                } else {
+                    0.5f..4f
+                },
                 valueText = stringResource(
                     R.string.settings_background_speed_value,
-                    RawFlowTuningState.speed
+                    backgroundMotionSpeed
                 ),
-                enabled = RawFlowTuningState.style == RawBackgroundStyle.FLOW,
-                onValueChange = { RawFlowTuningState.setSpeed(context, it) }
+                enabled = RawFlowTuningState.style == RawBackgroundStyle.FLOW ||
+                    RawFlowTuningState.style == RawBackgroundStyle.ALBUM_COLOR,
+                onValueChange = {
+                    if (RawFlowTuningState.style == RawBackgroundStyle.ALBUM_COLOR) {
+                        RawFlowTuningState.setAlbumColorSpeed(context, it)
+                    } else {
+                        RawFlowTuningState.setSpeed(context, it)
+                    }
+                }
             )
             FlowTuningSlider(
                 title = stringResource(R.string.settings_background_saturation),
@@ -478,7 +572,11 @@ fun LiquidGlassAppearanceScreen(
                 description = CustomMediaBackgroundState.sourceUri
                     .takeIf { it.isNotBlank() }
                     ?.let { android.net.Uri.parse(it).lastPathSegment },
-                onClick = { customBackgroundPicker.launch(arrayOf("image/*", "video/*")) },
+                onClick = {
+                    withSystemFileAccess {
+                        customBackgroundPicker.launch(arrayOf("image/*", "video/*"))
+                    }
+                },
             )
             SwitchPreference(
                 title = stringResource(R.string.settings_custom_background_enabled),
@@ -493,6 +591,15 @@ fun LiquidGlassAppearanceScreen(
                 checked = CustomMediaBackgroundState.showOnPlayer,
                 enabled = CustomMediaBackgroundState.enabled,
                 onCheckedChange = { CustomMediaBackgroundState.setShowOnPlayer(context, it) },
+            )
+            SwitchPreference(
+                title = stringResource(R.string.settings_custom_background_full_image),
+                summary = stringResource(R.string.settings_custom_background_full_image_summary),
+                checked = CustomMediaBackgroundState.showFullImage,
+                enabled = CustomMediaBackgroundState.enabled &&
+                    CustomMediaBackgroundState.sourceKind ==
+                    com.rawsmusic.core.ui.widget.background.CustomBackgroundKind.IMAGE,
+                onCheckedChange = { CustomMediaBackgroundState.setShowFullImage(context, it) },
             )
             SwitchPreference(
                 title = stringResource(R.string.settings_custom_background_settings),

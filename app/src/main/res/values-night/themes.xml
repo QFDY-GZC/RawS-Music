@@ -16,8 +16,10 @@
     <style name="SettingsActivityTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar">
         <item name="android:windowBackground">@color/settings_page_bg</item>
         <item name="android:colorBackground">@color/settings_page_bg</item>
-        <item name="android:statusBarColor">@color/settings_page_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:enforceStatusBarContrast">false</item>
         <item name="android:navigationBarColor">@color/settings_page_bg</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
         <item name="android:windowIsTranslucent">false</item>
