@@ -12,7 +12,7 @@
 ![Android](https://img.shields.io/badge/Android-7.0%2B%20%7C%20API%2024-blue?style=flat-square)
 ![ABI](https://img.shields.io/badge/ABI-arm64--v8a-blue?style=flat-square)
 [![License](https://img.shields.io/badge/License-Apache--2.0-green?style=flat-square)](LICENSE)
-[![README views](https://komarev.com/ghpvc/?username=QFDY-GZC.RawS-Music&label=README%20views&color=blue&style=flat-square)](https://github.com/antonkomarev/github-profile-views-counter "アクセスカウンターの説明")
+[![README views](https://count.getloli.com/@rawsmusic-readme?theme=booru-touhoulat&padding=6&scale=0.7&pixelated=1)](https://count.getloli.com/ "カウンターのテーマ")
 
 [安定版 APK](https://github.com/QFDY-GZC/RawS-Music/releases/latest) · [更新履歴](docs/release-notes-1.0.13-release.md) · [不具合報告](https://github.com/QFDY-GZC/RawS-Music/issues) · [スクリーンショット](docs/screenshots/README.md)
 
