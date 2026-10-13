@@ -12,7 +12,7 @@
 ![Android](https://img.shields.io/badge/Android-7.0%2B%20%7C%20API%2024-blue?style=flat-square)
 ![ABI](https://img.shields.io/badge/ABI-arm64--v8a-blue?style=flat-square)
 [![License](https://img.shields.io/badge/License-Apache--2.0-green?style=flat-square)](LICENSE)
-![README views](https://komarev.com/ghpvc/?username=QFDY-GZC.RawS-Music&label=README%20views&color=blue&style=flat-square)
+[![README views](https://komarev.com/ghpvc/?username=QFDY-GZC.RawS-Music&label=README%20views&color=blue&style=flat-square)](https://github.com/antonkomarev/github-profile-views-counter "View counter documentation")
 
 [Stable APK](https://github.com/QFDY-GZC/RawS-Music/releases/latest) · [Changelog](docs/release-notes-1.0.13-release.md) · [Issues](https://github.com/QFDY-GZC/RawS-Music/issues) · [Screenshots](docs/screenshots/README.md)
 
